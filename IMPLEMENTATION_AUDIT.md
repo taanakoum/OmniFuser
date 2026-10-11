@@ -405,13 +405,13 @@ fold scores.
 | RTD decomposition | The paper's printed trend-plus-seasonal expression reduces algebraically to the original downsampled representation. The guide discusses this ambiguity. | `branch` mode applies separate learned FFNs to trend and residual seasonal branches before restoration. This is an explicit interpretation, not a uniquely recoverable paper implementation. `literal` mode preserves the literal sum before subsequent transforms. |
 | RTD depth/rank/stride | Paper describes multiresolution low-rank temporal decomposition; practical implementation details are incomplete. | Four stride-3 blocks and rank 8 are configuration defaults informed by the reproduction guide and implementation feasibility. They must be reported as choices, not asserted as exact paper hyperparameters unless confirmed in a paper table. |
 | C2F shared/private split | Paper defines a learned shared projection and Frobenius-orthogonal private residual. | Implements this projection across all time/features per sample with epsilon stabilization. It logs the resulting dot-product diagnostic but does not use an explicit orthogonality penalty in the optimized loss. |
-| C2F private attention | Paper describes self-attention refinement of private features and proxy cross-attention over shared features. | Implements private-stream self-attention and also applies an additional self-attention residual to each full modality before decomposition in every fusion layer. That extra pre-decomposition attention is an implementation addition. |
+| C2F private attention | Paper describes self-attention refinement of private features and proxy cross-attention over shared features. | The private path defaults to residual-plus-LayerNorm around self-attention; `--private-attn plain` uses the printed MHA output-only form. Optional pre-decomposition self-attention is disabled by default (`--pre-attn`) because it is not shown in the paper architecture. |
 | Proxy landmarks / ALS normalization | Paper introduces adaptive landmarks and proxy-based cross-modal attention. Eq. 10 explicitly applies softmax over the \(k\)-landmark dimension at time \(t\), then \(L=\alpha^T S\). | The scorer and projected values are learned. `als_mode="k_sum"` applies the printed landmark-axis softmax; `time` (default) softmaxes across time independently for each landmark to form normalized temporal averages; `k_colnorm` adds column normalization to the landmark-axis mode. The default thus differs from Eq. 10's printed axis; retain it only as a named alternative and select `k_sum` for the closest literal equation. |
 | Hybrid local/global gate | Paper combines global and local gate terms; exact convolution/gate details are incomplete. | Local gate uses depthwise Conv1d kernel 3. The global/local mixing scalar starts at 0, so sigmoid mixing starts evenly at 0.5. These are explicit selected values. |
 | Progressive fusion | Paper describes recursive anchoring and reports two refinement iterations. | Two layers by default; each later layer adds a learned transform of the last fused representation to both original modality streams before fusion. |
 | Prediction heads | Paper equations (including the force head on page 7) use the same final fused token with the same linear map at every future time, which produces identical outputs across leads. | Three variants are available: `paper_literal` follows the equation and repeats outputs; `lead_conditioned` (default) concatenates a learned per-lead embedding with final fused context before shared decoding; `direct` maps the final context to all horizon outputs using separate output weights. The latter two enable lead-specific results and are deliberate deviations. |
 | Loss | Paper defines the two prognostic tasks; objective weighting/regularization for this dataset is not fully determined in the sources used here. | Unweighted force MSE + per-step class cross-entropy. C2F alignment/orthogonality are diagnostics only. This must be included in any reproduction report. |
-| Optimizer | Paper reports Adam, learning rate \(10^{-4}\), batch size 32, dropout 0.1, and two progressive fusion iterations (paper page 9). | Adam and \(10^{-4}\), dropout 0.1 and two rounds align with those reported values. Local smoke defaults to batch 1, the single-fold CLI defaults to 2, and full CV defaults to 16; set `--batch-size 32` for the paper's reported batch size when resources permit. Gradient accumulation supports a larger effective batch with sample-correct weighting, though it is not computationally identical to a physical batch of that size. |
+| Optimizer | Paper reports Adam, learning rate \(10^{-4}\), batch size 32, dropout 0.1, and two progressive fusion iterations (paper page 9). | Adam and \(10^{-4}\), dropout 0.1, two rounds, and the CLI/full-CV batch default 32 align with those reported values. The local smoke launcher defaults to batch 1. Gradient accumulation supports a larger effective batch with sample-correct weighting, though it is not computationally identical to a physical batch of that size. |
 | Epoch/model selection | The paper and supplied guides do not fully specify an early-stopping or best-checkpoint rule for this adaptation. | Validation is evaluated every epoch. By default, the checkpoint with the lowest validation loss is selected for test; `--no-select-best` uses the final epoch. No early stopping or scheduler is applied. Epoch counts remain run settings (five in full CV defaults, one in local smoke). |
 | Lightning AI | Lightning AI is the intended compute platform, not a paper architecture requirement. | Script is a standard PyTorch command-line job usable in a Lightning AI Studio. It does not use Lightning Fabric/Trainer, distributed training, or cloud-specific dataset transfer. Matching interrupted folds can resume locally from saved model/optimizer/RNG state; completed folds are reused only after validating source and experiment signatures. |
 
@@ -596,8 +596,11 @@ exposes the repeated-horizon behavior implied by the printed equation, while
 Neither choice makes the entire implementation an exact reproduction. Other
 essential reporting items are the
 Nonastreda-vs-paper dataset difference, duplicate consolidation, 8/1/1 split,
-RTD branch interpretation, unweighted loss, random EfficientNet initialization,
-batch-size deviation, last-epoch test checkpoint, and default stride.
+RTD branch interpretation, unweighted loss, random EfficientNet initialization
+by default, the local smoke launcher's batch-size override, and default stride.
+The maintained training and cross-validation defaults select the best
+validation-loss checkpoint; `--no-select-best` explicitly opts into the last
+epoch.
 
 For a defensible full experiment, first run one uncapped fold on the intended
 Lightning AI GPU, record peak memory and epoch time, then run all ten folds
@@ -629,7 +632,8 @@ removed; the unique notes, review diff, and reference tests remain:
   this project currently runs Nonastreda, the table is a diagnostic
   plausibility comparison, not a direct replication score.
 
-The maintained root test suite passes: **51 passed**. It covers these switches,
+The maintained root test suite passed **65 tests** after Blocks 12 CLI
+integration. It covers these switches,
 weighted metrics, horizon baselines, and comparison output. The bundle's
 requested `omnifuser_blocks911/tests/test_blocks_9_11.py` cannot run as
 supplied: its reference module imports the absent `c2f_reference` from the
@@ -672,10 +676,11 @@ include paper-horizon metrics and persistence baselines; the CV event contains
 fold means and pooled out-of-fold results. Reuse a unique output directory per
 independent run; matching fold resumption appends tracking events.
 
-Verification performed in this environment: **51 project tests pass**; a
-capped one-fold compact CPU run completed and wrote all three tracking files;
-a capped compact CPU run through `scripts/train_lightning.py` completed all
-10 folds and logged the final CV aggregate. The locally installed PyTorch is
+Verification performed in this environment: **65 project tests pass**; a
+capped one-fold compact CPU run completed and wrote fold/checkpoint/tracking
+artifacts with the new architecture overrides; an earlier capped compact CPU
+run through `scripts/train_lightning.py` completed all 10 folds and logged the
+final CV aggregate. The locally installed PyTorch is
 `2.14.1+cpu` and `torch.cuda.is_available()` is false, so CUDA execution,
 GPU memory capacity, and Lightning Studio setup could not be validated here.
 Before the full Studio run, check the CUDA runtime, run one uncapped fold with
@@ -700,3 +705,49 @@ record in that tool timeline (except the first overall record, which falls
 back to its own image). The dataset does not provide a timestamp proving when
 each photo was captured relative to cutting, so the causal appropriateness of
 lag 0 must be judged from the acquisition protocol, not inferred from IDs.
+
+## Blocks 12 reconciliation and final readiness
+
+The Blocks 12 notes and diff were checked against the maintained package,
+README, audit, and the supplied paper PDF `Literature/2511.01320v1.pdf`.
+The model implementation already exposed the documented RTD/GAT/C2F
+dimensions in `ModelConfig`, but the CLI did not expose the sensitivity-study
+options from the patch. The following were added to the shared argument helper
+in `omnifuser/cli.py`, so they are available through the installed CLI and both
+training launchers:
+
+- `--decomp-mode`, `--rtd-layers`, `--rtd-stride`, `--rtd-rank`
+- `--gat-layers`, `--gat-heads`, `--fusion-layers`, `--landmarks`
+- `--fusion-rank`, `--dropout`
+
+Omitted options are not included in configuration overrides, preserving
+existing defaults and checkpoint compatibility. `ModelConfig` now rejects
+non-positive RTD/GAT dimensions, a head count that does not divide `d_model`,
+and dropout outside `[0, 1)` before model construction.
+
+The patch's full test file and `model_summary.py` could not be used unchanged:
+the supplied `omnifuser_blocks12/tests/test_block12_fullmodel.py` imports
+`c2f_reference.py` and `test_c2f_blocks678.py`, neither of which is present in
+the root test tree or the supplied Blocks 12/9-11 folders. The package also
+does not contain the required `blocks9_11_reference.py` in the root tests.
+Instead of leaving a broken command, a runnable integration suite was added at
+`tests/test_block12_integration.py`, and `scripts/model_summary.py` is
+self-contained and compares instantiated parameter totals against a
+dimension-derived count. The earlier reference-based parity claims in
+`omnifuser_blocks12/BLOCKS_12_NOTES.md` are treated as patch-author evidence,
+not as tests executed in this checkout.
+
+The active package and scripts were reviewed for duplicate/deprecated
+production modules. No safe deletion was identified: the local and CV
+launchers have different scopes, and the supplied `omnifuser_blocks12/` and
+`omnifuser_blocks911/` directories are review artifacts needed to retain the
+patches and review evidence. Their copied source/reference files are not
+imported by the active package. They were left intact rather than deleting
+user-provided audit material.
+
+The detailed equation-to-implementation matrix, including exact matches,
+implementation choices, where they live, when they were selected, and why,
+is in [PAPER_IMPLEMENTATION_ALIGNMENT.md](PAPER_IMPLEMENTATION_ALIGNMENT.md).
+The Lightning AI launch commands were updated in `README.md`; no CUDA device is
+available in the local CPU environment, so target-Studio GPU readiness remains
+to be confirmed with the documented uncapped single-fold pilot.

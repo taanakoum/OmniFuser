@@ -2,6 +2,10 @@
 
 This repository implements an initial, testable OmniFuser reproduction for the supplied Nonastreda data. The implementation follows the paper's multimodal sensor/image design while making paper ambiguities explicit in configuration. It is a research reproduction, not a claim of reproducing the paper's reported scores.
 
+The equation-by-equation status, implementation choices, and reasons for
+choices are recorded in
+[PAPER_IMPLEMENTATION_ALIGNMENT.md](PAPER_IMPLEMENTATION_ALIGNMENT.md).
+
 ## Environment
 
 Create/activate a Python environment, then install the package and test dependencies:
@@ -344,11 +348,11 @@ epoch using the recorded compatible settings.
   identical data, fold seeds, and training parameters, and use separate output
   directories so fold artifacts cannot overwrite one another.
 - Paper hyperparameters include Adam at 1e-4, four GAT layers/heads, four
-  landmarks, and two progressive-fusion rounds. The local training batch
-  defaults to 2 rather than the paper's 32 to accommodate limited compute; use
-  `--batch-size 32` on a suitable machine. EfficientNet-B0 is initialized
-  without pretrained weights or downloads. A compact encoder option is
-  provided for smoke tests and constrained devices.
+  landmarks, and two progressive-fusion rounds. `omnifuser train` and
+  `scripts/train_lightning.py` default to batch size 32; the local smoke
+  launcher defaults to batch size 1. EfficientNet-B0 is initialized without
+  pretrained weights or downloads unless `--pretrained` is selected. A compact
+  encoder option is provided for smoke tests and constrained devices.
 
 This is still a reproduction implementation rather than a bit-for-bit
 replication: the paper does not fully specify the depthwise hybrid-gate kernel,
@@ -369,3 +373,54 @@ paper benchmark.
 The first validation run should use a single held-out tool, a small model, and a
 few epochs. Full leave-one-tool-out experiments and hyperparameter selection
 should be reported separately from this smoke test.
+
+### Blocks 12 options and Lightning AI launch
+
+The architecture sensitivity settings from the Blocks 12 notes are wired
+through `omnifuser train`, `scripts/train_local.py`, and
+`scripts/train_lightning.py`: `--decomp-mode`, `--rtd-layers`,
+`--rtd-stride`, `--rtd-rank`, `--gat-layers`, `--gat-heads`,
+`--fusion-layers`, `--landmarks`, `--fusion-rank`, and `--dropout`.
+Unset options preserve the `ModelConfig` defaults. Invalid layer counts,
+ranks, strides, dropout values, and attention divisibility fail during config
+validation instead of later in model construction.
+
+The recommended paper-oriented Nonastreda comparison setup from the prior
+diagnostics is a one-second pooled step, preceding-pass image (causal timing
+ablation), 96-step training horizon, 24-step stride, and the lead-specific
+`direct` head. These are experiment decisions, not paper-prescribed settings.
+First check that the Studio's PyTorch build can see its GPU:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CUDA unavailable')"
+```
+
+Then run one uncapped held-out fold on persistent storage using the EfficientNet
+path that the full experiment will use:
+
+```bash
+python -m omnifuser.cli train \
+  --data-dir /path/to/Nonastreda_Data \
+  --output-dir /path/to/persistent-storage/omnifuser-pilot \
+  --test-tool T10 --epochs 30 --batch-size 16 --device cuda \
+  --pool 1000 --image-lag 1 --horizon 96 --stride 24 \
+  --prediction-head direct --num-workers 0
+```
+
+Inspect the fold metrics, checkpoint, GPU peak-memory and epoch-time records
+before launching the full ten-fold run with the same data, preprocessing,
+model, seed, and device settings:
+
+```bash
+python scripts/train_lightning.py \
+  --data-dir /path/to/Nonastreda_Data \
+  --output-dir /path/to/persistent-storage/omnifuser-cv \
+  --epochs 30 --batch-size 16 --device cuda \
+  --pool 1000 --image-lag 1 --horizon 96 --stride 24 \
+  --prediction-head direct --num-workers 0
+```
+
+The full cross-validation launcher uses the project’s native PyTorch loop; it
+does not require or instantiate a Lightning Trainer. CUDA execution and GPU
+capacity still need to be verified in the target Studio. The capped local
+smoke tests do not establish production throughput or model quality.

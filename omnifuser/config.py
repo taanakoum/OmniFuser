@@ -37,6 +37,14 @@ class ModelConfig:
             raise ValueError("input_len and horizon must be positive")
         if self.d_model < 1 or self.force_channels < 1:
             raise ValueError("model width and force channel count must be positive")
+        if self.num_rtd_layers < 1 or self.rtd_stride < 1 or self.rtd_rank < 1:
+            raise ValueError("RTD layer count, stride, and rank must be positive")
+        if self.num_gat_layers < 1 or self.num_gat_heads < 1:
+            raise ValueError("GAT layer count and head count must be positive")
+        if self.d_model % self.num_gat_heads:
+            raise ValueError("d_model must be divisible by num_gat_heads")
+        if not 0.0 <= self.dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1)")
         if self.decomp_mode not in {"branch", "literal"}:
             raise ValueError("decomp_mode must be 'branch' or 'literal'")
         if self.prediction_head not in {

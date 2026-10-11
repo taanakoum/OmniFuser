@@ -73,9 +73,59 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--modality-dropout", type=float, default=0.0)
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--freeze-bn", action="store_true")
+    parser.add_argument(
+        "--decomp-mode",
+        choices=("branch", "literal"),
+        default=None,
+        help="RTD decomposition: separate branch feed-forwards or literal Eq. 3 sum",
+    )
+    for flag, help_text in (
+        ("rtd-layers", "number of RTD blocks (paper default: 4)"),
+        ("rtd-stride", "RTD temporal kernel and stride (paper default: 3)"),
+        ("rtd-rank", "rank of the RTD trend projection (paper default: 8)"),
+        ("gat-layers", "number of image graph-attention layers (paper default: 4)"),
+        ("gat-heads", "attention heads in GAT and C2F (paper default: 4)"),
+        ("fusion-layers", "number of C2F refinement rounds (paper default: 2)"),
+        ("landmarks", "number of adaptive landmarks (paper default: 4)"),
+        ("fusion-rank", "rank of the low-rank fusion projection (paper default: 8)"),
+    ):
+        parser.add_argument(f"--{flag}", type=int, default=None, help=help_text)
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=None,
+        help="model dropout rate (paper default: 0.1)",
+    )
+
+
+ARCHITECTURE_OPTIONS = {
+    "decomp_mode": "decomp_mode",
+    "rtd_layers": "num_rtd_layers",
+    "rtd_stride": "rtd_stride",
+    "rtd_rank": "rtd_rank",
+    "gat_layers": "num_gat_layers",
+    "gat_heads": "num_gat_heads",
+    "fusion_layers": "num_fusion_layers",
+    "landmarks": "num_landmarks",
+    "fusion_rank": "fusion_rank",
+    "dropout": "dropout",
+}
 
 
 def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    overrides: dict[str, object] = {
+        "pre_attn": args.pre_attn,
+        "als_mode": args.als_mode,
+        "private_attn": args.private_attn,
+        "share_c2f": args.share_c2f,
+        "modality_dropout": args.modality_dropout,
+        "pretrained": args.pretrained,
+        "freeze_bn": args.freeze_bn,
+    }
+    for attribute, field in ARCHITECTURE_OPTIONS.items():
+        value = getattr(args, attribute, None)
+        if value is not None:
+            overrides[field] = value
     return {
         "pool": args.pool,
         "image_lag": args.image_lag,
@@ -83,15 +133,7 @@ def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "accumulation_steps": args.accumulation_steps,
         "num_workers": args.num_workers,
         "resume": args.resume,
-        "config_overrides": {
-            "pre_attn": args.pre_attn,
-            "als_mode": args.als_mode,
-            "private_attn": args.private_attn,
-            "share_c2f": args.share_c2f,
-            "modality_dropout": args.modality_dropout,
-            "pretrained": args.pretrained,
-            "freeze_bn": args.freeze_bn,
-        },
+        "config_overrides": overrides,
     }
 
 
