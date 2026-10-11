@@ -21,6 +21,12 @@ def main() -> None:
     parser.add_argument("--stride", type=int)
     parser.add_argument("--decimation", type=int, default=1)
     parser.add_argument(
+        "--trim-pass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="trim pass lead-in/run-out with the Nonastreda span rule (default)",
+    )
+    parser.add_argument(
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
     parser.add_argument(
@@ -65,6 +71,7 @@ def main() -> None:
         decimation=args.decimation,
         label_column=args.label_column,
         dedup_identical_forces=args.deduplicate_identical_forces,
+        trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         d_model=args.d_model,
         prediction_head=args.prediction_head,

@@ -15,6 +15,9 @@ from torch.utils.data import DataLoader, Subset
 from omnifuser.config import ModelConfig
 from omnifuser.data import (
     ForceNormalizer,
+    PASS_TRIM_REFERENCE_FRACTION,
+    PASS_TRIM_THRESHOLD_FRACTION,
+    PASS_TRIM_WINDOW_SAMPLES,
     WindowDataset,
     collate_windows,
     leave_one_tool_out_folds,
@@ -152,6 +155,7 @@ def train_fold(
     decimation: int = 1,
     label_column: str = "image_label",
     dedup_identical_forces: bool = True,
+    trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
     prediction_head: str = "lead_conditioned",
@@ -182,6 +186,7 @@ def train_fold(
         label_column=label_column,
         decimation=decimation,
         dedup_identical_forces=dedup_identical_forces,
+        trim_pass=trim_pass,
     )
     timelines = make_tool_timelines(records)
     del records
@@ -258,6 +263,17 @@ def train_fold(
         "prediction_head": config.prediction_head,
         "label_column": label_column,
         "dedup_identical_forces": dedup_identical_forces,
+        "trim_pass": trim_pass,
+        "pass_trimming": "span" if trim_pass else "none",
+        "pass_trimming_parameters": (
+            {
+                "envelope_window_samples": PASS_TRIM_WINDOW_SAMPLES,
+                "early_reference_fraction": PASS_TRIM_REFERENCE_FRACTION,
+                "active_threshold_fraction": PASS_TRIM_THRESHOLD_FRACTION,
+            }
+            if trim_pass
+            else None
+        ),
         "decimation": decimation,
         "stride": train_stride,
         "evaluation_stride": eval_stride,

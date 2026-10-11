@@ -80,29 +80,46 @@ predictions and labels are stored in `fold-Tn-predictions.npz`.
 
 The supplied Nonastreda files contain one image and one label per record/pass.
 The loader validates the IDs against both CSV files, including
-`labels_reg.csv`. In timeline windows, each force sample inherits the image,
-wear class, run, and block code of its owning record; future class targets come
-from the records owning the future force samples. A window may cross a record
-boundary, so a new pass's image is used for its own samples and subsequent
-windows. The collator loads each distinct image in a window once and maps its
-input steps back to that image.
+`labels_reg.csv`, and resolves photos by record ID; it does not copy or rename
+source images. By default, exact duplicate force records within the same
+tool/run are merged, retaining the photo and label for the row with the highest
+measured flank wear. Each retained force record is span-trimmed at its
+lead-in/run-out before timelines are built. In timeline windows, each force
+sample inherits the image, wear class, run, and block code of its owning
+record; future class targets come from the records owning the future force
+samples. A window may cross a record boundary, so each pass keeps its own
+image association. The collator loads each distinct image in a window once and
+maps its input steps back to that image.
 
 The full-data defaults are deliberately set for the supplied recordings:
 decimation is 1 to retain force-frequency content, and the training stride
 defaults to `input_len + horizon` (120 with the default 96/24 window) to avoid
 overlapping training targets and excessive window counts. Validation and test
-also use non-overlapping targets. The guide's measured Nonastreda files are
-single steady cuts with no idle interval, so the whole record is retained; no
-automatic burst segmentation is applied.
+also use non-overlapping targets. The supplied guide's real-file inspection
+describes Nonastreda as single steady cuts with short lead-in/run-out, not
+bursts. Preprocessing uses span trimming rather than burst segmentation.
+Disable it with `--no-trim-pass` for an untrimmed ablation.
+`omnifuser inspect` reports aggregate lead-in/run-out samples removed and the
+ten retained records with the largest removed fraction. This is important
+because span trimming can remove genuine low-force cut data: the current
+default retains `T6R2B4` after duplicate resolution and removes 320 lead-in and
+12,639 run-out samples from its 96,204-sample source record. Inspect that report
+and compare with `--no-trim-pass` before treating trimmed results as definitive.
 
-Exact B3/B4 force duplicates are consolidated by default for timeline
-forecasting. `labels_reg.csv`'s flank-wear value chooses which duplicate
-record's image and class annotation to keep, matching the guide's
-`dedup_force` recommendation; `--keep-identical-forces` retains both as an
-ablation. Force forecasting is the paper's regression task. `labels_reg.csv`
-also contains numeric wear measurements, but those are not additional model
-targets in the paper's stated Nonastreda force-forecasting/classification
-setup.
+All bit-identical force records within a tool/run are consolidated by default,
+not only B3/B4. On the supplied data this reduces 512 rows to 378 distinct
+recordings; `labels_reg.csv` flank wear selects the retained row's image and
+label, matching the guide's recommended `dedup_force` forecasting policy.
+`--keep-identical-forces` retains all rows as an ablation. Force forecasting
+is the paper's regression task. `labels_reg.csv` also contains numeric wear
+measurements, but those are not additional model targets in the paper's stated
+Nonastreda force-forecasting/classification setup.
+
+The updated guide reports 50,317–150,711 samples after span trimming and
+308,071 timeline windows at stride 120. The current loader reports
+50,212–149,011 samples and 309,140 windows on these files. Because the guide
+does not specify the exact span-envelope estimator, these small differences are
+documented rather than hidden or tuned to match aggregate counts.
 
 To run on Lightning AI, provision a Studio with a GPU and enough host RAM for
 the loaded force streams, place the dataset in persistent Studio storage, then
@@ -141,10 +158,15 @@ rate experiment.
   `tool_label` is retained as an alternate label source.
 - Force-variable names and record mapping are discovered and validated from the
   supplied MAT file; no assumed MAT layout is silently accepted.
-- B3/B4 force records can be exact duplicates even though their photos and
-  labels remain distinct. The default consolidates exact duplicates and keeps
-  the image/class annotation with larger measured flank wear; use
-  `--keep-identical-forces` to retain both.
+- Force arrays that are bit-identical within a tool/run are consolidated by
+  default, including B1/B2 duplicates in the few runs where they match. The
+  greatest-flank-wear row supplies the retained image/label;
+  `--keep-identical-forces` disables consolidation.
+- Nonastreda uses span-only pass trimming by default; its specific threshold
+  details are implementation choices described in the audit. Use
+  `--no-trim-pass` for an untrimmed ablation. `inspect` also reports the
+  per-record trim counts and largest removed fractions; the retained T6R2B4
+  record has a documented genuine-cut-tail caveat.
 - Force arrays are not decimated by default. The guide recommends a first run
   at the stored 1 kHz rate to preserve the observed 66.7 Hz line and its
   harmonics; use `--decimation 3` as a separately evaluated efficiency

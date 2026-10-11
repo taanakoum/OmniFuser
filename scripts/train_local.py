@@ -18,6 +18,12 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="cpu")
     parser.add_argument(
+        "--trim-pass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="trim pass lead-in/run-out with the Nonastreda span rule (default)",
+    )
+    parser.add_argument(
         "--image-encoder",
         choices=("efficientnet_b0", "compact"),
         default="efficientnet_b0",
@@ -41,6 +47,7 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         device_name=args.device,
+        trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         prediction_head=args.prediction_head,
         max_train_windows=None if args.full else 2,

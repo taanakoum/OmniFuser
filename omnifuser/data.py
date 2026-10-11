@@ -10,6 +10,7 @@ import numpy as np
 import torch
 from PIL import Image
 from scipy.io import loadmat
+from scipy.ndimage import uniform_filter1d
 from scipy.signal import decimate
 from torch import Tensor
 from torch.utils.data import Dataset
@@ -20,6 +21,9 @@ CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
 RECORD_ID = re.compile(r"^T(?P<tool>\d+)R(?P<run>\d+)B(?P<block>\d+)$")
 IMAGE_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
 IMAGE_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
+PASS_TRIM_WINDOW_SAMPLES = 20
+PASS_TRIM_REFERENCE_FRACTION = 0.05
+PASS_TRIM_THRESHOLD_FRACTION = 0.5
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,9 @@ class Record:
     force: np.ndarray
     label: int
     image_path: Path
+    source_length_samples: int = 0
+    trimmed_lead_samples: int = 0
+    trimmed_runout_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,14 +83,37 @@ def _decode_record_id(filename: str) -> tuple[str, int, int, str]:
     )
 
 
+def _nonastreda_span_bounds(force: np.ndarray) -> tuple[int, int]:
+    window_samples = PASS_TRIM_WINDOW_SAMPLES
+    if len(force) < window_samples:
+        return 0, len(force)
+    magnitude = np.square(force.astype(np.float64, copy=False)).sum(axis=1)
+    envelope = np.sqrt(
+        uniform_filter1d(magnitude, size=window_samples, mode="nearest")
+    )
+    reference_length = max(
+        window_samples, int(len(force) * PASS_TRIM_REFERENCE_FRACTION)
+    )
+    reference_level = float(np.median(envelope[:reference_length]))
+    if not np.isfinite(reference_level) or reference_level <= np.finfo(float).eps:
+        return 0, len(force)
+    active = np.flatnonzero(
+        envelope >= reference_level * PASS_TRIM_THRESHOLD_FRACTION
+    )
+    if active.size == 0:
+        return 0, len(force)
+    return int(active[0]), int(active[-1]) + 1
+
+
 def load_nonastreda(
     data_dir: str | Path,
     *,
     label_column: str = "image_label",
     decimation: int = 1,
     dedup_identical_forces: bool = True,
+    trim_pass: bool = True,
 ) -> list[Record]:
-    """Load force/label/image records from the supplied MATLAB 5 MAT file."""
+    """Load aligned Nonastreda records, optionally trimming lead-in and run-out."""
     root = Path(data_dir)
     if label_column not in {"image_label", "tool_label"}:
         raise ValueError("label_column must be 'image_label' or 'tool_label'")
@@ -133,22 +163,42 @@ def load_nonastreda(
 
     discarded_duplicate_ids: set[str] = set()
     if dedup_identical_forces:
-        for record_id, raw_force in raw_forces.items():
-            tool, run, block, _ = _decode_record_id(record_id)
-            if block != 4:
-                continue
-            previous_id = f"{tool}R{run}B3"
-            previous = raw_forces.get(previous_id)
-            if (
-                previous is None
-                or previous.shape != raw_force.shape
-                or not np.array_equal(previous, raw_force)
+        records_by_run: dict[tuple[str, int], list[str]] = {}
+        for record_id in raw_forces:
+            tool, run, _, _ = _decode_record_id(record_id)
+            records_by_run.setdefault((tool, run), []).append(record_id)
+        for record_ids in records_by_run.values():
+            force_groups: list[list[str]] = []
+            for record_id in sorted(
+                record_ids, key=lambda item: _decode_record_id(item)[2]
             ):
-                continue
-            if flank_wear[record_id] > flank_wear[previous_id]:
-                discarded_duplicate_ids.add(previous_id)
-            else:
-                discarded_duplicate_ids.add(record_id)
+                raw_force = raw_forces[record_id]
+                matching_group = next(
+                    (
+                        group
+                        for group in force_groups
+                        if raw_forces[group[0]].shape == raw_force.shape
+                        and np.array_equal(raw_forces[group[0]], raw_force)
+                    ),
+                    None,
+                )
+                if matching_group is None:
+                    force_groups.append([record_id])
+                else:
+                    matching_group.append(record_id)
+            for group in force_groups:
+                if len(group) < 2:
+                    continue
+                retained_id = max(
+                    group,
+                    key=lambda item: (
+                        flank_wear[item],
+                        -_decode_record_id(item)[2],
+                    ),
+                )
+                discarded_duplicate_ids.update(
+                    item for item in group if item != retained_id
+                )
 
     for row in datastore:
         filename = str(row[0])
@@ -186,18 +236,31 @@ def load_nonastreda(
             raise ValueError(f"{record_id} force data contains non-finite values")
         if record_id in discarded_duplicate_ids:
             continue
-        force = raw_force.astype(np.float32, copy=False)
+        force = np.ascontiguousarray(raw_force.T.astype(np.float32, copy=False))
+        source_length = len(force)
+        trimmed_lead = 0
+        trimmed_runout = 0
+        if trim_pass:
+            start, end = _nonastreda_span_bounds(force)
+            trimmed_lead = start
+            trimmed_runout = source_length - end
+            force = force[start:end]
         if decimation > 1:
-            force = decimate(force, decimation, axis=1, zero_phase=True).astype(np.float32, copy=False)
+            force = decimate(force, decimation, axis=0, zero_phase=True).astype(
+                np.float32, copy=False
+            )
         records.append(
             Record(
                 record_id=record_id,
                 tool=tool,
                 run=run,
                 block=block,
-                force=np.ascontiguousarray(force.T),
+                force=force,
                 label=class_index,
                 image_path=image_path,
+                source_length_samples=source_length,
+                trimmed_lead_samples=trimmed_lead,
+                trimmed_runout_samples=trimmed_runout,
             )
         )
     if missing_images:
@@ -310,7 +373,7 @@ class WindowDataset(Dataset[dict[str, object]]):
         self.stride = stride
         self.offsets: list[tuple[int, int]] = []
         total = 0
-        for timeline_index, timeline in enumerate(self.timelines):
+        for timeline in self.timelines:
             count = max((len(timeline.force) - input_len - horizon) // stride + 1, 0)
             self.offsets.append((total, total + count))
             total += count
