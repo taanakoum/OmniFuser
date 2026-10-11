@@ -332,7 +332,7 @@ def load_nonastreda(
 def make_tool_timelines(
     records: Sequence[Record], image_lag: int = 0
 ) -> list[ToolTimeline]:
-    """Build tool streams; optionally use the preceding record's image while labels stay current."""
+    """Build tool streams; lagged images use the preceding record in tool order."""
     if image_lag not in (0, 1):
         raise ValueError("image_lag must be 0 or 1")
     timelines: list[ToolTimeline] = []

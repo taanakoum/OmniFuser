@@ -62,6 +62,21 @@ def test_windows_keep_force_label_and_image_alignment_across_records() -> None:
     assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
 
 
+def test_lag_one_uses_previous_pass_image_but_current_pass_target() -> None:
+    first = _record("T1R1B1", "T1", 1, 1, 1.0, 0)
+    second = _record("T1R1B2", "T1", 1, 2, 2.0, 1)
+    timeline = make_tool_timelines([first, second], image_lag=1)[0]
+    dataset = WindowDataset(
+        [timeline], ForceNormalizer.fit([timeline]), input_len=12, horizon=6, stride=6
+    )
+
+    sample = dataset[9]
+
+    assert sample["image_paths"] == (first.image_path,) * 12
+    assert sample["shown_label"] == 0
+    assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
+
+
 def test_loto_keeps_each_tool_in_one_split() -> None:
     folds = list(leave_one_tool_out_folds(["T1", "T2", "T3", "T4"]))
     fold = folds[0]

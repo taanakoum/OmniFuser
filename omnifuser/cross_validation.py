@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import platform
 import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 from omnifuser.config import ModelConfig
 from omnifuser.data import (
@@ -15,6 +17,7 @@ from omnifuser.data import (
     nonastreda_source_signature,
 )
 from omnifuser.train import train_fold
+from omnifuser.tracking import ExperimentTracker
 
 
 RECORD_IMAGE = re.compile(r"^T(?P<tool>\d+)R\d+B\d+$")
@@ -319,6 +322,63 @@ def run_cross_validation(
             **(config_overrides or {}),
         )
     )
+    tracker = ExperimentTracker(
+        output_path,
+        {
+            "dataset": "Nonastreda",
+            "data_dir": str(Path(data_dir).resolve()),
+            "source_signature": source_signature,
+            "protocol": "leave-one-tool-out with cyclic validation tool",
+            "tools": tools,
+            "folds": [
+                {
+                    "train_tools": list(fold.train_tools),
+                    "validation_tool": fold.validation_tools[0],
+                    "test_tool": fold.test_tools[0],
+                }
+                for fold in folds
+            ],
+            "training": {
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "stride": train_stride,
+                "evaluation_stride": eval_stride,
+                "accumulation_steps": accumulation_steps,
+                "seed": seed,
+                "device": device_name,
+            },
+            "preprocessing": {
+                "decimation": decimation,
+                "pool": pool,
+                "image_lag": image_lag,
+                "label_column": label_column,
+                "dedup_identical_forces": dedup_identical_forces,
+                "trim_pass": trim_pass,
+            },
+            "model": expected_config,
+            "runtime": {
+                "python": platform.python_version(),
+                "torch": str(torch.__version__),
+                "cuda_runtime": torch.version.cuda,
+                "device": device_name,
+                "gpu_name": (
+                    torch.cuda.get_device_name(torch.device(device_name))
+                    if device_name.startswith("cuda") and torch.cuda.is_available()
+                    else None
+                ),
+                "gpu_total_memory_bytes": (
+                    torch.cuda.get_device_properties(torch.device(device_name)).total_memory
+                    if device_name.startswith("cuda") and torch.cuda.is_available()
+                    else None
+                ),
+            },
+            "window_caps": {
+                "train": max_train_windows,
+                "evaluation": max_eval_windows,
+            },
+        },
+    )
 
     for fold_index, fold in enumerate(folds):
         test_tool = fold.test_tools[0]
@@ -364,6 +424,13 @@ def run_cross_validation(
         )
         if finished is not None:
             print(f"  {test_tool}: reusing a completed fold with matching settings", flush=True)
+            tracker.log(
+                split="test",
+                fold=test_tool,
+                epoch=finished.get("selected_epoch"),
+                metrics=finished["test"],
+                context={"reused_completed_fold": True},
+            )
             results.append(finished)
             continue
         result = train_fold(
@@ -394,6 +461,7 @@ def run_cross_validation(
             num_workers=num_workers,
             resume=resume,
             config_overrides=config_overrides,
+            tracker=tracker,
         )
         results.append(result)
         partial = {
@@ -428,4 +496,17 @@ def run_cross_validation(
         "w", encoding="utf-8"
     ) as file:
         json.dump(summary, file, indent=2)
+    tracker.log(
+        split="cross_validation",
+        metrics={
+            "cv_mean_std": summary["cv_mean_std"],
+            "paper_horizons_mean_std": summary["paper_horizons_mean_std"],
+            "out_of_fold": summary["out_of_fold"],
+        },
+        context={
+            "folds": len(results),
+            "tools": tools,
+            "completed_folds": [entry["test_tool"] for entry in results],
+        },
+    )
     return summary

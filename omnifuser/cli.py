@@ -30,7 +30,7 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         type=int,
         choices=(0, 1),
         default=0,
-        help="use the current pass photo (0) or preceding pass photo (1)",
+        help="use the current pass photo (0) or preceding record's photo in tool order (1)",
     )
     parser.add_argument(
         "--select-best",

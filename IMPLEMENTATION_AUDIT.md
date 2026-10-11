@@ -50,6 +50,7 @@ labels, split, preprocessing, and training protocol are also matched.
 | [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, macro and support-weighted precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, force-regression metrics in normalized and original units, cumulative-horizon metrics, and per-horizon persistence/force baselines. |
 | [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, guarded matching-fold reuse, macro/weighted per-fold summaries, paper-horizon mean/std summaries, pooled out-of-fold metrics, and mean ROC curve artifacts. |
 | [`omnifuser/cli.py`](omnifuser/cli.py) | `omnifuser inspect` and `omnifuser train` command-line interface and argument wiring; inspection reports retained record/image counts, pool-tail drops, trimming, and window budget. |
+| [`omnifuser/tracking.py`](omnifuser/tracking.py) | Dependency-free append-only experiment tracking: run manifest, nested JSONL metrics, and long-form CSV scalar metrics for plots and dashboard imports. |
 
 ### Scripts and tests
 
@@ -59,7 +60,7 @@ labels, split, preprocessing, and training protocol are also matched.
 | [`scripts/train_lightning.py`](scripts/train_lightning.py) | Full ten-fold runner intended to be launched on a GPU machine or in a Lightning AI Studio. It invokes the package's PyTorch loop; it is not a Lightning Trainer implementation. |
 | [`scripts/task_diagnostics.py`](scripts/task_diagnostics.py) | Compares simple force/classification baselines across chosen pool factors and horizons; uses capped samples and pooled-data normalization for descriptive diagnostics, not a training evaluation. |
 | [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) | Renders cumulative normalized-force and classification scores next to published Tables IV-V and includes matched Nonastreda persistence baselines. |
-| [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, tool-level fold partitions, train-only normalization, image collation, within-run exact-force grouping, and span trimming. |
+| [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, including lag-1 image/current-label behavior, tool-level fold partitions, train-only normalization, image collation, within-run exact-force grouping, and span trimming. |
 | [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, shared/separate C2F and private attention options, forecast heads, model forward/backward, and macro/weighted classification metrics. |
 | [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, weighted scores, per-horizon baselines, cumulative metrics, and original-unit regression metrics. |
 | [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, missing-AUC fold handling, weighted metrics, and paper-horizon aggregation. |
@@ -628,7 +629,7 @@ removed; the unique notes, review diff, and reference tests remain:
   this project currently runs Nonastreda, the table is a diagnostic
   plausibility comparison, not a direct replication score.
 
-The maintained root test suite passes: **48 passed**. It covers these switches,
+The maintained root test suite passes: **51 passed**. It covers these switches,
 weighted metrics, horizon baselines, and comparison output. The bundle's
 requested `omnifuser_blocks911/tests/test_blocks_9_11.py` cannot run as
 supplied: its reference module imports the absent `c2f_reference` from the
@@ -653,3 +654,49 @@ this pilot is strictly an execution check, and its classification scores are
 below the baseline. It is not the requested 30-epoch full-fold experiment or
 a paper-comparable result. Run the uncapped experiment on the intended GPU
 before drawing performance conclusions.
+
+## Lightning AI and experiment-tracking readiness
+
+`scripts/train_lightning.py` is a launcher for the native PyTorch 10-fold
+training loop, not a `lightning.pytorch.Trainer` implementation. It defaults
+to CUDA, and the loader pins host-memory batches and transfers them
+non-blockingly on CUDA. The run writes `tracking/run.json`,
+`tracking/metrics.jsonl`, and `tracking/metrics.csv`; no external tracking
+package or network service is required. The manifest records data signature,
+folds, preprocessing/window/model/training configuration, Python/PyTorch/CUDA
+version and device. Epoch events include loss components, classification
+metrics including macro/weighted and one-vs-rest AUC, normalized and physical
+force errors by channel and horizon, epoch duration, and peak allocated and
+reserved CUDA memory when running on GPU. Final test events additionally
+include paper-horizon metrics and persistence baselines; the CV event contains
+fold means and pooled out-of-fold results. Reuse a unique output directory per
+independent run; matching fold resumption appends tracking events.
+
+Verification performed in this environment: **51 project tests pass**; a
+capped one-fold compact CPU run completed and wrote all three tracking files;
+a capped compact CPU run through `scripts/train_lightning.py` completed all
+10 folds and logged the final CV aggregate. The locally installed PyTorch is
+`2.14.1+cpu` and `torch.cuda.is_available()` is false, so CUDA execution,
+GPU memory capacity, and Lightning Studio setup could not be validated here.
+Before the full Studio run, check the CUDA runtime, run one uncapped fold with
+the intended encoder and image resolution, confirm peak-memory/time values in
+the tracking CSV, then adjust batch size if needed. The implementation remains
+FP32; mixed precision is not enabled.
+
+## Image-to-pass temporal alignment
+
+For each record/pass, `make_tool_timelines` assigns its image code to every
+force sample in that record. A temporal window may contain multiple records;
+`WindowDataset` returns the image path for each input time index, and
+`collate_windows` de-duplicates paths within a sample, loads each image once,
+then supplies the per-timestep index mapping to the image branch. This is the
+paper's "image replicated across the readings in the pass" operation
+semantically, but it does not copy files or store one full image tensor per
+force row. `image_lag=0` is the same-record/pass association; `image_lag=1`
+maps force inputs to the preceding record in sorted tool order while keeping
+force and future class targets tied to their actual records. Lag 1 is therefore
+a timing ablation, and at a run boundary it continues to use the previous
+record in that tool timeline (except the first overall record, which falls
+back to its own image). The dataset does not provide a timestamp proving when
+each photo was captured relative to cutting, so the causal appropriateness of
+lag 0 must be judged from the acquisition protocol, not inferred from IDs.

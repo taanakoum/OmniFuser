@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import random
+import platform
+import time
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
@@ -34,6 +36,7 @@ from omnifuser.evaluation import (
     softmax_probabilities,
 )
 from omnifuser.models import OmniFuser, multitask_loss
+from omnifuser.tracking import ExperimentTracker
 
 
 def _limit_dataset(dataset: WindowDataset, limit: int | None, seed: int) -> Any:
@@ -74,6 +77,15 @@ def _restore_rng_state(state: dict[str, Any]) -> None:
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
+def _cuda_memory_metrics(device: torch.device) -> dict[str, int]:
+    if device.type != "cuda":
+        return {}
+    return {
+        "peak_allocated_bytes": int(torch.cuda.max_memory_allocated(device)),
+        "peak_reserved_bytes": int(torch.cuda.max_memory_reserved(device)),
+    }
+
+
 def _run_epoch(
     model: OmniFuser,
     loader: DataLoader[dict[str, Any]],
@@ -94,6 +106,16 @@ def _run_epoch(
     force_squared_error = 0.0
     force_absolute_error = 0.0
     force_elements = 0
+    normalized_abs_by_channel = np.zeros(3, dtype=np.float64)
+    normalized_squared_by_channel = np.zeros(3, dtype=np.float64)
+    physical_abs_by_channel = np.zeros(3, dtype=np.float64)
+    physical_squared_by_channel = np.zeros(3, dtype=np.float64)
+    normalized_abs_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
+    normalized_squared_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
+    physical_abs_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
+    physical_squared_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
+    channel_elements = 0
+    horizon_elements = 0
     confusion_logits: list[torch.Tensor] = []
     confusion_targets: list[torch.Tensor] = []
     force_predictions: list[torch.Tensor] = []
@@ -101,13 +123,16 @@ def _run_epoch(
     last_input_forces: list[torch.Tensor] = []
     shown_labels: list[torch.Tensor] = []
     grad_context = torch.enable_grad() if training else torch.no_grad()
+    force_scale = torch.as_tensor(
+        normalizer.scale, device=device, dtype=torch.float32
+    )
     with grad_context:
         batches = len(loader)
         if training:
             optimizer.zero_grad(set_to_none=True)
         for step, batch in enumerate(loader, start=1):
             tensors = {
-                key: value.to(device)
+                key: value.to(device, non_blocking=device.type == "cuda")
                 for key, value in batch.items()
                 if isinstance(value, torch.Tensor)
             }
@@ -148,9 +173,22 @@ def _run_epoch(
                 last_input_forces.append(tensors["force"][:, -1].detach().cpu())
                 shown_labels.append(tensors["shown_label"].detach().cpu())
             difference = outputs["force"] - tensors["force_target"]
+            physical_difference = difference * force_scale.to(dtype=difference.dtype)[
+                None, None, :
+            ]
             force_squared_error += float(difference.detach().square().sum())
             force_absolute_error += float(difference.detach().abs().sum())
             force_elements += difference.numel()
+            normalized_abs_by_channel += difference.detach().abs().sum(dim=(0, 1)).cpu().numpy()
+            normalized_squared_by_channel += difference.detach().square().sum(dim=(0, 1)).cpu().numpy()
+            normalized_abs_by_horizon += difference.detach().abs().sum(dim=(0, 2)).cpu().numpy()
+            normalized_squared_by_horizon += difference.detach().square().sum(dim=(0, 2)).cpu().numpy()
+            physical_abs_by_channel += physical_difference.detach().abs().sum(dim=(0, 1)).cpu().numpy()
+            physical_squared_by_channel += physical_difference.detach().square().sum(dim=(0, 1)).cpu().numpy()
+            physical_abs_by_horizon += physical_difference.detach().abs().sum(dim=(0, 2)).cpu().numpy()
+            physical_squared_by_horizon += physical_difference.detach().square().sum(dim=(0, 2)).cpu().numpy()
+            channel_elements += tensors["force"].shape[0] * model.config.horizon
+            horizon_elements += tensors["force"].shape[0] * model.config.force_channels
     if not count:
         raise ValueError("the selected data split produced no evaluation batches")
     result: dict[str, Any] = {
@@ -160,6 +198,55 @@ def _run_epoch(
     result["force_mse_normalized"] = force_squared_error / force_elements
     result["force_mae_normalized"] = force_absolute_error / force_elements
     result["force_rmse_normalized"] = float(np.sqrt(result["force_mse_normalized"]))
+    def summarize_errors(absolute: float, squared: float, elements: int) -> dict[str, float]:
+        mse = squared / max(elements, 1)
+        return {
+            "mae": absolute / max(elements, 1),
+            "mse": mse,
+            "rmse": float(np.sqrt(mse)),
+        }
+
+    physical_abs = float(physical_abs_by_channel.sum())
+    physical_squared = float(physical_squared_by_channel.sum())
+    result["regression"] = {
+        "units": "original force units",
+        "overall": summarize_errors(physical_abs, physical_squared, force_elements),
+        "by_channel": {
+            channel: summarize_errors(
+                physical_abs_by_channel[index],
+                physical_squared_by_channel[index],
+                channel_elements,
+            )
+            for index, channel in enumerate(("Fx", "Fy", "Fz"))
+        },
+        "by_channel_normalized": {
+            channel: summarize_errors(
+                normalized_abs_by_channel[index],
+                normalized_squared_by_channel[index],
+                channel_elements,
+            )
+            for index, channel in enumerate(("Fx", "Fy", "Fz"))
+        },
+        "by_horizon": [
+            summarize_errors(
+                physical_abs_by_horizon[index],
+                physical_squared_by_horizon[index],
+                horizon_elements,
+            )
+            for index in range(model.config.horizon)
+        ],
+        "by_horizon_normalized": [
+            summarize_errors(
+                normalized_abs_by_horizon[index],
+                normalized_squared_by_horizon[index],
+                horizon_elements,
+            )
+            for index in range(model.config.horizon)
+        ],
+        "normalized": summarize_errors(
+            force_absolute_error, force_squared_error, force_elements
+        ),
+    }
     probabilities = softmax_probabilities(torch.cat(confusion_logits))
     targets = torch.cat(confusion_targets).numpy()
     classification, _ = classification_report(probabilities, targets)
@@ -230,6 +317,7 @@ def train_fold(
     num_workers: int = 0,
     resume: bool = True,
     config_overrides: dict[str, Any] | None = None,
+    tracker: ExperimentTracker | None = None,
 ) -> dict[str, Any]:
     if epochs < 1 or batch_size < 1 or accumulation_steps < 1:
         raise ValueError("epochs, batch_size and accumulation_steps must be positive")
@@ -355,6 +443,37 @@ def train_fold(
         },
         "config": config_dict,
     }
+    if tracker is None:
+        gpu_name = torch.cuda.get_device_name(device) if device.type == "cuda" else None
+        tracker = ExperimentTracker(
+            output_path,
+            {
+                "dataset": "Nonastreda",
+                "data_dir": str(Path(data_dir).resolve()),
+                "source_signature": source_signature,
+                "fold": resume_signature["fold"],
+                "preprocessing": resume_signature["preprocessing"],
+                "windowing": resume_signature["windowing"],
+                "training": {
+                    **resume_signature["training"],
+                    "epochs": epochs,
+                    "learning_rate": learning_rate,
+                },
+                "model": config_dict,
+                "runtime": {
+                    "python": platform.python_version(),
+                    "torch": str(torch.__version__),
+                    "cuda_runtime": torch.version.cuda,
+                    "device": str(device),
+                    "gpu_name": gpu_name,
+                    "gpu_total_memory_bytes": (
+                        torch.cuda.get_device_properties(device).total_memory
+                        if device.type == "cuda"
+                        else None
+                    ),
+                },
+            },
+        )
     history: list[dict[str, Any]] = []
     best_state: dict[str, torch.Tensor] | None = None
     best_score = float("inf")
@@ -381,7 +500,29 @@ def train_fold(
                 f"{stem}: ignoring a resume file written with other or incomplete settings",
                 flush=True,
             )
+    tracker.log(
+        split="setup",
+        fold=test_tool,
+        metrics={
+            "normalizer_mean": normalizer.mean.tolist(),
+            "normalizer_scale": normalizer.scale.tolist(),
+            "window_counts": {
+                "train": len(train_data),
+                "validation": len(validation_data),
+                "test": len(test_data),
+            },
+        },
+        context={
+            "train_tools": list(fold.train_tools),
+            "validation_tool": fold.validation_tools[0],
+            "test_tool": test_tool,
+            "source_signature": source_signature,
+        },
+    )
     for epoch in range(start_epoch, epochs + 1):
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+        train_started = time.perf_counter()
         train_metrics, _ = _run_epoch(
             model,
             train_loader,
@@ -390,8 +531,44 @@ def train_fold(
             normalizer,
             accumulation_steps=accumulation_steps,
         )
+        train_seconds = time.perf_counter() - train_started
+        train_memory = _cuda_memory_metrics(device)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
+        validation_started = time.perf_counter()
         validation_metrics, _ = _run_epoch(
             model, validation_loader, None, device, normalizer
+        )
+        validation_seconds = time.perf_counter() - validation_started
+        tracker_context = {
+            "train_windows": len(train_data),
+            "validation_windows": len(validation_data),
+            "learning_rate": learning_rate,
+        }
+        tracker.log(
+            split="train",
+            fold=test_tool,
+            epoch=epoch,
+            metrics={
+                **train_metrics,
+                "epoch_seconds": train_seconds,
+                **{f"cuda_{key}": value for key, value in train_memory.items()},
+            },
+            context=tracker_context,
+        )
+        tracker.log(
+            split="validation",
+            fold=test_tool,
+            epoch=epoch,
+            metrics={
+                **validation_metrics,
+                "epoch_seconds": validation_seconds,
+                **{
+                    f"cuda_{key}": value
+                    for key, value in _cuda_memory_metrics(device).items()
+                },
+            },
+            context=tracker_context,
         )
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
@@ -422,6 +599,9 @@ def train_fold(
         model.load_state_dict(best_state)
     selected_epoch = best_epoch if select_best else epochs
 
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    test_started = time.perf_counter()
     test_metrics, test_predictions = _run_epoch(
         model,
         test_loader,
@@ -432,6 +612,25 @@ def train_fold(
     )
     if test_predictions is None:
         raise RuntimeError("test evaluation did not return predictions")
+    test_seconds = time.perf_counter() - test_started
+    tracker.log(
+        split="test",
+        fold=test_tool,
+        epoch=selected_epoch,
+        metrics={
+            **test_metrics,
+            "evaluation_seconds": test_seconds,
+            **{
+                f"cuda_{key}": value
+                for key, value in _cuda_memory_metrics(device).items()
+            },
+        },
+        context={
+            "test_windows": len(test_data),
+            "selected_epoch": selected_epoch,
+            "model_selection": "best_validation_loss" if select_best else "last_epoch",
+        },
+    )
     _, roc_curves = classification_report(
         test_predictions["class_probabilities"], test_predictions["class_targets"]
     )
@@ -487,6 +686,7 @@ def train_fold(
         "config": asdict(config),
         "history": history,
         "test": test_metrics,
+        "tracking": {"directory": "tracking", "run_id": tracker.run_id},
         "artifacts": {
             "checkpoint": f"fold-{test_tool}.pt",
             "test_predictions": f"fold-{test_tool}-predictions.npz",

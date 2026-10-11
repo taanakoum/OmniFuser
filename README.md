@@ -29,6 +29,13 @@ Use `omnifuser train --help` to see the resource and fold options. Runs default
 to CPU to avoid exhausting limited GPU memory. Set `--device cuda` only when
 enough GPU memory is available.
 
+`scripts/train_lightning.py` is a GPU-oriented launcher for this repository's
+native PyTorch training loop; it does **not** use the PyTorch Lightning
+framework. CUDA runs enable pinned host-memory batches and non-blocking
+transfers. Confirm the selected CUDA device and available memory with a short
+fold pilot before starting all ten folds. Mixed precision is not enabled; use
+the FP32 path unless you separately validate another precision mode.
+
 Run a capped local end-to-end check with the full EfficientNet-B0 model:
 
 ```powershell
@@ -108,6 +115,27 @@ The requested full run is the same command with `--epochs 30 --device cuda`;
 run it on a CUDA-equipped host or Lightning AI Studio. Treat the five-epoch
 CPU result as an execution check, not a stable performance estimate.
 
+### Experiment tracking
+
+Each run writes append-only tracking files under `<output-dir>/tracking/`
+without requiring W&B, TensorBoard, or another hosted service:
+
+- `run.json` records the run ID, data/source manifest, fold protocol,
+  preprocessing/window settings, model and optimizer configuration, Python,
+  PyTorch and CUDA versions, and device/GPU information.
+- `metrics.jsonl` stores nested records for every training epoch, validation
+  epoch, final test fold, and final cross-validation aggregate.
+- `metrics.csv` stores each numeric metric as a row keyed by split, fold,
+  epoch, and metric name for plotting or import into a dashboard.
+
+Train/validation records include loss components, classification accuracy,
+macro and weighted precision/recall/F1, per-class scores, ROC AUC, and force
+MAE/MSE/RMSE in normalized and original units overall, per channel, and per
+lead. Test records also include cumulative paper-horizon scores and
+persistence baselines. Use a unique output directory for each independent
+experiment; resumed training appends to that run's logs. Archive or upload
+the `tracking/` directory together with the fold artifacts.
+
 ## Preparing a full experiment
 
 The supplied Nonastreda files contain one image and one label per record/pass.
@@ -122,6 +150,21 @@ record; future class targets come from the records owning the future force
 samples. A window may cross a record boundary, so each pass keeps its own
 image association. The collator loads each distinct image in a window once and
 maps its input steps back to that image.
+
+This matches the paper's temporal image association semantically: the pass
+image is associated with every force timestep belonging to that pass, and a
+new pass uses its own image. The code does not physically duplicate image
+files or image tensors for each force sample. Instead, `image_codes` repeats
+the image index across the pass timeline, each window's input timesteps map
+to those indices, and the collator loads each distinct image once per batch
+window before the image branch gathers it back onto the time axis. The default
+`--image-lag 0` uses the image for the same pass (the paper-literal association).
+`--image-lag 1` instead uses the preceding pass's image in the tool's record
+order while preserving the current pass's force and target labels; that is a
+causal timing ablation, not the
+literal same-pass mapping. Choose lag 1 if the intended prediction must
+not use a photo taken after its pass; choose lag 0 to follow the paper's
+same-pass alignment.
 
 The full-data defaults are deliberately set for the supplied recordings:
 decimation is 1 to retain force-frequency content, and the training stride
@@ -148,8 +191,9 @@ Optional alignment and training controls are exposed consistently by
   rate). It is an experiment parameter, not a paper-specified preprocessing
   default.
 - `--image-lag 1` associates each record's force samples with the preceding
-  record's image while keeping force and class targets on the current record.
-  The first record falls back to its own image. The paper-literal default is
+  record in that tool's ordered timeline while keeping force and class targets
+  on the current record. The first record in the timeline falls back to its
+  own image. The paper-literal default is
   `--image-lag 0`.
 - `--als-mode k_sum` uses the landmark-axis softmax printed in paper Eq. 10;
   the default `time` mode instead normalizes each landmark's weights over
@@ -214,6 +258,7 @@ install and run the project from the Studio terminal:
 
 ```bash
 python -m pip install -e ".[test]"
+python -c "import torch, torchvision; print('torch', torch.__version__, 'cuda', torch.version.cuda, 'available', torch.cuda.is_available()); print('torchvision', torchvision.__version__)"
 omnifuser inspect --data-dir /path/to/Nonastreda_Data
 omnifuser train --data-dir /path/to/Nonastreda_Data --test-tool T10 \
   --epochs 50 --batch-size 16 --device cuda \
@@ -235,7 +280,9 @@ done
 Each fold writes a distinct `fold-Tn.json` and `fold-Tn.pt` file. Keep the data
 and checkpoints on persistent storage rather than relying on an ephemeral
 runtime disk. Start with one full fold and monitor GPU memory, host RAM, and
-step time before launching all folds. Reduce batch size if GPU memory is
+step time and inspect `tracking/metrics.csv` before launching all folds. If
+the CUDA check says `available False`, stop and resolve the Studio's
+PyTorch/CUDA/driver setup before starting training. Reduce batch size if GPU memory is
 constrained; use `--decimation 3` only as a separately reported lower-sample-
 rate experiment. With the default `--select-best`, test metrics are computed
 from the minimum-validation-loss epoch. Resume state is saved at epoch
