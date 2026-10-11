@@ -26,6 +26,8 @@ class ModelConfig:
     dropout: float = 0.1
     pre_attn: bool = False
     als_mode: str = "time"
+    private_attn: str = "residual_ln"
+    share_c2f: bool = False
     modality_dropout: float = 0.0
     pretrained: bool = False
     freeze_bn: bool = False
@@ -47,6 +49,8 @@ class ModelConfig:
             )
         if self.als_mode not in {"time", "k_sum", "k_colnorm"}:
             raise ValueError("als_mode must be 'time', 'k_sum' or 'k_colnorm'")
+        if self.private_attn not in {"residual_ln", "plain"}:
+            raise ValueError("private_attn must be 'residual_ln' or 'plain'")
         if not 0.0 <= self.modality_dropout < 1.0:
             raise ValueError("modality_dropout must be in [0, 1)")
         if self.pretrained and self.image_encoder != "efficientnet_b0":

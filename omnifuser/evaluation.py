@@ -19,11 +19,15 @@ def _macro_scores(targets: np.ndarray, predicted: np.ndarray) -> dict[str, float
     precision = true_positive / np.maximum(confusion.sum(axis=0), 1)
     recall = true_positive / np.maximum(confusion.sum(axis=1), 1)
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    support = confusion.sum(axis=1) / max(confusion.sum(), 1)
     return {
         "accuracy": float(true_positive.sum() / max(confusion.sum(), 1)),
         "precision_macro": float(precision.mean()),
         "recall_macro": float(recall.mean()),
         "f1_macro": float(f1.mean()),
+        "precision_weighted": float((support * precision).sum()),
+        "recall_weighted": float((support * recall).sum()),
+        "f1_weighted": float((support * f1).sum()),
     }
 
 
@@ -64,7 +68,8 @@ def baseline_report(
     targets: np.ndarray,
     shown_label: np.ndarray,
     class_targets: np.ndarray,
-) -> dict[str, float]:
+    horizons: tuple[int, ...] = PAPER_HORIZONS,
+) -> dict[str, Any]:
     """Simple normalized-force and shown-photo-label persistence baselines."""
     if targets.ndim != 3 or last_input_force.shape != (targets.shape[0], targets.shape[2]):
         raise ValueError("baseline force arrays have incompatible shapes")
@@ -72,15 +77,24 @@ def baseline_report(
         raise ValueError("baseline class targets must match (N, horizon)")
     if shown_label.shape != (targets.shape[0],):
         raise ValueError("shown labels must have shape (N,)")
-    last_value_error = targets - last_input_force[:, None, :]
-    return {
-        "last_value_mse": float(np.square(last_value_error).mean()),
-        "last_value_mae": float(np.abs(last_value_error).mean()),
-        "zero_prediction_mse": float(np.square(targets).mean()),
-        "persistence_class_accuracy": float(
-            np.mean(class_targets == shown_label[:, None])
-        ),
+    def score(upto: int) -> dict[str, float]:
+        last_value_error = targets[:, :upto] - last_input_force[:, None, :]
+        return {
+            "last_value_mse": float(np.square(last_value_error).mean()),
+            "last_value_mae": float(np.abs(last_value_error).mean()),
+            "zero_prediction_mse": float(np.square(targets[:, :upto]).mean()),
+            "persistence_class_accuracy": float(
+                np.mean(class_targets[:, :upto] == shown_label[:, None])
+            ),
+        }
+
+    report: dict[str, Any] = score(targets.shape[1])
+    report["by_horizon"] = {
+        str(horizon): score(horizon)
+        for horizon in horizons
+        if 1 <= horizon <= targets.shape[1]
     }
+    return report
 
 
 def _binary_roc_curve(
@@ -126,11 +140,15 @@ def classification_report(
     precision = true_positive / np.maximum(confusion.sum(axis=0), 1)
     recall = true_positive / np.maximum(confusion.sum(axis=1), 1)
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    support = confusion.sum(axis=1) / max(confusion.sum(), 1)
     report: dict[str, Any] = {
         "accuracy": float(np.mean(flat_targets == flat_predicted)),
         "precision_macro": float(precision.mean()),
         "recall_macro": float(recall.mean()),
         "f1_macro": float(f1.mean()),
+        "precision_weighted": float((support * precision).sum()),
+        "recall_weighted": float((support * recall).sum()),
+        "f1_weighted": float((support * f1).sum()),
         "confusion_matrix": confusion.tolist(),
         "per_class": {
             name: {
@@ -156,12 +174,16 @@ def classification_report(
             2 * step_precision * step_recall
             / np.maximum(step_precision + step_recall, 1e-12)
         )
+        step_support = step_confusion.sum(axis=1) / max(step_confusion.sum(), 1)
         horizon_metrics.append(
             {
                 "accuracy": float(np.mean(step_targets == step_predicted)),
                 "precision_macro": float(step_precision.mean()),
                 "recall_macro": float(step_recall.mean()),
                 "f1_macro": float(step_f1.mean()),
+                "precision_weighted": float((step_support * step_precision).sum()),
+                "recall_weighted": float((step_support * step_recall).sum()),
+                "f1_weighted": float((step_support * step_f1).sum()),
             }
         )
     report["by_horizon"] = horizon_metrics

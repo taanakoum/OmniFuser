@@ -293,8 +293,10 @@ class CrossModalFusionLayer(nn.Module):
         self.value_i = nn.Linear(d, d, bias=False)
         self.private_self_r = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
         self.private_self_i = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
-        self.private_norm_r = nn.LayerNorm(d)
-        self.private_norm_i = nn.LayerNorm(d)
+        self.private_attn = config.private_attn
+        if self.private_attn == "residual_ln":
+            self.private_norm_r = nn.LayerNorm(d)
+            self.private_norm_i = nn.LayerNorm(d)
         self.global_gate_r = nn.Linear(2 * d, d)
         self.global_gate_i = nn.Linear(2 * d, d)
         self.local_depthwise_r = nn.Conv1d(2 * d, 2 * d, 3, padding=1, groups=2 * d)
@@ -364,8 +366,11 @@ class CrossModalFusionLayer(nn.Module):
         private_att_i, _ = self.private_self_i(
             private_i, private_i, private_i, need_weights=False
         )
-        private_r = self.private_norm_r(private_r + self.dropout(private_att_r))
-        private_i = self.private_norm_i(private_i + self.dropout(private_att_i))
+        if self.private_attn == "residual_ln":
+            private_r = self.private_norm_r(private_r + self.dropout(private_att_r))
+            private_i = self.private_norm_i(private_i + self.dropout(private_att_i))
+        else:
+            private_r, private_i = private_att_r, private_att_i
 
         land_r, value_land_r = self._landmarks(shared_r, self.score_r, self.value_r)
         land_i, value_land_i = self._landmarks(shared_i, self.score_i, self.value_i)
@@ -412,9 +417,15 @@ class OmniFuser(nn.Module):
         self.temporal_embedding = TemporalEmbedding(self.config)
         self.temporal_encoder = MultiResolutionTemporalExtractor(self.config)
         self.image_branch = ImageBranch(self.config)
-        self.fusion_layers = nn.ModuleList(
-            CrossModalFusionLayer(self.config) for _ in range(self.config.num_fusion_layers)
-        )
+        if self.config.share_c2f:
+            shared_layer = CrossModalFusionLayer(self.config)
+            self.fusion_layers = nn.ModuleList(
+                shared_layer for _ in range(self.config.num_fusion_layers)
+            )
+        else:
+            self.fusion_layers = nn.ModuleList(
+                CrossModalFusionLayer(self.config) for _ in range(self.config.num_fusion_layers)
+            )
         self.refine_sensor = nn.ModuleList(
             nn.Linear(self.config.d_model, self.config.d_model, bias=False)
             for _ in range(max(self.config.num_fusion_layers - 1, 0))
@@ -569,9 +580,13 @@ def classification_metrics(logits: Tensor, targets: Tensor) -> dict[str, float]:
     precision = true_positive / confusion.sum(dim=0).clamp_min(1)
     recall = true_positive / confusion.sum(dim=1).clamp_min(1)
     f1 = 2 * precision * recall / (precision + recall).clamp_min(1e-12)
+    support = confusion.sum(dim=1).float() / confusion.sum().clamp_min(1)
     return {
         "accuracy": float(true_positive.sum() / confusion.sum().clamp_min(1)),
         "precision_macro": float(precision.mean()),
         "recall_macro": float(recall.mean()),
         "f1_macro": float(f1.mean()),
+        "precision_weighted": float((support * precision).sum()),
+        "recall_weighted": float((support * recall).sum()),
+        "f1_weighted": float((support * f1).sum()),
     }

@@ -189,6 +189,27 @@ def test_paper_literal_head_repeats_outputs_across_horizon() -> None:
     assert model.forecast_projection is None
 
 
+def test_shared_c2f_weights_and_plain_private_attention_options() -> None:
+    config = ModelConfig(
+        **{
+            **_config().__dict__,
+            "share_c2f": True,
+            "private_attn": "plain",
+        }
+    )
+    model = OmniFuser(config)
+    layer = model.fusion_layers[0]
+
+    assert model.fusion_layers[1] is layer
+    assert layer.private_attn == "plain"
+    assert not hasattr(layer, "private_norm_r")
+    output = layer(
+        torch.randn(2, config.input_len, config.d_model),
+        torch.randn(2, config.input_len, config.d_model),
+    )
+    assert output[0].shape == (2, config.input_len, config.d_model)
+
+
 def test_model_config_rejects_unknown_prediction_head() -> None:
     with pytest.raises(ValueError, match="prediction_head"):
         _config(prediction_head="unknown")
@@ -204,3 +225,6 @@ def test_classification_metrics_report_macro_scores() -> None:
     assert metrics["precision_macro"] == pytest.approx(2 / 3)
     assert metrics["recall_macro"] == pytest.approx(0.5)
     assert metrics["f1_macro"] == pytest.approx(5 / 9)
+    assert metrics["precision_weighted"] == pytest.approx(1.0)
+    assert metrics["recall_weighted"] == pytest.approx(2 / 3)
+    assert metrics["f1_weighted"] == pytest.approx(7 / 9)

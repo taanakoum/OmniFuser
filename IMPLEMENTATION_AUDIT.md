@@ -43,12 +43,12 @@ labels, split, preprocessing, and training protocol are also matched.
 | File | Responsibilities |
 |---|---|
 | [`omnifuser/__init__.py`](omnifuser/__init__.py) | Package marker and version (`0.1.0`). |
-| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, prediction head, ALS mode, modality dropout, optional pretrained EfficientNet, and BatchNorm freezing. Validates supported settings and incompatible encoder/weight combinations. |
+| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, prediction head, ALS mode, shared/separate C2F weights, private-attention variant, modality dropout, optional pretrained EfficientNet, and BatchNorm freezing. Validates supported settings and incompatible encoder/weight combinations. |
 | [`omnifuser/data.py`](omnifuser/data.py) | CSV/MAT loading and cross-file validation, record parsing, exact-force deduplication, span trimming, optional force decimation and per-record block-mean pooling, optional preceding-record image association, per-tool timelines/folds, training-only normalization, sliding windows, cached image loading, and source-file signatures. |
-| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force/period embeddings, RTD/MRTE blocks, compact or EfficientNet image encoder, temporal graph attention, selectable C2F ALS variants, optional modality dropout/pre-attention, dual-task heads, and joint loss. |
+| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force/period embeddings, RTD/MRTE blocks, compact or EfficientNet image encoder, temporal graph attention, selectable C2F ALS variants and weight-sharing, configurable private attention, optional modality dropout/pre-attention, dual-task heads, and joint loss. |
 | [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, sample-weighted gradient accumulation, periodic resumable state (including optimizer/RNG), validation-based best-checkpoint selection, final test pass, baseline/horizon summaries, predictions/ROC artifacts, and checkpoint persistence. |
-| [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, force-regression metrics in normalized and original units, cumulative-horizon metrics, and persistence/force baselines. |
-| [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, guarded matching-fold reuse, per-fold means/stds, pooled out-of-fold metrics, and mean ROC curve artifacts. |
+| [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, macro and support-weighted precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, force-regression metrics in normalized and original units, cumulative-horizon metrics, and per-horizon persistence/force baselines. |
+| [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, guarded matching-fold reuse, macro/weighted per-fold summaries, paper-horizon mean/std summaries, pooled out-of-fold metrics, and mean ROC curve artifacts. |
 | [`omnifuser/cli.py`](omnifuser/cli.py) | `omnifuser inspect` and `omnifuser train` command-line interface and argument wiring; inspection reports retained record/image counts, pool-tail drops, trimming, and window budget. |
 
 ### Scripts and tests
@@ -58,10 +58,11 @@ labels, split, preprocessing, and training protocol are also matched.
 | [`scripts/train_local.py`](scripts/train_local.py) | One-fold local smoke run; caps train/evaluation windows unless `--full` is supplied. Defaults to CPU, batch size 1, and EfficientNet-B0; supports the same alignment/training controls as the package CLI. |
 | [`scripts/train_lightning.py`](scripts/train_lightning.py) | Full ten-fold runner intended to be launched on a GPU machine or in a Lightning AI Studio. It invokes the package's PyTorch loop; it is not a Lightning Trainer implementation. |
 | [`scripts/task_diagnostics.py`](scripts/task_diagnostics.py) | Compares simple force/classification baselines across chosen pool factors and horizons; uses capped samples and pooled-data normalization for descriptive diagnostics, not a training evaluation. |
+| [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) | Renders cumulative normalized-force and classification scores next to published Tables IV-V and includes matched Nonastreda persistence baselines. |
 | [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, tool-level fold partitions, train-only normalization, image collation, within-run exact-force grouping, and span trimming. |
-| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, both paper-literal and lead-conditioned forecast heads, model forward/backward, and classification metrics. |
-| [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, and original-unit regression metrics. |
-| [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, and missing-AUC fold handling. |
+| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, shared/separate C2F and private attention options, forecast heads, model forward/backward, and macro/weighted classification metrics. |
+| [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, weighted scores, per-horizon baselines, cumulative metrics, and original-unit regression metrics. |
+| [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, missing-AUC fold handling, weighted metrics, and paper-horizon aggregation. |
 | [`tests/test_alignment_fixes.py`](tests/test_alignment_fixes.py) | Regression tests for sample-weighted partial gradient accumulation, pooled diagnostic normalization, strict completed-fold reuse, and dataset-file signatures. |
 | [`tests/test_alignment_patch.py`](tests/test_alignment_patch.py) | Integrated regression tests for the alignment features: data pooling/image lag, model options, evaluation, and resume behavior. |
 
@@ -602,3 +603,53 @@ Lightning AI GPU, record peak memory and epoch time, then run all ten folds
 with fixed settings. Preserve each fold's JSON/checkpoint/predictions, report
 both fold-level and pooled out-of-fold results, and label all methodological
 departures from the paper.
+
+## Blocks 9-11 reconciliation
+
+The Blocks 9-11 bundle's compatible changes are integrated into the maintained
+root package rather than treating its copied `omnifuser/` snapshot as a second
+implementation. The obsolete copied package and comparison script were
+removed; the unique notes, review diff, and reference tests remain:
+
+- C2F recursion continues to re-inject each previous fused state. The new
+  `--share-c2f` switch compares shared weights (one \(G\)) with the existing
+  separate-per-round weights. Eq. 20 writes a single \(G\), but the paper's
+  stacked-layer figure leaves weight sharing ambiguous; separate weights
+  remain the default.
+- `--private-attn plain` matches the printed MHA output-only expression.
+  `residual_ln` remains the default to preserve the previous model behavior.
+- Evaluation reports both macro and support-weighted class metrics.
+  Per-horizon normalized force/class scores are paired with matching
+  last-value, zero-force, and label-persistence baselines. Ten-fold output now
+  carries z-scored cumulative-horizon means/stds in addition to original-unit
+  physical force metrics.
+- [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) places those
+  fold metrics beside the published Mudestreda values in Tables IV-V. Since
+  this project currently runs Nonastreda, the table is a diagnostic
+  plausibility comparison, not a direct replication score.
+
+The maintained root test suite passes: **48 passed**. It covers these switches,
+weighted metrics, horizon baselines, and comparison output. The bundle's
+requested `omnifuser_blocks911/tests/test_blocks_9_11.py` cannot run as
+supplied: its reference module imports the absent `c2f_reference` from the
+earlier Blocks 6-8 package. The companion `test_c2f_blocks678.py` is also not
+included in the bundle or root `tests/`. Those missing independent reference
+assets were not fabricated.
+
+The exact uncapped five-epoch EfficientNet CPU attempt did not finish within a
+reasonable local runtime and was stopped before producing a checkpoint. A
+capped one-epoch T10 pilot then verified the full model/evaluation/artifact
+path using the requested pool 1000, image lag 1, horizon 96, stride 24, and
+`direct` head (batch size 4; 8 training, 2 validation, and 2 test windows).
+Its output is retained under
+[`runs/a_lag1_pool1000_direct_cpu_pilot`](runs/a_lag1_pool1000_direct_cpu_pilot)
+and the complete comparison table is reproducible with
+[`scripts/compare_with_paper.py`](scripts/compare_with_paper.py). At horizons
+12/24/48/96, normalized model MSE was 0.771/0.485/0.335/0.282 versus
+last-value baseline 2.102/2.129/2.164/2.282; accuracy was
+0.250/0.312/0.385/0.401 versus persistence 0.500 at each horizon. The force
+baseline gap is not evidence of generalization: with only two test windows,
+this pilot is strictly an execution check, and its classification scores are
+below the baseline. It is not the requested 30-epoch full-fold experiment or
+a paper-comparable result. Run the uncapped experiment on the intended GPU
+before drawing performance conclusions.

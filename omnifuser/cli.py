@@ -58,6 +58,18 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         default="time",
         help="landmark weighting: time-softmax, paper Eq. 10, or Eq. 10 with column normalization",
     )
+    parser.add_argument(
+        "--private-attn",
+        choices=("residual_ln", "plain"),
+        default="residual_ln",
+        help="private path: LayerNorm(P + MHA(P)) or MHA(P) as printed",
+    )
+    parser.add_argument(
+        "--share-c2f",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="reuse C2F weights across refinement rounds; paper Eq. 20 uses one G, figure shows layered blocks",
+    )
     parser.add_argument("--modality-dropout", type=float, default=0.0)
     parser.add_argument("--pretrained", action="store_true")
     parser.add_argument("--freeze-bn", action="store_true")
@@ -74,6 +86,8 @@ def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "config_overrides": {
             "pre_attn": args.pre_attn,
             "als_mode": args.als_mode,
+            "private_attn": args.private_attn,
+            "share_c2f": args.share_c2f,
             "modality_dropout": args.modality_dropout,
             "pretrained": args.pretrained,
             "freeze_bn": args.freeze_bn,

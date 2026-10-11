@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import json
 import re
 from dataclasses import asdict
 from pathlib import Path
@@ -40,6 +39,9 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         "classification_precision_macro": ("test", "classification", "precision_macro"),
         "classification_recall_macro": ("test", "classification", "recall_macro"),
         "classification_f1_macro": ("test", "classification", "f1_macro"),
+        "classification_precision_weighted": ("test", "classification", "precision_weighted"),
+        "classification_recall_weighted": ("test", "classification", "recall_weighted"),
+        "classification_f1_weighted": ("test", "classification", "f1_weighted"),
         "classification_roc_auc_macro": ("test", "classification", "roc_auc_ovr", "macro"),
         "force_mae": ("test", "regression", "overall", "mae"),
         "force_mse": ("test", "regression", "overall", "mse"),
@@ -50,8 +52,11 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         per_fold: list[float | None] = []
         for result in results:
             value: Any = result
-            for key in path:
-                value = value[key]
+            try:
+                for key in path:
+                    value = value[key]
+            except KeyError:
+                value = None
             per_fold.append(None if value is None else float(value))
         values = [value for value in per_fold if value is not None]
         summary["metrics"][name] = {
@@ -59,6 +64,48 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
             "std": float(np.std(values)) if values else None,
             "per_fold": per_fold,
         }
+    return summary
+
+
+def _summarize_paper_horizons(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate cumulative normalized metrics and their horizon-matched baselines."""
+    summary: dict[str, Any] = {"models": {}, "baselines": {}}
+    horizons = sorted(
+        {
+            horizon
+            for result in results
+            for horizon in result["test"].get("paper_horizons", {})
+        },
+        key=int,
+    )
+    for horizon in horizons:
+        rows = [
+            result["test"]["paper_horizons"][horizon]
+            for result in results
+            if horizon in result["test"].get("paper_horizons", {})
+        ]
+        summary["models"][horizon] = {
+            metric: {
+                "mean": float(np.mean([row[metric] for row in rows])),
+                "std": float(np.std([row[metric] for row in rows])),
+            }
+            for metric in sorted(rows[0])
+            if all(metric in row for row in rows)
+        }
+        baseline_rows = [
+            result["test"]["baselines"]["by_horizon"][horizon]
+            for result in results
+            if horizon in result["test"].get("baselines", {}).get("by_horizon", {})
+        ]
+        if baseline_rows:
+            summary["baselines"][horizon] = {
+                metric: {
+                    "mean": float(np.mean([row[metric] for row in baseline_rows])),
+                    "std": float(np.std([row[metric] for row in baseline_rows])),
+                }
+                for metric in sorted(baseline_rows[0])
+                if all(metric in row for row in baseline_rows)
+            }
     return summary
 
 
@@ -106,6 +153,7 @@ def _aggregate_out_of_fold(
     precision = true_positive / np.maximum(confusion.sum(axis=0), 1)
     recall = true_positive / np.maximum(confusion.sum(axis=1), 1)
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    support = confusion.sum(axis=1) / max(confusion.sum(), 1)
     class_report = {
         name: {
             "precision": float(precision[index]),
@@ -121,6 +169,9 @@ def _aggregate_out_of_fold(
             "precision_macro": float(precision.mean()),
             "recall_macro": float(recall.mean()),
             "f1_macro": float(f1.mean()),
+            "precision_weighted": float((support * precision).sum()),
+            "recall_weighted": float((support * recall).sum()),
+            "f1_weighted": float((support * f1).sum()),
             "confusion_matrix": confusion.tolist(),
             "per_class": class_report,
             "roc_auc_ovr_macro_fold_mean": {
@@ -348,6 +399,7 @@ def run_cross_validation(
         partial = {
             "completed_folds": [entry["test_tool"] for entry in results],
             "cv_mean_std": _summarize_folds(results),
+            "paper_horizons_mean_std": _summarize_paper_horizons(results),
         }
         with (output_path / "cross-validation-progress.json").open(
             "w", encoding="utf-8"
@@ -369,6 +421,7 @@ def run_cross_validation(
         "tools": tools,
         "folds": results,
         "cv_mean_std": _summarize_folds(results),
+        "paper_horizons_mean_std": _summarize_paper_horizons(results),
         "out_of_fold": _aggregate_out_of_fold(results, output_path),
     }
     with (output_path / "cross-validation-results.json").open(

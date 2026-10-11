@@ -70,13 +70,43 @@ the other eight tools are used for training. Thus training and validation draw
 from nine tools, and test data is isolated to the tenth tool. The full run
 aggregates all ten test folds as out-of-fold results.
 
-The evaluation reports accuracy, macro precision/recall/F1, per-class scores,
-confusion matrices, per-horizon classification scores, and one-vs-rest ROC
-AUC. ROC points are stored in each `fold-Tn-roc.npz`; a fold-averaged ROC
-curve is stored in `cross-validation-mean-roc.npz`. Force regression MAE,
-MSE, and RMSE are reported in original force units overall, per force channel,
-and per horizon; normalized-unit metrics are included as well. Per-fold test
-predictions and labels are stored in `fold-Tn-predictions.npz`.
+The evaluation reports accuracy, macro and support-weighted precision,
+recall/F1, per-class scores, confusion matrices, per-horizon classification
+scores, and one-vs-rest ROC AUC. ROC points are stored in each `fold-Tn-roc.npz`;
+a fold-averaged ROC curve is stored in `cross-validation-mean-roc.npz`. Force
+regression MAE, MSE, and RMSE are reported in original force units overall, per
+force channel, and per horizon; normalized-unit metrics are included as well.
+For horizons 12, 24, ... 96 that fit the configured output, the fold JSON also
+contains cumulative z-scored model and persistence-baseline metrics, matching
+the units of paper Tables IV-V. The paper does not specify classification
+averaging; both macro and weighted results are retained. Compare a finished
+fold or CV output with the paper and the Nonastreda baselines using:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\compare_with_paper.py runs\my-experiment
+```
+
+The paper's benchmark dataset is Mudestreda; this script juxtaposes those
+published values with Nonastreda results as a plausibility check, not a
+dataset-equivalent reproduction. Per-fold test predictions and labels are
+stored in `fold-Tn-predictions.npz`.
+
+For the Blocks 9-11 comparison arm, start with one T10 fold at the selected
+Nonastreda settings. On a CPU-only machine use a short validation run first:
+
+```powershell
+.\.venv\Scripts\python.exe -m omnifuser.cli train `
+  --data-dir Nonastreda_Data --test-tool T10 `
+  --output-dir runs\a_lag1_pool1000_direct_cpu `
+  --pool 1000 --image-lag 1 --horizon 96 --stride 24 `
+  --prediction-head direct --epochs 5 --device cpu
+.\.venv\Scripts\python.exe scripts\compare_with_paper.py `
+  runs\a_lag1_pool1000_direct_cpu
+```
+
+The requested full run is the same command with `--epochs 30 --device cuda`;
+run it on a CUDA-equipped host or Lightning AI Studio. Treat the five-epoch
+CPU result as an execution check, not a stable performance estimate.
 
 ## Preparing a full experiment
 
@@ -126,6 +156,19 @@ Optional alignment and training controls are exposed consistently by
   time. `k_colnorm` is another normalized variant. These modes are explicit
   alternatives because the paper notation does not fully resolve the
   normalization details.
+- `--share-c2f` ties C2F weights across recursive rounds (one shared \(G\));
+  without it, each round has its own C2F parameters. Eq. 20 writes one \(G\),
+  while the architecture figure depicts stacked layers, so neither reading is
+  conclusively specified.
+- `--private-attn plain` uses the MHA output directly as printed; the default
+  `residual_ln` preserves the residual-plus-LayerNorm implementation. These
+  settings expose the ambiguity without silently changing the established
+  default.
+- `--prediction-head direct` is the lead-specific comparison head. The
+  `paper_literal` head repeats the final-token prediction at every lead, as the
+  printed equations imply, while `lead_conditioned` adds a learned lead code.
+  The latter two are comparisons because the paper's plotted trajectories are
+  lead-varying.
 - `--modality-dropout`, `--pretrained`, `--freeze-bn`, and `--pre-attn` are
   optional model experiments. Dropout defaults to 0 because the paper does not
   specify a rate; pretrained ImageNet EfficientNet weights require downloading
