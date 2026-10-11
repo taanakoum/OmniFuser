@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator, Sequence
 
@@ -26,6 +26,28 @@ PASS_TRIM_REFERENCE_FRACTION = 0.05
 PASS_TRIM_THRESHOLD_FRACTION = 0.5
 
 
+def nonastreda_source_signature(data_dir: str | Path) -> dict[str, object]:
+    """Return a lightweight file manifest for safe fold/resume reuse."""
+    root = Path(data_dir).resolve()
+    files = [
+        root / "forces_xyz_raw.mat",
+        root / "labels.csv",
+        root / "labels_reg.csv",
+        *sorted((root / "tool").glob("*.jpg")),
+    ]
+    manifest: list[dict[str, object]] = []
+    for path in files:
+        stat = path.stat()
+        manifest.append(
+            {
+                "path": str(path.relative_to(root)),
+                "size": stat.st_size,
+                "mtime_ns": stat.st_mtime_ns,
+            }
+        )
+    return {"root": str(root), "files": manifest}
+
+
 @dataclass(frozen=True)
 class Record:
     record_id: str
@@ -38,6 +60,7 @@ class Record:
     source_length_samples: int = 0
     trimmed_lead_samples: int = 0
     trimmed_runout_samples: int = 0
+    pool_dropped_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -50,6 +73,35 @@ class ToolTimeline:
     batch_codes: np.ndarray
     relative_codes: np.ndarray
     image_paths: tuple[Path, ...]
+    image_labels: np.ndarray | None = None
+
+
+def _block_mean(force: np.ndarray, factor: int) -> np.ndarray:
+    """Average complete consecutive blocks; discard an incomplete trailing block."""
+    if factor < 1:
+        raise ValueError("pool factor must be at least 1")
+    if factor == 1:
+        return force
+    steps = len(force) // factor
+    if steps < 1:
+        raise ValueError(f"record of {len(force)} samples is shorter than pool={factor}")
+    blocks = force[: steps * factor].reshape(steps, factor, force.shape[1])
+    return blocks.mean(axis=1, dtype=np.float64).astype(np.float32)
+
+
+def pool_records(records: Sequence[Record], factor: int) -> list[Record]:
+    """Coarsen each record independently, preserving record/image/label ownership."""
+    pooled: list[Record] = []
+    for record in records:
+        dropped = len(record.force) % factor if factor > 0 else 0
+        pooled.append(
+            replace(
+                record,
+                force=_block_mean(record.force, factor),
+                pool_dropped_samples=dropped,
+            )
+        )
+    return pooled
 
 
 @dataclass(frozen=True)
@@ -112,13 +164,14 @@ def load_nonastreda(
     decimation: int = 1,
     dedup_identical_forces: bool = True,
     trim_pass: bool = True,
+    pool: int = 1,
 ) -> list[Record]:
-    """Load aligned Nonastreda records, optionally trimming lead-in and run-out."""
+    """Load aligned records, optionally trim edges and mean-pool each pass."""
     root = Path(data_dir)
     if label_column not in {"image_label", "tool_label"}:
         raise ValueError("label_column must be 'image_label' or 'tool_label'")
-    if decimation < 1:
-        raise ValueError("decimation must be at least 1")
+    if decimation < 1 or pool < 1:
+        raise ValueError("decimation and pool must be at least 1")
     labels = _read_csv(root / "labels.csv")
     regression = _read_csv(root / "labels_reg.csv")
     if set(regression) != set(labels):
@@ -249,6 +302,8 @@ def load_nonastreda(
             force = decimate(force, decimation, axis=0, zero_phase=True).astype(
                 np.float32, copy=False
             )
+        pool_dropped_samples = len(force) % pool
+        force = _block_mean(force, pool)
         records.append(
             Record(
                 record_id=record_id,
@@ -261,6 +316,7 @@ def load_nonastreda(
                 source_length_samples=source_length,
                 trimmed_lead_samples=trimmed_lead,
                 trimmed_runout_samples=trimmed_runout,
+                pool_dropped_samples=pool_dropped_samples,
             )
         )
     if missing_images:
@@ -273,7 +329,12 @@ def load_nonastreda(
     return sorted(records, key=lambda item: (int(item.tool[1:]), item.run, item.block))
 
 
-def make_tool_timelines(records: Sequence[Record]) -> list[ToolTimeline]:
+def make_tool_timelines(
+    records: Sequence[Record], image_lag: int = 0
+) -> list[ToolTimeline]:
+    """Build tool streams; optionally use the preceding record's image while labels stay current."""
+    if image_lag not in (0, 1):
+        raise ValueError("image_lag must be 0 or 1")
     timelines: list[ToolTimeline] = []
     for tool in sorted({record.tool for record in records}, key=lambda item: int(item[1:])):
         selected = sorted(
@@ -288,11 +349,18 @@ def make_tool_timelines(records: Sequence[Record]) -> list[ToolTimeline]:
         cycle_parts: list[np.ndarray] = []
         batch_parts: list[np.ndarray] = []
         relative_parts: list[np.ndarray] = []
-        for record in selected:
+        image_label_parts: list[np.ndarray] = []
+        for position, record in enumerate(selected):
             length = len(record.force)
+            shown_record = selected[max(position - image_lag, 0)]
             force_parts.append(record.force)
             label_parts.append(np.full(length, record.label, dtype=np.int8))
-            image_parts.append(np.full(length, image_code[record.image_path], dtype=np.int16))
+            image_parts.append(
+                np.full(length, image_code[shown_record.image_path], dtype=np.int16)
+            )
+            image_label_parts.append(
+                np.full(length, shown_record.label, dtype=np.int8)
+            )
             cycle_parts.append(np.full(length, record.run, dtype=np.int16))
             batch_parts.append(np.full(length, record.block, dtype=np.int16))
             relative_parts.append(
@@ -310,6 +378,7 @@ def make_tool_timelines(records: Sequence[Record]) -> list[ToolTimeline]:
                 batch_codes=np.concatenate(batch_parts),
                 relative_codes=np.concatenate(relative_parts),
                 image_paths=image_paths,
+                image_labels=np.concatenate(image_label_parts),
             )
         )
     return timelines
@@ -402,6 +471,13 @@ class WindowDataset(Dataset[dict[str, object]]):
             "force": self.normalizer.transform(timeline.force[window_start:input_end]).copy(),
             "force_target": self.normalizer.transform(timeline.force[input_end:target_end]).copy(),
             "class_target": timeline.labels[input_end:target_end].astype(np.int64),
+            "shown_label": np.int64(
+                (
+                    timeline.image_labels
+                    if timeline.image_labels is not None
+                    else timeline.labels
+                )[input_end - 1]
+            ),
             "image_paths": tuple(
                 timeline.image_paths[code]
                 for code in timeline.image_codes[window_start:input_end]
@@ -420,8 +496,47 @@ def image_tensor(path: Path, height: int = 128, width: int = 384) -> Tensor:
     return torch.from_numpy(array.transpose(2, 0, 1).copy())
 
 
+class ImageBank:
+    """Cache resized RGB pixels once to avoid decoding the same photos for every batch."""
+
+    def __init__(
+        self, paths: Sequence[Path], height: int = 128, width: int = 384
+    ) -> None:
+        unique = list(dict.fromkeys(Path(path) for path in paths))
+        self.height, self.width = height, width
+        self.index = {path: position for position, path in enumerate(unique)}
+        self.pixels = np.empty((len(unique), height, width, 3), dtype=np.uint8)
+        for position, path in enumerate(unique):
+            with Image.open(path) as source:
+                resized = source.convert("RGB").resize(
+                    (width, height), Image.Resampling.BILINEAR
+                )
+                self.pixels[position] = np.asarray(resized, dtype=np.uint8)
+
+    @classmethod
+    def from_timelines(
+        cls, timelines: Sequence[ToolTimeline], height: int = 128, width: int = 384
+    ) -> "ImageBank":
+        return cls(
+            [path for timeline in timelines for path in timeline.image_paths],
+            height,
+            width,
+        )
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def tensor(self, path: Path) -> Tensor:
+        array = self.pixels[self.index[Path(path)]].astype(np.float32) / 255.0
+        array = (array - IMAGE_MEAN) / IMAGE_STD
+        return torch.from_numpy(array.transpose(2, 0, 1).copy())
+
+
 def collate_windows(
-    samples: Sequence[dict[str, object]], height: int = 128, width: int = 384
+    samples: Sequence[dict[str, object]],
+    height: int = 128,
+    width: int = 384,
+    bank: ImageBank | None = None,
 ) -> dict[str, object]:
     image_paths: list[list[Path]] = []
     image_indices: list[list[int]] = []
@@ -438,10 +553,13 @@ def collate_windows(
         image_paths.append(paths)
         image_indices.append(row)
     max_images = max(map(len, image_paths))
+    load = bank.tensor if bank is not None else (
+        lambda path: image_tensor(path, height, width)
+    )
     images = [
         torch.stack(
-            [image_tensor(path, height, width) for path in paths]
-            + [image_tensor(paths[0], height, width)] * (max_images - len(paths))
+            [load(path) for path in paths]
+            + [load(paths[0])] * (max_images - len(paths))
         )
         for paths in image_paths
     ]
@@ -449,6 +567,7 @@ def collate_windows(
         "force": torch.from_numpy(np.stack([sample["force"] for sample in samples])),
         "force_target": torch.from_numpy(np.stack([sample["force_target"] for sample in samples])),
         "class_target": torch.from_numpy(np.stack([sample["class_target"] for sample in samples])),
+        "shown_label": torch.from_numpy(np.stack([sample["shown_label"] for sample in samples])),
         "cycle": torch.from_numpy(np.stack([sample["cycle"] for sample in samples])),
         "batch": torch.from_numpy(np.stack([sample["batch"] for sample in samples])),
         "relative": torch.from_numpy(np.stack([sample["relative"] for sample in samples])),

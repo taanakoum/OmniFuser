@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader, Subset
 from omnifuser.config import ModelConfig
 from omnifuser.data import (
     ForceNormalizer,
+    ImageBank,
     PASS_TRIM_REFERENCE_FRACTION,
     PASS_TRIM_THRESHOLD_FRACTION,
     PASS_TRIM_WINDOW_SAMPLES,
@@ -23,9 +24,12 @@ from omnifuser.data import (
     leave_one_tool_out_folds,
     load_nonastreda,
     make_tool_timelines,
+    nonastreda_source_signature,
 )
 from omnifuser.evaluation import (
+    baseline_report,
     classification_report,
+    cumulative_horizon_report,
     regression_report,
     softmax_probabilities,
 )
@@ -41,6 +45,35 @@ def _limit_dataset(dataset: WindowDataset, limit: int | None, seed: int) -> Any:
     return Subset(dataset, indices)
 
 
+def _accumulation_group_sample_count(
+    dataset_size: int, batch_size: int, step: int, accumulation_steps: int
+) -> int:
+    group_start_batch = ((step - 1) // accumulation_steps) * accumulation_steps
+    group_end_batch = min(group_start_batch + accumulation_steps, (dataset_size + batch_size - 1) // batch_size)
+    start = group_start_batch * batch_size
+    end = min(group_end_batch * batch_size, dataset_size)
+    return end - start
+
+
+def _capture_rng_state() -> dict[str, Any]:
+    state: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: dict[str, Any]) -> None:
+    random.setstate(state["python"])
+    np.random.set_state(state["numpy"])
+    torch.set_rng_state(state["torch"])
+    if "cuda" in state and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(state["cuda"])
+
+
 def _run_epoch(
     model: OmniFuser,
     loader: DataLoader[dict[str, Any]],
@@ -49,7 +82,10 @@ def _run_epoch(
     normalizer: ForceNormalizer,
     *,
     collect_predictions: bool = False,
+    accumulation_steps: int = 1,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray] | None]:
+    if accumulation_steps < 1:
+        raise ValueError("accumulation_steps must be positive")
     training = optimizer is not None
     model.train(training)
     totals: dict[str, float] = {}
@@ -62,9 +98,14 @@ def _run_epoch(
     confusion_targets: list[torch.Tensor] = []
     force_predictions: list[torch.Tensor] = []
     force_targets: list[torch.Tensor] = []
+    last_input_forces: list[torch.Tensor] = []
+    shown_labels: list[torch.Tensor] = []
     grad_context = torch.enable_grad() if training else torch.no_grad()
     with grad_context:
-        for batch in loader:
+        batches = len(loader)
+        if training:
+            optimizer.zero_grad(set_to_none=True)
+        for step, batch in enumerate(loader, start=1):
             tensors = {
                 key: value.to(device)
                 for key, value in batch.items()
@@ -82,10 +123,17 @@ def _run_epoch(
                 outputs, tensors["force_target"], tensors["class_target"]
             )
             if training:
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
+                if loader.batch_size is None:
+                    raise ValueError("gradient accumulation requires a fixed DataLoader batch size")
+                group_samples = _accumulation_group_sample_count(
+                    len(loader.dataset), loader.batch_size, step, accumulation_steps
+                )
+                batch_samples = tensors["force"].shape[0]
+                (loss * (batch_samples / group_samples)).backward()
+                if step % accumulation_steps == 0 or step == batches:
+                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
             batch_size = tensors["force"].shape[0]
             for key, value in components.items():
                 totals[key] = totals.get(key, 0.0) + float(value) * batch_size
@@ -97,6 +145,8 @@ def _run_epoch(
             if collect_predictions:
                 force_predictions.append(outputs["force"].detach().cpu())
                 force_targets.append(tensors["force_target"].detach().cpu())
+                last_input_forces.append(tensors["force"][:, -1].detach().cpu())
+                shown_labels.append(tensors["shown_label"].detach().cpu())
             difference = outputs["force"] - tensors["force_target"]
             force_squared_error += float(difference.detach().square().sum())
             force_absolute_error += float(difference.detach().abs().sum())
@@ -129,6 +179,16 @@ def _run_epoch(
         result["regression"] = regression_report(
             prediction_array, target_array, mean, scale
         )
+        probability_array = probabilities
+        result["paper_horizons"] = cumulative_horizon_report(
+            prediction_array, target_array, probability_array, targets
+        )
+        result["baselines"] = baseline_report(
+            torch.cat(last_input_forces).numpy(),
+            target_array,
+            torch.cat(shown_labels).numpy(),
+            targets,
+        )
         prediction_array = prediction_array * scale[None, None, :] + mean[None, None, :]
         target_array = target_array * scale[None, None, :] + mean[None, None, :]
         prediction_data = {
@@ -147,7 +207,7 @@ def train_fold(
     test_tool: str,
     output_dir: str | Path,
     epochs: int = 5,
-    batch_size: int = 2,
+    batch_size: int = 32,
     learning_rate: float = 1e-4,
     input_len: int = 96,
     horizon: int = 24,
@@ -163,9 +223,18 @@ def train_fold(
     max_eval_windows: int | None = None,
     device_name: str = "cpu",
     seed: int = 42,
+    pool: int = 1,
+    image_lag: int = 0,
+    select_best: bool = True,
+    accumulation_steps: int = 1,
+    num_workers: int = 0,
+    resume: bool = True,
+    config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if epochs < 1 or batch_size < 1:
-        raise ValueError("epochs and batch_size must be positive")
+    if epochs < 1 or batch_size < 1 or accumulation_steps < 1:
+        raise ValueError("epochs, batch_size and accumulation_steps must be positive")
+    if num_workers < 0:
+        raise ValueError("num_workers must be non-negative")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -179,7 +248,8 @@ def train_fold(
                 "use CPU or a GPU with at least 3 GiB for this model"
             )
     device = torch.device(device_name)
-    torch.set_num_threads(max(1, min(torch.get_num_threads(), 4)))
+    if device.type == "cpu":
+        torch.set_num_threads(max(1, min(torch.get_num_threads(), 4)))
 
     records = load_nonastreda(
         data_dir,
@@ -187,9 +257,11 @@ def train_fold(
         decimation=decimation,
         dedup_identical_forces=dedup_identical_forces,
         trim_pass=trim_pass,
+        pool=pool,
     )
-    timelines = make_tool_timelines(records)
+    timelines = make_tool_timelines(records, image_lag=image_lag)
     del records
+    source_signature = nonastreda_source_signature(data_dir)
     train_stride = stride if stride is not None else input_len + horizon
     eval_stride = max(train_stride, horizon)
     folds = {fold.test_tools[0]: fold for fold in leave_one_tool_out_folds([t.tool for t in timelines])}
@@ -216,25 +288,107 @@ def train_fold(
         horizon=horizon,
         image_encoder=image_encoder,
         prediction_head=prediction_head,
+        **(config_overrides or {}),
+    )
+    image_bank = ImageBank.from_timelines(
+        timelines, config.image_height, config.image_width
     )
     collate = partial(
-        collate_windows, height=config.image_height, width=config.image_width
+        collate_windows,
+        height=config.image_height,
+        width=config.image_width,
+        bank=image_bank,
     )
+    loader_options: dict[str, Any] = {
+        "num_workers": num_workers,
+        "collate_fn": collate,
+        "pin_memory": device.type == "cuda",
+        "persistent_workers": False,
+    }
     train_loader = DataLoader(
-        train_data, batch_size=batch_size, shuffle=True, num_workers=0, collate_fn=collate
+        train_data, batch_size=batch_size, shuffle=True, **loader_options
     )
     validation_loader = DataLoader(
-        validation_data, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=collate
+        validation_data, batch_size=batch_size, shuffle=False, **loader_options
     )
     test_loader = DataLoader(
-        test_data, batch_size=batch_size, shuffle=False, num_workers=0, collate_fn=collate
+        test_data, batch_size=batch_size, shuffle=False, **loader_options
     )
     model = OmniFuser(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    stem = f"fold-{test_tool}"
+    resume_path = output_path / f"{stem}-resume.pt"
+    config_dict = asdict(config)
+    resume_signature = {
+        "source": source_signature,
+        "fold": {
+            "train_tools": list(fold.train_tools),
+            "validation_tools": list(fold.validation_tools),
+            "test_tools": list(fold.test_tools),
+        },
+        "preprocessing": {
+            "label_column": label_column,
+            "decimation": decimation,
+            "pool": pool,
+            "image_lag": image_lag,
+            "dedup_identical_forces": dedup_identical_forces,
+            "trim_pass": trim_pass,
+        },
+        "windowing": {
+            "input_len": input_len,
+            "horizon": horizon,
+            "stride": train_stride,
+            "evaluation_stride": eval_stride,
+            "max_train_windows": max_train_windows,
+            "max_eval_windows": max_eval_windows,
+        },
+        "training": {
+            "batch_size": batch_size,
+            "learning_rate": learning_rate,
+            "accumulation_steps": accumulation_steps,
+            "num_workers": num_workers,
+            "seed": seed,
+            "device": str(device),
+            "select_best": select_best,
+        },
+        "config": config_dict,
+    }
     history: list[dict[str, Any]] = []
-    for epoch in range(1, epochs + 1):
+    best_state: dict[str, torch.Tensor] | None = None
+    best_score = float("inf")
+    best_epoch = 0
+    start_epoch = 1
+    if resume and resume_path.exists():
+        saved = torch.load(resume_path, map_location="cpu", weights_only=False)
+        if (
+            saved.get("signature") == resume_signature
+            and saved.get("epoch", epochs + 1) <= epochs
+            and "rng_state" in saved
+        ):
+            model.load_state_dict(saved["model_state"])
+            optimizer.load_state_dict(saved["optimizer_state"])
+            history = saved["history"]
+            best_state = saved["best_state"]
+            best_score = saved["best_score"]
+            best_epoch = saved["best_epoch"]
+            start_epoch = saved["epoch"] + 1
+            _restore_rng_state(saved["rng_state"])
+            print(f"{stem}: resuming after epoch {saved['epoch']}", flush=True)
+        else:
+            print(
+                f"{stem}: ignoring a resume file written with other or incomplete settings",
+                flush=True,
+            )
+    for epoch in range(start_epoch, epochs + 1):
         train_metrics, _ = _run_epoch(
-            model, train_loader, optimizer, device, normalizer
+            model,
+            train_loader,
+            optimizer,
+            device,
+            normalizer,
+            accumulation_steps=accumulation_steps,
         )
         validation_metrics, _ = _run_epoch(
             model, validation_loader, None, device, normalizer
@@ -242,6 +396,31 @@ def train_fold(
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
         )
+        if validation_metrics["loss"] < best_score:
+            best_score = validation_metrics["loss"]
+            best_epoch = epoch
+            best_state = {
+                key: value.detach().cpu().clone()
+                for key, value in model.state_dict().items()
+            }
+        torch.save(
+            {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "history": history,
+                "best_state": best_state,
+                "best_score": best_score,
+                "best_epoch": best_epoch,
+                "epoch": epoch,
+                "signature": resume_signature,
+                "rng_state": _capture_rng_state(),
+            },
+            resume_path,
+        )
+
+    if select_best and best_state is not None:
+        model.load_state_dict(best_state)
+    selected_epoch = best_epoch if select_best else epochs
 
     test_metrics, test_predictions = _run_epoch(
         model,
@@ -275,15 +454,28 @@ def train_fold(
             else None
         ),
         "decimation": decimation,
+        "pool": pool,
+        "image_lag": image_lag,
         "stride": train_stride,
         "evaluation_stride": eval_stride,
+        "model_selection": (
+            "best_validation_loss" if select_best else "last_epoch"
+        ),
+        "selected_epoch": selected_epoch,
+        "best_validation_epoch": best_epoch,
+        "source_signature": source_signature,
+        "max_train_windows": max_train_windows,
+        "max_eval_windows": max_eval_windows,
         "training": {
             "optimizer": "Adam",
             "learning_rate": learning_rate,
             "batch_size": batch_size,
+            "accumulation_steps": accumulation_steps,
+            "effective_batch_size": batch_size * accumulation_steps,
             "epochs": epochs,
             "seed": seed,
             "device": str(device),
+            "num_workers": num_workers,
         },
         "normalizer_mean": normalizer.mean.tolist(),
         "normalizer_scale": normalizer.scale.tolist(),
@@ -301,9 +493,6 @@ def train_fold(
             "roc_curves": f"fold-{test_tool}-roc.npz",
         },
     }
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    stem = f"fold-{test_tool}"
     with (output_path / f"{stem}.json").open("w", encoding="utf-8") as file:
         json.dump(result, file, indent=2)
     np.savez_compressed(output_path / f"{stem}-predictions.npz", **test_predictions)
@@ -325,4 +514,5 @@ def train_fold(
         },
         output_path / f"{stem}.pt",
     )
+    resume_path.unlink(missing_ok=True)
     return result

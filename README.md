@@ -35,7 +35,7 @@ Run a capped local end-to-end check with the full EfficientNet-B0 model:
 .\.venv\Scripts\python.exe scripts\train_local.py
 ```
 
-Compare the two prediction heads on the same capped T10 fold and seed using
+Compare the prediction heads on the same capped T10 fold and seed using
 separate artifact directories:
 
 ```powershell
@@ -43,6 +43,8 @@ separate artifact directories:
   --output-dir outputs\comparison-paper-literal
 .\.venv\Scripts\python.exe scripts\train_local.py --prediction-head lead_conditioned `
   --output-dir outputs\comparison-lead-conditioned
+.\.venv\Scripts\python.exe scripts\train_local.py --prediction-head direct `
+  --output-dir outputs\comparison-direct
 ```
 
 Use `--image-encoder compact` to make this smoke comparison faster on CPU. These
@@ -106,6 +108,48 @@ default retains `T6R2B4` after duplicate resolution and removes 320 lead-in and
 12,639 run-out samples from its 96,204-sample source record. Inspect that report
 and compare with `--no-trim-pass` before treating trimmed results as definitive.
 
+Optional alignment and training controls are exposed consistently by
+`omnifuser train`, `scripts/train_local.py`, and
+`scripts/train_lightning.py`:
+
+- `--pool N` block-mean pools each trimmed record independently; an incomplete
+  trailing block is dropped and reported. Pooling changes the effective time
+  step (for example, `--pool 100` represents 0.1 seconds at the stored 1 kHz
+  rate). It is an experiment parameter, not a paper-specified preprocessing
+  default.
+- `--image-lag 1` associates each record's force samples with the preceding
+  record's image while keeping force and class targets on the current record.
+  The first record falls back to its own image. The paper-literal default is
+  `--image-lag 0`.
+- `--als-mode k_sum` uses the landmark-axis softmax printed in paper Eq. 10;
+  the default `time` mode instead normalizes each landmark's weights over
+  time. `k_colnorm` is another normalized variant. These modes are explicit
+  alternatives because the paper notation does not fully resolve the
+  normalization details.
+- `--modality-dropout`, `--pretrained`, `--freeze-bn`, and `--pre-attn` are
+  optional model experiments. Dropout defaults to 0 because the paper does not
+  specify a rate; pretrained ImageNet EfficientNet weights require downloading
+  weights, and extra pre-attention is not in the paper architecture.
+- `--accumulation-steps` accumulates gradients with sample-correct weighting,
+  including an incomplete final accumulation group. `--select-best` evaluates
+  the checkpoint with the lowest validation loss (default); `--no-select-best`
+  evaluates the last epoch. `--resume` restores matching interrupted folds,
+  including optimizer and random-number-generator state, and rejects
+  incompatible saved state. Completed CV folds are reused only when their
+  recorded data and experiment settings still match.
+
+The full training run also reports persistence and force baselines plus
+cumulative paper-horizon summaries where supported by the configured horizon.
+The separate diagnostic script compares candidate pool factors and horizons;
+its sampled windows and all-tools normalization are descriptive diagnostics,
+not model validation scores:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\task_diagnostics.py `
+  --data-dir .\Nonastreda_Data --pools 1 10 100 `
+  --horizons 12 24 96 --max-windows-per-tool 100
+```
+
 All bit-identical force records within a tool/run are consolidated by default,
 not only B3/B4. On the supplied data this reduces 512 rows to 378 distinct
 recordings; `labels_reg.csv` flank wear selects the retained row's image and
@@ -150,7 +194,10 @@ and checkpoints on persistent storage rather than relying on an ephemeral
 runtime disk. Start with one full fold and monitor GPU memory, host RAM, and
 step time before launching all folds. Reduce batch size if GPU memory is
 constrained; use `--decimation 3` only as a separately reported lower-sample-
-rate experiment.
+rate experiment. With the default `--select-best`, test metrics are computed
+from the minimum-validation-loss epoch. Resume state is saved at epoch
+boundaries; an interruption mid-epoch resumes from the most recently completed
+epoch using the recorded compatible settings.
 
 ## Reproduction choices
 
@@ -197,13 +244,14 @@ rate experiment.
   relative-position bins. The three learned vectors are summed with the value
   and position embeddings. The 16-bin mapping is a Nonastreda implementation
   choice; see [IMPLEMENTATION_AUDIT.md](IMPLEMENTATION_AUDIT.md).
-- Two prediction heads are available with `--prediction-head`: `paper_literal`
-  reproduces the paper's printed final-token linear equations and therefore
-  repeats the same result at every lead; `lead_conditioned` (default) adds a
-  learned forecast-step embedding to the final fused context before shared
-  decoding, allowing lead-specific outputs. The latter is a deliberate,
-  documented deviation from the paper. Compare the variants using the same
-  data, fold seeds, and training parameters, and use separate output
+- Three prediction heads are available with `--prediction-head`:
+  `paper_literal` reproduces the paper's printed final-token linear equations
+  and therefore repeats the same result at every lead; `lead_conditioned`
+  (default) adds a learned forecast-step embedding to the final fused context
+  before shared decoding; `direct` uses separate output weights per forecast
+  lead. The latter two enable lead-specific outputs and are deliberate,
+  documented deviations from the printed equation. Compare all variants with
+  identical data, fold seeds, and training parameters, and use separate output
   directories so fold artifacts cannot overwrite one another.
 - Paper hyperparameters include Adam at 1e-4, four GAT layers/heads, four
   landmarks, and two progressive-fusion rounds. The local training batch

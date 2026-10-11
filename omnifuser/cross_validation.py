@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import json
+import json
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from omnifuser.data import CLASS_NAMES, leave_one_tool_out_folds
+from omnifuser.config import ModelConfig
+from omnifuser.data import (
+    CLASS_NAMES,
+    leave_one_tool_out_folds,
+    nonastreda_source_signature,
+)
 from omnifuser.train import train_fold
 
 
@@ -172,12 +179,54 @@ def _aggregate_out_of_fold(
     return aggregate
 
 
+def _load_finished_fold(
+    output_dir: Path,
+    test_tool: str,
+    expected_config: dict[str, Any],
+    expected_settings: dict[str, Any],
+    epochs: int,
+    batch_size: int,
+) -> dict[str, Any] | None:
+    """Reuse a fold only when its recorded training and data settings match."""
+    path = output_dir / f"fold-{test_tool}.json"
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as file:
+            result = json.load(file)
+        if not isinstance(result, dict):
+            return None
+        artifacts = result["artifacts"]
+        if not isinstance(artifacts, dict):
+            return None
+        for artifact in artifacts.values():
+            if not isinstance(artifact, str):
+                return None
+            artifact_path = (output_dir / artifact).resolve()
+            if not artifact_path.is_relative_to(output_dir.resolve()) or not artifact_path.is_file():
+                return None
+        if result["config"] != expected_config:
+            return None
+        for dotted_key, expected in expected_settings.items():
+            value: Any = result
+            for key in dotted_key.split("."):
+                value = value[key]
+            if value != expected:
+                return None
+        training = result["training"]
+        if training["epochs"] != epochs or training["batch_size"] != batch_size:
+            return None
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    return result
+
+
 def run_cross_validation(
     *,
     data_dir: str | Path,
     output_dir: str | Path,
     epochs: int = 5,
-    batch_size: int = 16,
+    batch_size: int = 32,
     learning_rate: float = 1e-4,
     input_len: int = 96,
     horizon: int = 24,
@@ -193,12 +242,32 @@ def run_cross_validation(
     seed: int = 42,
     max_train_windows: int | None = None,
     max_eval_windows: int | None = None,
+    pool: int = 1,
+    image_lag: int = 0,
+    select_best: bool = True,
+    accumulation_steps: int = 1,
+    num_workers: int = 0,
+    resume: bool = True,
+    config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     tools = discover_tools(data_dir)
     folds = list(leave_one_tool_out_folds(tools))
+    source_signature = nonastreda_source_signature(data_dir)
     results: list[dict[str, Any]] = []
+    train_stride = stride if stride is not None else input_len + horizon
+    eval_stride = max(train_stride, horizon)
+    expected_config = asdict(
+        ModelConfig(
+            d_model=d_model,
+            input_len=input_len,
+            horizon=horizon,
+            image_encoder=image_encoder,
+            prediction_head=prediction_head,
+            **(config_overrides or {}),
+        )
+    )
 
     for fold_index, fold in enumerate(folds):
         test_tool = fold.test_tools[0]
@@ -208,6 +277,44 @@ def run_cross_validation(
             f"validation={fold.validation_tools[0]}, test={test_tool}",
             flush=True,
         )
+        finished = (
+            _load_finished_fold(
+                output_path,
+                test_tool,
+                expected_config,
+                {
+                    "source_signature": source_signature,
+                    "train_tools": list(fold.train_tools),
+                    "validation_tool": fold.validation_tools[0],
+                    "decimation": decimation,
+                    "pool": pool,
+                    "image_lag": image_lag,
+                    "label_column": label_column,
+                    "dedup_identical_forces": dedup_identical_forces,
+                    "trim_pass": trim_pass,
+                    "stride": train_stride,
+                    "evaluation_stride": eval_stride,
+                    "model_selection": (
+                        "best_validation_loss" if select_best else "last_epoch"
+                    ),
+                    "max_train_windows": max_train_windows,
+                    "max_eval_windows": max_eval_windows,
+                    "training.learning_rate": learning_rate,
+                    "training.accumulation_steps": accumulation_steps,
+                    "training.num_workers": num_workers,
+                    "training.seed": seed + fold_index,
+                    "training.device": device_name,
+                },
+                epochs,
+                batch_size,
+            )
+            if resume
+            else None
+        )
+        if finished is not None:
+            print(f"  {test_tool}: reusing a completed fold with matching settings", flush=True)
+            results.append(finished)
+            continue
         result = train_fold(
             data_dir=data_dir,
             test_tool=test_tool,
@@ -229,6 +336,13 @@ def run_cross_validation(
             max_eval_windows=max_eval_windows,
             device_name=device_name,
             seed=seed + fold_index,
+            pool=pool,
+            image_lag=image_lag,
+            select_best=select_best,
+            accumulation_steps=accumulation_steps,
+            num_workers=num_workers,
+            resume=resume,
+            config_overrides=config_overrides,
         )
         results.append(result)
         partial = {
@@ -245,6 +359,13 @@ def run_cross_validation(
         "prediction_head": prediction_head,
         "trim_pass": trim_pass,
         "pass_trimming": "span" if trim_pass else "none",
+        "pool": pool,
+        "image_lag": image_lag,
+        "model_selection": (
+            "best_validation_loss" if select_best else "last_epoch"
+        ),
+        "source_signature": source_signature,
+        "config": expected_config,
         "tools": tools,
         "folds": results,
         "cv_mean_std": _summarize_folds(results),

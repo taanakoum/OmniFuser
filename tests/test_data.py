@@ -103,6 +103,7 @@ def test_collate_keeps_images_batched_and_indices_local(tmp_path: Path) -> None:
         "force": np.zeros((4, 3), dtype=np.float32),
         "force_target": np.zeros((2, 3), dtype=np.float32),
         "class_target": np.zeros(2, dtype=np.int64),
+        "shown_label": np.int64(0),
         "cycle": np.zeros(4, dtype=np.int64),
         "batch": np.zeros(4, dtype=np.int64),
         "relative": np.zeros(4, dtype=np.int64),

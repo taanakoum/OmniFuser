@@ -9,6 +9,80 @@ from torch import Tensor
 from omnifuser.data import CLASS_NAMES
 
 
+PAPER_HORIZONS = (12, 24, 36, 48, 60, 72, 84, 96)
+
+
+def _macro_scores(targets: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
+    confusion = np.zeros((len(CLASS_NAMES), len(CLASS_NAMES)), dtype=np.int64)
+    np.add.at(confusion, (targets, predicted), 1)
+    true_positive = np.diag(confusion)
+    precision = true_positive / np.maximum(confusion.sum(axis=0), 1)
+    recall = true_positive / np.maximum(confusion.sum(axis=1), 1)
+    f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    return {
+        "accuracy": float(true_positive.sum() / max(confusion.sum(), 1)),
+        "precision_macro": float(precision.mean()),
+        "recall_macro": float(recall.mean()),
+        "f1_macro": float(f1.mean()),
+    }
+
+
+def cumulative_horizon_report(
+    predictions: np.ndarray,
+    targets: np.ndarray,
+    probabilities: np.ndarray,
+    class_targets: np.ndarray,
+    horizons: tuple[int, ...] = PAPER_HORIZONS,
+) -> dict[str, dict[str, float]]:
+    """Report metrics over leads 1..h for each paper horizon that fits the output."""
+    if predictions.shape != targets.shape or predictions.ndim != 3:
+        raise ValueError("force predictions and targets must match (N, horizon, channels)")
+    if probabilities.ndim != 3 or probabilities.shape[:2] != class_targets.shape:
+        raise ValueError("class probabilities and targets must match (N, horizon, classes)")
+    if probabilities.shape[:2] != predictions.shape[:2]:
+        raise ValueError("force and classification horizons must match")
+    report: dict[str, dict[str, float]] = {}
+    for horizon in horizons:
+        if horizon < 1:
+            raise ValueError("reported horizons must be positive")
+        if horizon > predictions.shape[1]:
+            continue
+        error = predictions[:, :horizon] - targets[:, :horizon]
+        report[str(horizon)] = {
+            "mse": float(np.square(error).mean()),
+            "mae": float(np.abs(error).mean()),
+            **_macro_scores(
+                class_targets[:, :horizon].reshape(-1),
+                probabilities[:, :horizon].argmax(axis=-1).reshape(-1),
+            ),
+        }
+    return report
+
+
+def baseline_report(
+    last_input_force: np.ndarray,
+    targets: np.ndarray,
+    shown_label: np.ndarray,
+    class_targets: np.ndarray,
+) -> dict[str, float]:
+    """Simple normalized-force and shown-photo-label persistence baselines."""
+    if targets.ndim != 3 or last_input_force.shape != (targets.shape[0], targets.shape[2]):
+        raise ValueError("baseline force arrays have incompatible shapes")
+    if class_targets.ndim != 2 or class_targets.shape != targets.shape[:2]:
+        raise ValueError("baseline class targets must match (N, horizon)")
+    if shown_label.shape != (targets.shape[0],):
+        raise ValueError("shown labels must have shape (N,)")
+    last_value_error = targets - last_input_force[:, None, :]
+    return {
+        "last_value_mse": float(np.square(last_value_error).mean()),
+        "last_value_mae": float(np.abs(last_value_error).mean()),
+        "zero_prediction_mse": float(np.square(targets).mean()),
+        "persistence_class_accuracy": float(
+            np.mean(class_targets == shown_label[:, None])
+        ),
+    }
+
+
 def _binary_roc_curve(
     targets: np.ndarray, scores: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float | None]:
@@ -134,11 +208,16 @@ def regression_report(
     by_horizon = [
         summarize(error[:, step, :]) for step in range(error.shape[1])
     ]
+    by_horizon_normalized = [
+        summarize(normalized_error[:, step, :])
+        for step in range(normalized_error.shape[1])
+    ]
     return {
         "units": "original force units",
         "overall": summarize(error),
         "by_channel": by_channel,
         "by_horizon": by_horizon,
+        "by_horizon_normalized": by_horizon_normalized,
         "normalized": summarize(normalized_error),
     }
 

@@ -18,6 +18,69 @@ from omnifuser.data import (
 from omnifuser.train import train_fold
 
 
+def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--pool",
+        type=int,
+        default=1,
+        help="mean-pool this many samples per time step after trimming and decimation",
+    )
+    parser.add_argument(
+        "--image-lag",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="use the current pass photo (0) or preceding pass photo (1)",
+    )
+    parser.add_argument(
+        "--select-best",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="test the best validation-loss epoch instead of the last epoch",
+    )
+    parser.add_argument("--accumulation-steps", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="resume interrupted folds and reuse complete matching CV folds",
+    )
+    parser.add_argument(
+        "--pre-attn",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="include extra self-attention before shared/private separation (not in paper figures)",
+    )
+    parser.add_argument(
+        "--als-mode",
+        choices=("time", "k_sum", "k_colnorm"),
+        default="time",
+        help="landmark weighting: time-softmax, paper Eq. 10, or Eq. 10 with column normalization",
+    )
+    parser.add_argument("--modality-dropout", type=float, default=0.0)
+    parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument("--freeze-bn", action="store_true")
+
+
+def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "pool": args.pool,
+        "image_lag": args.image_lag,
+        "select_best": args.select_best,
+        "accumulation_steps": args.accumulation_steps,
+        "num_workers": args.num_workers,
+        "resume": args.resume,
+        "config_overrides": {
+            "pre_attn": args.pre_attn,
+            "als_mode": args.als_mode,
+            "modality_dropout": args.modality_dropout,
+            "pretrained": args.pretrained,
+            "freeze_bn": args.freeze_bn,
+        },
+    }
+
+
 def _inspect(args: argparse.Namespace) -> None:
     records = load_nonastreda(
         args.data_dir,
@@ -25,6 +88,7 @@ def _inspect(args: argparse.Namespace) -> None:
         decimation=args.decimation,
         dedup_identical_forces=args.dedup_identical_forces,
         trim_pass=args.trim_pass,
+        pool=args.pool,
     )
     label_names = (
         ("sharp", "used", "dulled")
@@ -89,6 +153,10 @@ def _inspect(args: argparse.Namespace) -> None:
         },
         "tool_stream_samples": {timeline.tool: len(timeline.force) for timeline in timelines},
         "retained_record_images": len({record.image_path for record in records}),
+        "pool_dropped_samples": {
+            "per_record_sum": sum(record.pool_dropped_samples for record in records),
+            "unit": "post-decimation source samples",
+        },
         "window": {
             "input_len": args.input_len,
             "horizon": args.horizon,
@@ -99,6 +167,7 @@ def _inspect(args: argparse.Namespace) -> None:
         "exact_duplicate_B3_B4_pairs_remaining": duplicate_b3_b4,
         "exact_duplicate_force_rows_remaining": duplicate_force_rows,
         "decimation": args.decimation,
+        "pool": args.pool,
         "dedup_identical_forces": args.dedup_identical_forces,
         "trim_pass": args.trim_pass,
         "pass_trimming": "span" if args.trim_pass else "none",
@@ -157,6 +226,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
     inspect_parser.add_argument("--decimation", type=int, default=1)
+    inspect_parser.add_argument("--pool", type=int, default=1)
     inspect_parser.add_argument("--input-len", type=int, default=96)
     inspect_parser.add_argument("--horizon", type=int, default=24)
     inspect_parser.add_argument("--stride", type=int)
@@ -187,7 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--test-tool", default="T10")
     train_parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     train_parser.add_argument("--epochs", type=int, default=5)
-    train_parser.add_argument("--batch-size", type=int, default=2)
+    train_parser.add_argument("--batch-size", type=int, default=32)
     train_parser.add_argument("--learning-rate", type=float, default=1e-4)
     train_parser.add_argument("--input-len", type=int, default=96)
     train_parser.add_argument("--horizon", type=int, default=24)
@@ -228,10 +298,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--d-model", type=int, default=32)
     train_parser.add_argument(
         "--prediction-head",
-        choices=("paper_literal", "lead_conditioned"),
+        choices=("paper_literal", "lead_conditioned", "direct"),
         default="lead_conditioned",
-        help="paper-literal repeated head or lead-conditioned multi-horizon head",
+        help="paper-literal repeated, direct per-lead, or lead-conditioned head",
     )
+    add_protocol_arguments(train_parser)
     train_parser.add_argument("--max-train-windows", type=int)
     train_parser.add_argument("--max-eval-windows", type=int)
     train_parser.add_argument("--device", default="cpu")
@@ -262,6 +333,7 @@ def _train(args: argparse.Namespace) -> None:
         max_eval_windows=args.max_eval_windows,
         device_name=args.device,
         seed=args.seed,
+        **protocol_kwargs(args),
     )
     print(json.dumps(result, indent=2))
 

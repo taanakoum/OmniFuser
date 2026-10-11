@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from omnifuser.cli import add_protocol_arguments, protocol_kwargs
 from omnifuser.train import train_fold
 
 
@@ -30,7 +31,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--prediction-head",
-        choices=("paper_literal", "lead_conditioned"),
+        choices=("paper_literal", "lead_conditioned", "direct"),
         default="lead_conditioned",
     )
     parser.add_argument(
@@ -38,6 +39,7 @@ def main() -> None:
         action="store_true",
         help="run the selected fold without smoke-test window limits",
     )
+    add_protocol_arguments(parser)
     args = parser.parse_args()
 
     result = train_fold(
@@ -52,6 +54,7 @@ def main() -> None:
         prediction_head=args.prediction_head,
         max_train_windows=None if args.full else 2,
         max_eval_windows=None if args.full else 1,
+        **protocol_kwargs(args),
     )
     print(json.dumps(result, indent=2))
 

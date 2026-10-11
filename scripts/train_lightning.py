@@ -4,6 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
+from omnifuser.cli import add_protocol_arguments, protocol_kwargs
 from omnifuser.cross_validation import run_cross_validation
 
 
@@ -14,7 +15,7 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--input-len", type=int, default=96)
     parser.add_argument("--horizon", type=int, default=24)
@@ -41,7 +42,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--prediction-head",
-        choices=("paper_literal", "lead_conditioned"),
+        choices=("paper_literal", "lead_conditioned", "direct"),
         default="lead_conditioned",
     )
     parser.add_argument("--d-model", type=int, default=32)
@@ -57,6 +58,7 @@ def main() -> None:
         type=int,
         help="optional cap for pipeline smoke tests; omit for full evaluation",
     )
+    add_protocol_arguments(parser)
     args = parser.parse_args()
 
     summary = run_cross_validation(
@@ -79,6 +81,7 @@ def main() -> None:
         seed=args.seed,
         max_train_windows=args.max_train_windows,
         max_eval_windows=args.max_eval_windows,
+        **protocol_kwargs(args),
     )
     print(json.dumps(summary["cv_mean_std"], indent=2))
     print(json.dumps(summary["out_of_fold"], indent=2))
