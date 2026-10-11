@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from omnifuser.cross_validation import _aggregate_out_of_fold, _summarize_folds
+from omnifuser.cross_validation import (
+    _aggregate_out_of_fold,
+    _summarize_folds,
+    _summarize_paper_horizons,
+)
 from omnifuser.evaluation import classification_report
 
 
@@ -63,3 +67,26 @@ def test_fold_summary_keeps_missing_auc_fold_slots() -> None:
 
     assert summary["metrics"]["classification_roc_auc_macro"]["per_fold"] == [None]
     assert summary["metrics"]["classification_roc_auc_macro"]["mean"] is None
+
+
+def test_fold_summary_includes_weighted_metrics_and_paper_horizons() -> None:
+    result = {
+        "test": {
+            "classification": {
+                "precision_weighted": 0.7,
+                "recall_weighted": 0.8,
+                "f1_weighted": 0.75,
+            },
+            "paper_horizons": {"12": {"mse": 0.5, "mae": 0.4}},
+            "baselines": {
+                "by_horizon": {"12": {"last_value_mse": 0.8}}
+            },
+        }
+    }
+
+    summary = _summarize_folds([result])
+    horizon_summary = _summarize_paper_horizons([result])
+
+    assert summary["metrics"]["classification_f1_weighted"]["mean"] == 0.75
+    assert horizon_summary["models"]["12"]["mse"]["mean"] == 0.5
+    assert horizon_summary["baselines"]["12"]["last_value_mse"]["mean"] == 0.8

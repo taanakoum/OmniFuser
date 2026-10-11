@@ -24,7 +24,8 @@ labels, split, preprocessing, and training protocol are also matched.
 | [`pyproject.toml`](pyproject.toml) | Package metadata, Python/dependency requirements, console-script registration, and pytest configuration. |
 | `2511.01320v1.pdf` (local-only) | Supplied OmniFuser research paper; the architecture and experimental claims are audited against this version. The PDF is intentionally not included in the source-only GitHub branch. |
 | `OmniFuser Reproduction Guide From Paper to Working Code.pdf` (local-only) | First supplied guide; informs practical defaults and data/windowing decisions where the paper is incomplete. The PDF is intentionally not included in the source-only GitHub branch. |
-| `OmniFuser Reproduction Guide, Part 2 Datasets, MRTE and the Image Branch.pdf` (local-only) | Second supplied guide; discusses Nonastreda, force duplicates, MRTE, and image-branch implementation details. The PDF is intentionally not included in the source-only GitHub branch. |
+| `OmniFuser Reproduction Guide, Part 2 Datasets, MRTE and the Image Branch.pdf` (local-only) | Earlier supplied guide; discusses Nonastreda, force duplicates, MRTE, and image-branch implementation details. The PDF is intentionally not included in the source-only GitHub branch. |
+| `OmniFuser Reproduction Guide, Part 3 Datasets, MRTE and the Image Branch.pdf` (local-only) | The newly supplied filename says Part 3, but its embedded PDF title and page headers identify it as Part 2 (43 pages, dated Oct 11, 2026). Its revised Nonastreda sections supersede earlier preprocessing recommendations; it is intentionally not included in the source-only GitHub branch. |
 
 ### Data directory
 
@@ -34,7 +35,7 @@ labels, split, preprocessing, and training protocol are also matched.
 |---|---|
 | `Nonastreda_Data/forces_xyz_raw.mat` | MATLAB `baseDatastore`; each row maps an image filename and label to three force channels. |
 | `Nonastreda_Data/labels.csv` | Record IDs, image-derived wear classes, and alternate tool labels. |
-| `Nonastreda_Data/labels_reg.csv` | Record IDs and numeric wear measurements. The current force-forecasting task does not predict these numeric wear fields; `flank_wear` is used to choose between duplicate B3/B4 annotations. |
+| `Nonastreda_Data/labels_reg.csv` | Record IDs and numeric wear measurements. The current force-forecasting task does not predict these numeric wear fields; `flank_wear` chooses the representative row from exact-force duplicate groups. |
 | `Nonastreda_Data/tool/` | Source JPG files addressed by the record filename. Images are mapped to their pass records in memory; the loader does not physically copy or reorganize these files. |
 
 ### Python package: `omnifuser/`
@@ -42,24 +43,29 @@ labels, split, preprocessing, and training protocol are also matched.
 | File | Responsibilities |
 |---|---|
 | [`omnifuser/__init__.py`](omnifuser/__init__.py) | Package marker and version (`0.1.0`). |
-| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, and the selected prediction head. Validates the head choice and several dimension/config constraints. |
-| [`omnifuser/data.py`](omnifuser/data.py) | CSV/MAT loading and cross-file validation, record parsing, optional force decimation and duplicate handling, per-tool timeline construction, tool folds, training-only force normalization, sliding windows, image transforms, and batch collation. |
-| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force embeddings, RTD/MRTE blocks, image feature encoder, temporal graph attention, C2F layers, dual-task heads, loss, and small classification metrics helper. |
-| [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, optimizer loop, validation logging, final test pass, prediction/ROC artifacts, and checkpoint persistence. |
-| [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, and force-regression metrics in normalized and original units. |
-| [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, per-fold means/stds, pooled out-of-fold metrics, and mean ROC curve artifacts. |
-| [`omnifuser/cli.py`](omnifuser/cli.py) | `omnifuser inspect` and `omnifuser train` command-line interface and argument wiring. |
+| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, prediction head, ALS mode, shared/separate C2F weights, private-attention variant, modality dropout, optional pretrained EfficientNet, and BatchNorm freezing. Validates supported settings and incompatible encoder/weight combinations. |
+| [`omnifuser/data.py`](omnifuser/data.py) | CSV/MAT loading and cross-file validation, record parsing, exact-force deduplication, span trimming, optional force decimation and per-record block-mean pooling, optional preceding-record image association, per-tool timelines/folds, training-only normalization, sliding windows, cached image loading, and source-file signatures. |
+| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force/period embeddings, RTD/MRTE blocks, compact or EfficientNet image encoder, temporal graph attention, selectable C2F ALS variants and weight-sharing, configurable private attention, optional modality dropout/pre-attention, dual-task heads, and joint loss. |
+| [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, sample-weighted gradient accumulation, periodic resumable state (including optimizer/RNG), validation-based best-checkpoint selection, final test pass, baseline/horizon summaries, predictions/ROC artifacts, and checkpoint persistence. |
+| [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, macro and support-weighted precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, force-regression metrics in normalized and original units, cumulative-horizon metrics, and per-horizon persistence/force baselines. |
+| [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, guarded matching-fold reuse, macro/weighted per-fold summaries, paper-horizon mean/std summaries, pooled out-of-fold metrics, and mean ROC curve artifacts. |
+| [`omnifuser/cli.py`](omnifuser/cli.py) | `omnifuser inspect` and `omnifuser train` command-line interface and argument wiring; inspection reports retained record/image counts, pool-tail drops, trimming, and window budget. |
+| [`omnifuser/tracking.py`](omnifuser/tracking.py) | Dependency-free append-only experiment tracking: run manifest, nested JSONL metrics, and long-form CSV scalar metrics for plots and dashboard imports. |
 
 ### Scripts and tests
 
 | Path | Purpose |
 |---|---|
-| [`scripts/train_local.py`](scripts/train_local.py) | One-fold local smoke run; caps train/evaluation windows unless `--full` is supplied. Defaults to CPU, batch size 1, and EfficientNet-B0. |
+| [`scripts/train_local.py`](scripts/train_local.py) | One-fold local smoke run; caps train/evaluation windows unless `--full` is supplied. Defaults to CPU, batch size 1, and EfficientNet-B0; supports the same alignment/training controls as the package CLI. |
 | [`scripts/train_lightning.py`](scripts/train_lightning.py) | Full ten-fold runner intended to be launched on a GPU machine or in a Lightning AI Studio. It invokes the package's PyTorch loop; it is not a Lightning Trainer implementation. |
-| [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, tool-level fold partitions, train-only normalization, image collation, and exact B3/B4 duplicate selection. |
-| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, both paper-literal and lead-conditioned forecast heads, model forward/backward, and classification metrics. |
-| [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, and original-unit regression metrics. |
-| [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, and missing-AUC fold handling. |
+| [`scripts/task_diagnostics.py`](scripts/task_diagnostics.py) | Compares simple force/classification baselines across chosen pool factors and horizons; uses capped samples and pooled-data normalization for descriptive diagnostics, not a training evaluation. |
+| [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) | Renders cumulative normalized-force and classification scores next to published Tables IV-V and includes matched Nonastreda persistence baselines. |
+| [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, including lag-1 image/current-label behavior, tool-level fold partitions, train-only normalization, image collation, within-run exact-force grouping, and span trimming. |
+| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, shared/separate C2F and private attention options, forecast heads, model forward/backward, and macro/weighted classification metrics. |
+| [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, weighted scores, per-horizon baselines, cumulative metrics, and original-unit regression metrics. |
+| [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, missing-AUC fold handling, weighted metrics, and paper-horizon aggregation. |
+| [`tests/test_alignment_fixes.py`](tests/test_alignment_fixes.py) | Regression tests for sample-weighted partial gradient accumulation, pooled diagnostic normalization, strict completed-fold reuse, and dataset-file signatures. |
+| [`tests/test_alignment_patch.py`](tests/test_alignment_patch.py) | Integrated regression tests for the alignment features: data pooling/image lag, model options, evaluation, and resume behavior. |
 
 `outputs/` contains runtime artifacts from earlier smoke/readiness runs, not
 source modules. `.venv/`, `omnifuser_reproduction.egg-info/`, `__pycache__/`,
@@ -103,12 +109,21 @@ by 255, then normalized channel-wise with ImageNet mean/std.
    checks image files and finite force arrays, validates the selected class
    label, and requires `labels_reg.csv` to contain the same IDs and a finite
    `flank_wear` value per record.
-2. **Select records and force rate.** With defaults, exact B3/B4 force
-   duplicates within the same tool/run are consolidated. The retained record
-   is the one with strictly larger `flank_wear`; ties retain B3. Force is not
-   decimated (`decimation=1`). If requested, `scipy.signal.decimate` applies
-   zero-phase filtering along the sample axis before conversion to
-   time-major `float32`.
+2. **Merge duplicates and trim pass edges.** With defaults, bit-identical force
+   arrays are grouped within each tool/run (not just the B3/B4 pair). For each
+   duplicate group the record with greatest `flank_wear` supplies the retained
+   image and label; ties go to the lower block number. This maps the supplied
+   512 rows to 378 distinct recordings. The retained signal is span-trimmed:
+   a 20-sample moving RMS of the three-channel force magnitude is compared
+   with half the median envelope in the first 5% of the record, and only
+   samples before the first or after the last crossing are removed. It is not
+   the guide's burst detector. The guide specifies a half-force span rule but
+   not this exact estimator; these window/reference choices are explicit
+   implementation decisions. Trimming is optional via `--no-trim-pass`.
+   Trimming occurs before decimation so the 20-sample window remains 20 ms at
+   the supplied 1 kHz rate. Default `decimation=1` leaves that rate unchanged;
+   if requested, `scipy.signal.decimate` applies zero-phase filtering along
+   the time axis.
 3. **Build one stream per tool.** Records are sorted by run and block, then
    concatenated into a force timeline. Every force sample receives its owning
    record's class, image ID, run/cycle code, block code, and one of 16
@@ -376,10 +391,14 @@ fold scores.
 | Sensor position and period encoding | Paper Eq. 1 defines fixed/position information plus a learned sum for spindle cycle, cutting batch, and relative position within cycle; the guide gives the sine/cosine construction. | Fixed sine/cosine \(PE_t\) and three separately learned \(d\)-dimensional embeddings are added to the force MLP. Dataset mapping uses run, block/pass, and a 16-bin normalized within-record position. Table cardinalities/binning are adaptation choices. |
 | Image position encoding | Paper aligns image and sensor streams temporally; the guide recommends associating each pass image with its force samples. | Each pass image is gathered for its corresponding input force samples. The code does not copy image files. Position and metadata embeddings are added after GAT. |
 | Force signal rate | The paper/guide discusses dataset sampling and frequency preservation; the supplied guide favors retaining the original rate for initial runs. | Default decimation 1 retains stored samples. Optional decimation uses SciPy zero-phase filtering. The loader itself does not verify sampling-rate metadata or reconstruct timestamps. |
-| Pass duplicates | The paper does not define this supplied-data cleanup. The second guide recommends identifying exact B3/B4 duplicates. | Actual data inspection found 128 exact B3/B4 pairs; default retains one record per exact pair using larger `flank_wear` (tie -> B3). This changes the data from 512 to 384 records and changes retained class counts. `--keep-identical-forces` is available for an ablation. |
-| Pass images/labels | Paper describes synchronized images and force sequences; guide stresses one image per pass and matching labels. | Record IDs, image filenames, force samples, and CSV labels are validated, then aligned in-memory on per-tool timelines. Test coverage verifies alignment across a record boundary. No image copying/relabeling stage exists. |
-| Window lengths | Reproduction guides use 96 input samples and a 24-step target as working defaults. | `T=96`, `P=24` defaults are configurable. The head's identical prediction at every future step remains a consequence of the printed equations. |
-| Window stride | Paper's data split/window implementation is not fully reproducible from its description; guide recommends avoiding overlapping evaluation targets. | Training defaults to stride 120 (`T+P`); evaluation uses at least `P`, and at defaults also 120. This reduces overlapping samples/targets but omits many possible start positions compared with dense stride-1/stride-24 evaluation. A user-supplied stride can change this behavior. |
+| Pass duplicates | The paper does not define this supplied-data cleanup. The newly supplied guide (embedded title: Part 2) recommends `dedup_force` for timeline forecasting. | Exact force arrays are grouped within each tool/run and the maximum-flank-wear annotation is retained. This merges all repeated arrays, yielding 378 recordings from 512 rows (not 384, which would result from only merging B3/B4). `--keep-identical-forces` keeps all rows for an ablation. |
+| Pass trimming | The paper identifies image/sensor observations with cutting passes but does not prescribe the supplied-file edge detector. The guide reports single steady cuts with short lead-in/run-out and warns against burst segmentation on Nonastreda. | Default span trimming removes only leading/trailing samples below half of an early-record envelope; internal dips are retained. The guide does not specify the envelope/reference estimator, so 20-sample RMS and first-5%-median are explicit choices, not verified exact guide logic. `--no-trim-pass` permits an untrimmed ablation. |
+| Pass images/labels | Paper describes synchronized images and force sequences; guide stresses one image per pass and matching labels. | The record ID resolves its source image; same-record labels and force are checked before retention. Deduplication keeps the image/label belonging to the selected highest-wear row. Per-sample image ownership is represented in memory; source JPGs are not copied or renamed. Tests exercise both record-boundary alignment and the retained duplicate's image/label. |
+| Image cache | The updated guide proposes a one-time resized uint8 image cache for upload/reuse. | An in-process image bank caches decoded/resized images and collator batches reuse each distinct image once per batch. It is not a persistent/pre-upload cache, so it avoids repeated decoding within a process but does not produce the guide's reusable on-disk cache. |
+| Pooling and effective sampling interval | The paper does not specify a Nonastreda pooling factor or use of block averaging to set a new timestep. | Optional per-record block-mean pooling is applied after trimming and decimation. A trailing incomplete block is dropped (and counted per record); pooling does not cross record boundaries. Default `pool=1` preserves the stored timestep, while `pool=100` corresponds to 0.1 s only under the dataset's 1 kHz sampling assumption. Pool factor is an experiment setting, not paper-verified preprocessing. |
+| Lagged image association | The paper describes aligned image/sensor inputs; the default same-pass association follows that direct reading. | `image_lag=0` uses the current record image. Optional lag 1 shows the preceding retained record's image while preserving current-record force/class targets; the first record falls back to its own image. This is an ablation, not the paper-literal alignment. |
+| Window lengths | Reproduction guides use 96 input samples and a 24-step target as working defaults. | `T=96`, `P=24` defaults are configurable. Only `paper_literal` repeats identical predictions at every future step; the default `lead_conditioned` head does not. |
+| Window stride | Paper's data split/window implementation is not fully reproducible from its description; the supplied guide's Nonastreda preparation command uses stride 120 for \(T=96, P=24\). | Training defaults to stride 120 (`T+P`); evaluation uses at least `P`, and at defaults also 120. This reduces overlapping samples/targets but omits many possible start positions compared with dense stride-1/stride-24 evaluation. A user-supplied stride can change this behavior. |
 | Tool folds | The paper reports experiments on its datasets, not this repository's specific ten-tool 8/1/1 rule. The guide recommends keeping tools grouped to prevent leakage and describes 9/1 train/test. | Implements ten-fold leave-one-tool-out testing with the next numeric tool held out for validation: 8 train, 1 validation, 1 test. This is the user's requested/guide-informed protocol, not the paper's stated protocol. |
 | Normalization | Train/test protocol details are not fully specified for this adaptation. | Per-force-channel population mean/std from training-tool timelines only. It is a leakage-conscious implementation choice. |
 | Image backbone | Paper specifies the image pathway and reports EfficientNet-based features. | EfficientNet-B0 feature trunk is used, initialized with no pretrained weights. ImageNet input normalization is still applied; this is a chosen preprocessing convention, not an indication of pretrained weights. Compact CNN is for smoke tests only. |
@@ -387,14 +406,14 @@ fold scores.
 | RTD depth/rank/stride | Paper describes multiresolution low-rank temporal decomposition; practical implementation details are incomplete. | Four stride-3 blocks and rank 8 are configuration defaults informed by the reproduction guide and implementation feasibility. They must be reported as choices, not asserted as exact paper hyperparameters unless confirmed in a paper table. |
 | C2F shared/private split | Paper defines a learned shared projection and Frobenius-orthogonal private residual. | Implements this projection across all time/features per sample with epsilon stabilization. It logs the resulting dot-product diagnostic but does not use an explicit orthogonality penalty in the optimized loss. |
 | C2F private attention | Paper describes self-attention refinement of private features and proxy cross-attention over shared features. | Implements private-stream self-attention and also applies an additional self-attention residual to each full modality before decomposition in every fusion layer. That extra pre-decomposition attention is an implementation addition. |
-| Proxy landmarks | Paper introduces adaptive landmarks and proxy-based cross-modal attention; scoring details are not completely specified. | Learned per-time logits are softmax-normalized over time to form \(K=4\) weighted average landmarks and values. The exact scorer/value formulation is a practical interpretation. |
+| Proxy landmarks / ALS normalization | Paper introduces adaptive landmarks and proxy-based cross-modal attention. Eq. 10 explicitly applies softmax over the \(k\)-landmark dimension at time \(t\), then \(L=\alpha^T S\). | The scorer and projected values are learned. `als_mode="k_sum"` applies the printed landmark-axis softmax; `time` (default) softmaxes across time independently for each landmark to form normalized temporal averages; `k_colnorm` adds column normalization to the landmark-axis mode. The default thus differs from Eq. 10's printed axis; retain it only as a named alternative and select `k_sum` for the closest literal equation. |
 | Hybrid local/global gate | Paper combines global and local gate terms; exact convolution/gate details are incomplete. | Local gate uses depthwise Conv1d kernel 3. The global/local mixing scalar starts at 0, so sigmoid mixing starts evenly at 0.5. These are explicit selected values. |
 | Progressive fusion | Paper describes recursive anchoring and reports two refinement iterations. | Two layers by default; each later layer adds a learned transform of the last fused representation to both original modality streams before fusion. |
-| Prediction heads | Paper equations (including the force head on page 7) use the same final fused token with the same linear map at every future time, which produces identical outputs across leads. | Both variants are available: `paper_literal` follows the paper equation and repeats outputs; `lead_conditioned` (default) concatenates a learned per-lead embedding with final fused context before shared decoding. The second resolves repeated outputs but is a deliberate deviation. |
+| Prediction heads | Paper equations (including the force head on page 7) use the same final fused token with the same linear map at every future time, which produces identical outputs across leads. | Three variants are available: `paper_literal` follows the equation and repeats outputs; `lead_conditioned` (default) concatenates a learned per-lead embedding with final fused context before shared decoding; `direct` maps the final context to all horizon outputs using separate output weights. The latter two enable lead-specific results and are deliberate deviations. |
 | Loss | Paper defines the two prognostic tasks; objective weighting/regularization for this dataset is not fully determined in the sources used here. | Unweighted force MSE + per-step class cross-entropy. C2F alignment/orthogonality are diagnostics only. This must be included in any reproduction report. |
-| Optimizer | Paper reports Adam, learning rate \(10^{-4}\), batch size 32, dropout 0.1, and two progressive fusion iterations (paper page 9). | Adam and \(10^{-4}\), dropout 0.1 and two rounds align with those reported values. Local CLI uses batch 2, local smoke uses 1, CV script defaults to 16; paper batch 32 requires explicit `--batch-size 32`. |
-| Epoch/model selection | The code and guides support runnable experiments; the exact lifecycle should not be confused with a paper-reported best-checkpoint result. | Defaults are five epochs in the training API/CV script and one in local smoke. Validation is evaluated but no early stopping, scheduler, or best-checkpoint selection is implemented. Test metrics are from the last epoch. |
-| Lightning AI | Lightning AI is the intended compute platform, not a paper architecture requirement. | Script is a standard PyTorch command-line job usable in a Lightning AI Studio. It does not use Lightning Fabric/Trainer, distributed training, managed checkpoints, or cloud-specific dataset transfer. |
+| Optimizer | Paper reports Adam, learning rate \(10^{-4}\), batch size 32, dropout 0.1, and two progressive fusion iterations (paper page 9). | Adam and \(10^{-4}\), dropout 0.1 and two rounds align with those reported values. Local smoke defaults to batch 1, the single-fold CLI defaults to 2, and full CV defaults to 16; set `--batch-size 32` for the paper's reported batch size when resources permit. Gradient accumulation supports a larger effective batch with sample-correct weighting, though it is not computationally identical to a physical batch of that size. |
+| Epoch/model selection | The paper and supplied guides do not fully specify an early-stopping or best-checkpoint rule for this adaptation. | Validation is evaluated every epoch. By default, the checkpoint with the lowest validation loss is selected for test; `--no-select-best` uses the final epoch. No early stopping or scheduler is applied. Epoch counts remain run settings (five in full CV defaults, one in local smoke). |
+| Lightning AI | Lightning AI is the intended compute platform, not a paper architecture requirement. | Script is a standard PyTorch command-line job usable in a Lightning AI Studio. It does not use Lightning Fabric/Trainer, distributed training, or cloud-specific dataset transfer. Matching interrupted folds can resume locally from saved model/optimizer/RNG state; completed folds are reused only after validating source and experiment signatures. |
 
 ### Reasons for under-specified values
 
@@ -405,11 +424,12 @@ fold scores.
   or target samples. This limits redundant training and makes evaluation
   targets non-overlapping; it is an efficiency/protocol choice that must be
   held constant for comparisons.
-- **Deduplication representative:** the guides call out exact B3/B4 force
-  duplicates. Retaining the larger numeric flank-wear annotation keeps the
-  record most consistent with the more worn state; the tied case retains B3
-  deterministically. Since class/image may change, this is not a neutral
-  cleanup and keeping both is exposed as an ablation.
+- **Deduplication representative:** the updated guide identifies partial
+  duplicates within each run and recommends merging exact repeats for
+  forecasting. Retaining the largest numeric flank-wear annotation selects
+  the more worn row; ties go to the lower block number deterministically.
+  Since class/image may change, this is not a neutral cleanup and keeping all
+  rows is exposed as an ablation.
 - **Train-only standardization:** estimating mean/scale from training tools
   avoids test leakage. Population rather than sample standard deviation is
   used because the stream is treated as the training population.
@@ -430,16 +450,41 @@ fold scores.
 
 ## Validation performed and limits
 
-- Real-data inspection was run with the repository's default loader. It
-  reported **384 retained records**, **10 tools**, class counts
-  **sharp 148 / used 119 / dulled 117**, force lengths **52,002–152,668**
-  (median **98,528**) samples after no decimation, and **zero remaining exact
-  B3/B4 duplicates**. Timeline sample counts were produced for all ten tools.
+- Before the updated guide comparison, the loader removed only B3/B4 duplicates
+  and reported 384 records. The corrected default now merges exact force arrays
+  within each tool/run and trims span edges. Real-file inspection after that
+  change reported **378 records**, **10 tools**, image-label counts
+  **sharp 147 / used 118 / dulled 113**, and post-trim force lengths
+  **50,212–149,011** (median **96,857**) at decimation 1. There are no
+  remaining exact force duplicates or B3/B4 duplicates under the default.
+  These edge lengths differ from the guide's reported **50,317–150,711**:
+  the guide does not specify its span-envelope/reference estimator, so this
+  implementation's 20-sample RMS and first-5%-median threshold are an
+  explicit approximation, not a claim of exact numeric parity.
+- The updated `omnifuser inspect` also validates and reports retained image
+  count and window counts for the selected input/horizon/stride. For the
+  default 96/24/120 settings, compare its real-data `total_windows` with the
+  guide's **308,071**; exact counts are sensitive to the unspecified span
+  boundary estimator.
+- The inspection output now includes the source length and lead-in/run-out
+  samples removed for the ten retained records with the largest trim fractions,
+  plus aggregate removed counts. On the supplied data, 369 of 378 retained
+  records are trimmed, removing **179,437 lead-in** and **414,078 run-out**
+  samples in total. Duplicate resolution retains `T6R2B4` for the identical
+  T6R2B3/B4 force pair; the span rule removes 320 leading and 12,639 trailing
+  samples from its 96,204-sample source. The updated guide specifically warns
+  that this low-force T6 tail includes genuine cutting data, so this is a
+  known data-loss risk, not merely harmless idle-time cleanup. Compare
+  `omnifuser inspect` with `--no-trim-pass` and manually review this record
+  before interpreting forecasts as exact guide parity. The source MAT file is
+  unchanged; disabling trimming preserves the full force record in the loaded
+  timeline.
 - The full test suite passed after adding the selectable prediction heads
-  (**22 tests**). Tests cover both head behaviors, reject an unknown head
-  setting, and verify the lead-conditioned embeddings receive gradients. The
-  paper-literal head outputs are mathematically identical at all forecast
-  leads.
+  (**23 tests after the guide-driven data changes**). Tests cover both head
+  behaviors, reject an unknown head setting, and verify the lead-conditioned
+  embeddings receive gradients. Data tests also verify exact-force grouping
+  with highest-wear metadata retention, span-edge cropping, internal-dip
+  preservation, and image/label association.
 - Two local T10 smoke runs completed with the compact image encoder, the same
   seed and capped window counts, one using each prediction head. Both wrote
   fold JSON, checkpoint, prediction, and ROC artifacts; result JSON and
@@ -451,6 +496,18 @@ fold scores.
   embedding regression test independently reconstructs the sum of value,
   fixed position, and all three learned period embeddings, and verifies that
   all three embedding tables receive gradients.
+- The post-update real-data `omnifuser inspect` run found 378 retained
+  recordings and 378 corresponding images; the keep-all ablation found 512
+  records/images and 134 exact duplicate rows. Under defaults it counts
+  **309,140** windows at stride 120, versus the guide's 308,071. The reported
+  force-length range is 50,212–149,011 (median 96,857), versus the guide's
+  50,317–150,711. These differences are consistent with the guide not defining
+  the span estimator in sufficient detail; this implementation records rather
+  than conceals them.
+- A post-change local compact-encoder T10 smoke run completed and persisted
+  its fold JSON, checkpoint, and predictions. The result records
+  `trim_pass=true` and `pass_trimming="span"`. This validates wiring and
+  artifacts, not performance.
 - The current local EfficientNet-B0 T10 smoke run completed one epoch on CPU
   with 2 training windows and 1 validation/test window. It wrote the fold JSON,
   checkpoint (~17 MB), predictions, and ROC artifact. The smoke test's scores
@@ -474,15 +531,46 @@ fold scores.
   780,000 optimizer steps in total. This is executable in principle but is a
   substantial compute commitment; runtime and cost must be measured on the
   target GPU before launching all folds.
-- There is no mid-epoch checkpoint or resume option. A fold checkpoint is
-  written after that fold's final test evaluation, while a progress JSON is
-  written only after each fold. An interruption during a fold loses that
-  fold's in-progress model/optimizer state; rerunning the CV command starts
-  the loop from fold 1.
+- Training writes a resume checkpoint after each completed epoch containing
+  model, optimizer, best-validation state, and Python/NumPy/PyTorch RNG state.
+  An interruption mid-epoch resumes from the latest completed epoch. Resume
+  proceeds only when the input-file signature and settings match; mismatching
+  state is explicitly ignored with a warning. Completed CV folds are reused
+  only when their source signature, config, fold membership, training settings,
+  and expected artifacts match. This reduces repeated work but is not a
+  distributed or cloud-managed checkpoint service.
 - A CPU-only local environment was available; a complete uncapped GPU run on
   Lightning AI has **not** been performed. The 3 GiB CUDA check is a guard, not
   a guarantee of sufficient memory. Full-run memory, throughput, convergence,
   and model quality remain to be measured on the target GPU.
+- After integrating the supplied alignment patch, the complete project tests
+  and its patch-specific tests passed together: **44 passed**. The only output
+  was a warning in the patch test itself when converting a gradient-tracking
+  tensor to a Python scalar. Workspace Pylance diagnostics reported no items.
+  CLI help parsing succeeded for `omnifuser train`, the local runner, and the
+  full Lightning AI runner.
+- A fresh CPU T10 smoke run trained the compact encoder for one epoch with two
+  capped training windows and one validation/test window. It selected epoch 1
+  by validation loss and wrote fold metadata, weights, predictions, and ROC
+  output. The run used `prediction_head=direct`, `pool=1`, and
+  `image_lag=0`; its metrics are pipeline checks, not performance evidence.
+- Real-data inspection with `pool=100` retained 378 records/images across ten
+  tools, dropped 18,238 trailing post-decimation source samples across records,
+  and reported zero remaining exact duplicate force rows. Incomplete pooling
+  blocks are dropped within each record rather than carried over a pass
+  boundary. At this factor, the resulting per-tool timeline lengths range
+  from 280 to 510 pooled time steps.
+- The diagnostic sweep processed 100 capped windows per pool/horizon cell for
+  pools 1 and 100 and horizons 12, 24, and 96. With pool 1, no wear-label
+  changes occurred within those sampled target horizons and shown-image-label
+  persistence accuracy was 1.0 for lag 0; with pool 100, target label change
+  rates were 0%, 1%, and 3%, respectively. These are capped, all-tools
+  descriptive diagnostics with normalization fitted to each diagnostic dataset;
+  they are neither held-out validation scores nor evidence to select a pool.
+- The new local smoke result and tests verify that training emits the expected
+  artifacts and that configurable pooling/lagging and baseline reporting are
+  wired. They do not validate a full-data fit, convergence, reproducibility
+  across hardware, or the methodology choices where the paper/guide is silent.
 - Unit tests validate local invariants but do not prove every real-record
   boundary, paper equation, or benchmark metric. No paper score reproduction
   is claimed.
@@ -516,3 +604,99 @@ Lightning AI GPU, record peak memory and epoch time, then run all ten folds
 with fixed settings. Preserve each fold's JSON/checkpoint/predictions, report
 both fold-level and pooled out-of-fold results, and label all methodological
 departures from the paper.
+
+## Blocks 9-11 reconciliation
+
+The Blocks 9-11 bundle's compatible changes are integrated into the maintained
+root package rather than treating its copied `omnifuser/` snapshot as a second
+implementation. The obsolete copied package and comparison script were
+removed; the unique notes, review diff, and reference tests remain:
+
+- C2F recursion continues to re-inject each previous fused state. The new
+  `--share-c2f` switch compares shared weights (one \(G\)) with the existing
+  separate-per-round weights. Eq. 20 writes a single \(G\), but the paper's
+  stacked-layer figure leaves weight sharing ambiguous; separate weights
+  remain the default.
+- `--private-attn plain` matches the printed MHA output-only expression.
+  `residual_ln` remains the default to preserve the previous model behavior.
+- Evaluation reports both macro and support-weighted class metrics.
+  Per-horizon normalized force/class scores are paired with matching
+  last-value, zero-force, and label-persistence baselines. Ten-fold output now
+  carries z-scored cumulative-horizon means/stds in addition to original-unit
+  physical force metrics.
+- [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) places those
+  fold metrics beside the published Mudestreda values in Tables IV-V. Since
+  this project currently runs Nonastreda, the table is a diagnostic
+  plausibility comparison, not a direct replication score.
+
+The maintained root test suite passes: **51 passed**. It covers these switches,
+weighted metrics, horizon baselines, and comparison output. The bundle's
+requested `omnifuser_blocks911/tests/test_blocks_9_11.py` cannot run as
+supplied: its reference module imports the absent `c2f_reference` from the
+earlier Blocks 6-8 package. The companion `test_c2f_blocks678.py` is also not
+included in the bundle or root `tests/`. Those missing independent reference
+assets were not fabricated.
+
+The exact uncapped five-epoch EfficientNet CPU attempt did not finish within a
+reasonable local runtime and was stopped before producing a checkpoint. A
+capped one-epoch T10 pilot then verified the full model/evaluation/artifact
+path using the requested pool 1000, image lag 1, horizon 96, stride 24, and
+`direct` head (batch size 4; 8 training, 2 validation, and 2 test windows).
+Its output is retained under
+[`runs/a_lag1_pool1000_direct_cpu_pilot`](runs/a_lag1_pool1000_direct_cpu_pilot)
+and the complete comparison table is reproducible with
+[`scripts/compare_with_paper.py`](scripts/compare_with_paper.py). At horizons
+12/24/48/96, normalized model MSE was 0.771/0.485/0.335/0.282 versus
+last-value baseline 2.102/2.129/2.164/2.282; accuracy was
+0.250/0.312/0.385/0.401 versus persistence 0.500 at each horizon. The force
+baseline gap is not evidence of generalization: with only two test windows,
+this pilot is strictly an execution check, and its classification scores are
+below the baseline. It is not the requested 30-epoch full-fold experiment or
+a paper-comparable result. Run the uncapped experiment on the intended GPU
+before drawing performance conclusions.
+
+## Lightning AI and experiment-tracking readiness
+
+`scripts/train_lightning.py` is a launcher for the native PyTorch 10-fold
+training loop, not a `lightning.pytorch.Trainer` implementation. It defaults
+to CUDA, and the loader pins host-memory batches and transfers them
+non-blockingly on CUDA. The run writes `tracking/run.json`,
+`tracking/metrics.jsonl`, and `tracking/metrics.csv`; no external tracking
+package or network service is required. The manifest records data signature,
+folds, preprocessing/window/model/training configuration, Python/PyTorch/CUDA
+version and device. Epoch events include loss components, classification
+metrics including macro/weighted and one-vs-rest AUC, normalized and physical
+force errors by channel and horizon, epoch duration, and peak allocated and
+reserved CUDA memory when running on GPU. Final test events additionally
+include paper-horizon metrics and persistence baselines; the CV event contains
+fold means and pooled out-of-fold results. Reuse a unique output directory per
+independent run; matching fold resumption appends tracking events.
+
+Verification performed in this environment: **51 project tests pass**; a
+capped one-fold compact CPU run completed and wrote all three tracking files;
+a capped compact CPU run through `scripts/train_lightning.py` completed all
+10 folds and logged the final CV aggregate. The locally installed PyTorch is
+`2.14.1+cpu` and `torch.cuda.is_available()` is false, so CUDA execution,
+GPU memory capacity, and Lightning Studio setup could not be validated here.
+Before the full Studio run, check the CUDA runtime, run one uncapped fold with
+the intended encoder and image resolution, confirm peak-memory/time values in
+the tracking CSV, then adjust batch size if needed. The implementation remains
+FP32; mixed precision is not enabled.
+
+## Image-to-pass temporal alignment
+
+For each record/pass, `make_tool_timelines` assigns its image code to every
+force sample in that record. A temporal window may contain multiple records;
+`WindowDataset` returns the image path for each input time index, and
+`collate_windows` de-duplicates paths within a sample, loads each image once,
+then supplies the per-timestep index mapping to the image branch. This is the
+paper's "image replicated across the readings in the pass" operation
+semantically, but it does not copy files or store one full image tensor per
+force row. `image_lag=0` is the same-record/pass association; `image_lag=1`
+maps force inputs to the preceding record in sorted tool order while keeping
+force and future class targets tied to their actual records. Lag 1 is therefore
+a timing ablation, and at a run boundary it continues to use the previous
+record in that tool timeline (except the first overall record, which falls
+back to its own image). The dataset does not provide a timestamp proving when
+each photo was captured relative to cutting, so the causal appropriateness of
+lag 0 must be judged from the acquisition protocol, not inferred from IDs.

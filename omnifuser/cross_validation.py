@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import json
+import platform
 import re
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
-from omnifuser.data import CLASS_NAMES, leave_one_tool_out_folds
+from omnifuser.config import ModelConfig
+from omnifuser.data import (
+    CLASS_NAMES,
+    leave_one_tool_out_folds,
+    nonastreda_source_signature,
+)
 from omnifuser.train import train_fold
+from omnifuser.tracking import ExperimentTracker
 
 
 RECORD_IMAGE = re.compile(r"^T(?P<tool>\d+)R\d+B\d+$")
@@ -33,6 +42,9 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         "classification_precision_macro": ("test", "classification", "precision_macro"),
         "classification_recall_macro": ("test", "classification", "recall_macro"),
         "classification_f1_macro": ("test", "classification", "f1_macro"),
+        "classification_precision_weighted": ("test", "classification", "precision_weighted"),
+        "classification_recall_weighted": ("test", "classification", "recall_weighted"),
+        "classification_f1_weighted": ("test", "classification", "f1_weighted"),
         "classification_roc_auc_macro": ("test", "classification", "roc_auc_ovr", "macro"),
         "force_mae": ("test", "regression", "overall", "mae"),
         "force_mse": ("test", "regression", "overall", "mse"),
@@ -43,8 +55,11 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         per_fold: list[float | None] = []
         for result in results:
             value: Any = result
-            for key in path:
-                value = value[key]
+            try:
+                for key in path:
+                    value = value[key]
+            except KeyError:
+                value = None
             per_fold.append(None if value is None else float(value))
         values = [value for value in per_fold if value is not None]
         summary["metrics"][name] = {
@@ -52,6 +67,48 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
             "std": float(np.std(values)) if values else None,
             "per_fold": per_fold,
         }
+    return summary
+
+
+def _summarize_paper_horizons(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate cumulative normalized metrics and their horizon-matched baselines."""
+    summary: dict[str, Any] = {"models": {}, "baselines": {}}
+    horizons = sorted(
+        {
+            horizon
+            for result in results
+            for horizon in result["test"].get("paper_horizons", {})
+        },
+        key=int,
+    )
+    for horizon in horizons:
+        rows = [
+            result["test"]["paper_horizons"][horizon]
+            for result in results
+            if horizon in result["test"].get("paper_horizons", {})
+        ]
+        summary["models"][horizon] = {
+            metric: {
+                "mean": float(np.mean([row[metric] for row in rows])),
+                "std": float(np.std([row[metric] for row in rows])),
+            }
+            for metric in sorted(rows[0])
+            if all(metric in row for row in rows)
+        }
+        baseline_rows = [
+            result["test"]["baselines"]["by_horizon"][horizon]
+            for result in results
+            if horizon in result["test"].get("baselines", {}).get("by_horizon", {})
+        ]
+        if baseline_rows:
+            summary["baselines"][horizon] = {
+                metric: {
+                    "mean": float(np.mean([row[metric] for row in baseline_rows])),
+                    "std": float(np.std([row[metric] for row in baseline_rows])),
+                }
+                for metric in sorted(baseline_rows[0])
+                if all(metric in row for row in baseline_rows)
+            }
     return summary
 
 
@@ -99,6 +156,7 @@ def _aggregate_out_of_fold(
     precision = true_positive / np.maximum(confusion.sum(axis=0), 1)
     recall = true_positive / np.maximum(confusion.sum(axis=1), 1)
     f1 = 2 * precision * recall / np.maximum(precision + recall, 1e-12)
+    support = confusion.sum(axis=1) / max(confusion.sum(), 1)
     class_report = {
         name: {
             "precision": float(precision[index]),
@@ -114,6 +172,9 @@ def _aggregate_out_of_fold(
             "precision_macro": float(precision.mean()),
             "recall_macro": float(recall.mean()),
             "f1_macro": float(f1.mean()),
+            "precision_weighted": float((support * precision).sum()),
+            "recall_weighted": float((support * recall).sum()),
+            "f1_weighted": float((support * f1).sum()),
             "confusion_matrix": confusion.tolist(),
             "per_class": class_report,
             "roc_auc_ovr_macro_fold_mean": {
@@ -172,12 +233,54 @@ def _aggregate_out_of_fold(
     return aggregate
 
 
+def _load_finished_fold(
+    output_dir: Path,
+    test_tool: str,
+    expected_config: dict[str, Any],
+    expected_settings: dict[str, Any],
+    epochs: int,
+    batch_size: int,
+) -> dict[str, Any] | None:
+    """Reuse a fold only when its recorded training and data settings match."""
+    path = output_dir / f"fold-{test_tool}.json"
+    if not path.is_file():
+        return None
+    try:
+        with path.open(encoding="utf-8") as file:
+            result = json.load(file)
+        if not isinstance(result, dict):
+            return None
+        artifacts = result["artifacts"]
+        if not isinstance(artifacts, dict):
+            return None
+        for artifact in artifacts.values():
+            if not isinstance(artifact, str):
+                return None
+            artifact_path = (output_dir / artifact).resolve()
+            if not artifact_path.is_relative_to(output_dir.resolve()) or not artifact_path.is_file():
+                return None
+        if result["config"] != expected_config:
+            return None
+        for dotted_key, expected in expected_settings.items():
+            value: Any = result
+            for key in dotted_key.split("."):
+                value = value[key]
+            if value != expected:
+                return None
+        training = result["training"]
+        if training["epochs"] != epochs or training["batch_size"] != batch_size:
+            return None
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    return result
+
+
 def run_cross_validation(
     *,
     data_dir: str | Path,
     output_dir: str | Path,
     epochs: int = 5,
-    batch_size: int = 16,
+    batch_size: int = 32,
     learning_rate: float = 1e-4,
     input_len: int = 96,
     horizon: int = 24,
@@ -185,6 +288,7 @@ def run_cross_validation(
     decimation: int = 1,
     label_column: str = "image_label",
     dedup_identical_forces: bool = True,
+    trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
     prediction_head: str = "lead_conditioned",
@@ -192,12 +296,89 @@ def run_cross_validation(
     seed: int = 42,
     max_train_windows: int | None = None,
     max_eval_windows: int | None = None,
+    pool: int = 1,
+    image_lag: int = 0,
+    select_best: bool = True,
+    accumulation_steps: int = 1,
+    num_workers: int = 0,
+    resume: bool = True,
+    config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     tools = discover_tools(data_dir)
     folds = list(leave_one_tool_out_folds(tools))
+    source_signature = nonastreda_source_signature(data_dir)
     results: list[dict[str, Any]] = []
+    train_stride = stride if stride is not None else input_len + horizon
+    eval_stride = max(train_stride, horizon)
+    expected_config = asdict(
+        ModelConfig(
+            d_model=d_model,
+            input_len=input_len,
+            horizon=horizon,
+            image_encoder=image_encoder,
+            prediction_head=prediction_head,
+            **(config_overrides or {}),
+        )
+    )
+    tracker = ExperimentTracker(
+        output_path,
+        {
+            "dataset": "Nonastreda",
+            "data_dir": str(Path(data_dir).resolve()),
+            "source_signature": source_signature,
+            "protocol": "leave-one-tool-out with cyclic validation tool",
+            "tools": tools,
+            "folds": [
+                {
+                    "train_tools": list(fold.train_tools),
+                    "validation_tool": fold.validation_tools[0],
+                    "test_tool": fold.test_tools[0],
+                }
+                for fold in folds
+            ],
+            "training": {
+                "epochs": epochs,
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "stride": train_stride,
+                "evaluation_stride": eval_stride,
+                "accumulation_steps": accumulation_steps,
+                "seed": seed,
+                "device": device_name,
+            },
+            "preprocessing": {
+                "decimation": decimation,
+                "pool": pool,
+                "image_lag": image_lag,
+                "label_column": label_column,
+                "dedup_identical_forces": dedup_identical_forces,
+                "trim_pass": trim_pass,
+            },
+            "model": expected_config,
+            "runtime": {
+                "python": platform.python_version(),
+                "torch": str(torch.__version__),
+                "cuda_runtime": torch.version.cuda,
+                "device": device_name,
+                "gpu_name": (
+                    torch.cuda.get_device_name(torch.device(device_name))
+                    if device_name.startswith("cuda") and torch.cuda.is_available()
+                    else None
+                ),
+                "gpu_total_memory_bytes": (
+                    torch.cuda.get_device_properties(torch.device(device_name)).total_memory
+                    if device_name.startswith("cuda") and torch.cuda.is_available()
+                    else None
+                ),
+            },
+            "window_caps": {
+                "train": max_train_windows,
+                "evaluation": max_eval_windows,
+            },
+        },
+    )
 
     for fold_index, fold in enumerate(folds):
         test_tool = fold.test_tools[0]
@@ -207,6 +388,51 @@ def run_cross_validation(
             f"validation={fold.validation_tools[0]}, test={test_tool}",
             flush=True,
         )
+        finished = (
+            _load_finished_fold(
+                output_path,
+                test_tool,
+                expected_config,
+                {
+                    "source_signature": source_signature,
+                    "train_tools": list(fold.train_tools),
+                    "validation_tool": fold.validation_tools[0],
+                    "decimation": decimation,
+                    "pool": pool,
+                    "image_lag": image_lag,
+                    "label_column": label_column,
+                    "dedup_identical_forces": dedup_identical_forces,
+                    "trim_pass": trim_pass,
+                    "stride": train_stride,
+                    "evaluation_stride": eval_stride,
+                    "model_selection": (
+                        "best_validation_loss" if select_best else "last_epoch"
+                    ),
+                    "max_train_windows": max_train_windows,
+                    "max_eval_windows": max_eval_windows,
+                    "training.learning_rate": learning_rate,
+                    "training.accumulation_steps": accumulation_steps,
+                    "training.num_workers": num_workers,
+                    "training.seed": seed + fold_index,
+                    "training.device": device_name,
+                },
+                epochs,
+                batch_size,
+            )
+            if resume
+            else None
+        )
+        if finished is not None:
+            print(f"  {test_tool}: reusing a completed fold with matching settings", flush=True)
+            tracker.log(
+                split="test",
+                fold=test_tool,
+                epoch=finished.get("selected_epoch"),
+                metrics=finished["test"],
+                context={"reused_completed_fold": True},
+            )
+            results.append(finished)
+            continue
         result = train_fold(
             data_dir=data_dir,
             test_tool=test_tool,
@@ -220,6 +446,7 @@ def run_cross_validation(
             decimation=decimation,
             label_column=label_column,
             dedup_identical_forces=dedup_identical_forces,
+            trim_pass=trim_pass,
             image_encoder=image_encoder,
             d_model=d_model,
             prediction_head=prediction_head,
@@ -227,11 +454,20 @@ def run_cross_validation(
             max_eval_windows=max_eval_windows,
             device_name=device_name,
             seed=seed + fold_index,
+            pool=pool,
+            image_lag=image_lag,
+            select_best=select_best,
+            accumulation_steps=accumulation_steps,
+            num_workers=num_workers,
+            resume=resume,
+            config_overrides=config_overrides,
+            tracker=tracker,
         )
         results.append(result)
         partial = {
             "completed_folds": [entry["test_tool"] for entry in results],
             "cv_mean_std": _summarize_folds(results),
+            "paper_horizons_mean_std": _summarize_paper_horizons(results),
         }
         with (output_path / "cross-validation-progress.json").open(
             "w", encoding="utf-8"
@@ -241,13 +477,36 @@ def run_cross_validation(
     summary = {
         "protocol": "10-fold leave-one-tool-out; 8 train tools, next cyclic tool validation, 1 test tool",
         "prediction_head": prediction_head,
+        "trim_pass": trim_pass,
+        "pass_trimming": "span" if trim_pass else "none",
+        "pool": pool,
+        "image_lag": image_lag,
+        "model_selection": (
+            "best_validation_loss" if select_best else "last_epoch"
+        ),
+        "source_signature": source_signature,
+        "config": expected_config,
         "tools": tools,
         "folds": results,
         "cv_mean_std": _summarize_folds(results),
+        "paper_horizons_mean_std": _summarize_paper_horizons(results),
         "out_of_fold": _aggregate_out_of_fold(results, output_path),
     }
     with (output_path / "cross-validation-results.json").open(
         "w", encoding="utf-8"
     ) as file:
         json.dump(summary, file, indent=2)
+    tracker.log(
+        split="cross_validation",
+        metrics={
+            "cv_mean_std": summary["cv_mean_std"],
+            "paper_horizons_mean_std": summary["paper_horizons_mean_std"],
+            "out_of_fold": summary["out_of_fold"],
+        },
+        context={
+            "folds": len(results),
+            "tools": tools,
+            "completed_folds": [entry["test_tool"] for entry in results],
+        },
+    )
     return summary

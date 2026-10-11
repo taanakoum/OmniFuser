@@ -165,12 +165,21 @@ class GraphAttentionLayer(nn.Module):
 
 
 class ImageFeatureEncoder(nn.Module):
-    def __init__(self, name: str, d_model: int) -> None:
+    def __init__(
+        self,
+        name: str,
+        d_model: int,
+        pretrained: bool = False,
+        freeze_bn: bool = False,
+    ) -> None:
         super().__init__()
+        self.freeze_bn = freeze_bn
         if name == "efficientnet_b0":
-            from torchvision.models import efficientnet_b0
+            from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
 
-            backbone = efficientnet_b0(weights=None)
+            backbone = efficientnet_b0(
+                weights=EfficientNet_B0_Weights.IMAGENET1K_V1 if pretrained else None
+            )
             self.features = backbone.features
             self.pool = nn.AdaptiveAvgPool2d(1)
             input_width = 1280
@@ -191,6 +200,14 @@ class ImageFeatureEncoder(nn.Module):
             input_width = 96
         self.projection = nn.Linear(input_width, d_model)
 
+    def train(self, mode: bool = True) -> "ImageFeatureEncoder":
+        super().train(mode)
+        if mode and self.freeze_bn:
+            for module in self.modules():
+                if isinstance(module, nn.modules.batchnorm._BatchNorm):
+                    module.eval()
+        return self
+
     def forward(self, images: Tensor) -> Tensor:
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
@@ -203,7 +220,12 @@ class ImageFeatureEncoder(nn.Module):
 class ImageBranch(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.encoder = ImageFeatureEncoder(config.image_encoder, config.d_model)
+        self.encoder = ImageFeatureEncoder(
+            config.image_encoder,
+            config.d_model,
+            pretrained=config.pretrained,
+            freeze_bn=config.freeze_bn,
+        )
         self.register_buffer(
             "position_encoding",
             sinusoidal_position_encoding(config.input_len, config.d_model),
@@ -256,16 +278,25 @@ class CrossModalFusionLayer(nn.Module):
         self.shared_i = nn.Linear(d, d, bias=False)
         self.score_r = nn.Linear(d, config.num_landmarks, bias=False)
         self.score_i = nn.Linear(d, config.num_landmarks, bias=False)
-        self.self_r = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
-        self.self_i = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
-        self.self_norm_r = nn.LayerNorm(d)
-        self.self_norm_i = nn.LayerNorm(d)
+        self.pre_attn = config.pre_attn
+        if self.pre_attn:
+            self.self_r = nn.MultiheadAttention(
+                d, config.num_gat_heads, dropout=config.dropout, batch_first=True
+            )
+            self.self_i = nn.MultiheadAttention(
+                d, config.num_gat_heads, dropout=config.dropout, batch_first=True
+            )
+            self.self_norm_r = nn.LayerNorm(d)
+            self.self_norm_i = nn.LayerNorm(d)
+        self.als_mode = config.als_mode
         self.value_r = nn.Linear(d, d, bias=False)
         self.value_i = nn.Linear(d, d, bias=False)
         self.private_self_r = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
         self.private_self_i = nn.MultiheadAttention(d, config.num_gat_heads, dropout=config.dropout, batch_first=True)
-        self.private_norm_r = nn.LayerNorm(d)
-        self.private_norm_i = nn.LayerNorm(d)
+        self.private_attn = config.private_attn
+        if self.private_attn == "residual_ln":
+            self.private_norm_r = nn.LayerNorm(d)
+            self.private_norm_i = nn.LayerNorm(d)
         self.global_gate_r = nn.Linear(2 * d, d)
         self.global_gate_i = nn.Linear(2 * d, d)
         self.local_depthwise_r = nn.Conv1d(2 * d, 2 * d, 3, padding=1, groups=2 * d)
@@ -282,11 +313,16 @@ class CrossModalFusionLayer(nn.Module):
         self.dropout = nn.Dropout(config.dropout)
         self.eps = 1e-8
 
-    @staticmethod
     def _landmarks(
-        x: Tensor, scorer: nn.Linear, value_projection: nn.Linear
+        self, x: Tensor, scorer: nn.Linear, value_projection: nn.Linear
     ) -> tuple[Tensor, Tensor]:
-        weights = torch.softmax(scorer(x), dim=1)
+        logits = scorer(x)
+        if self.als_mode == "time":
+            weights = torch.softmax(logits, dim=1)
+        else:
+            weights = torch.softmax(logits, dim=-1)
+            if self.als_mode == "k_colnorm":
+                weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1e-8)
         landmarks = weights.transpose(1, 2) @ x
         landmark_values = weights.transpose(1, 2) @ value_projection(x)
         return landmarks, landmark_values
@@ -315,10 +351,11 @@ class CrossModalFusionLayer(nn.Module):
         return mix * global_gate + (1.0 - mix) * local_gate
 
     def forward(self, r: Tensor, i: Tensor) -> tuple[Tensor, Tensor, Tensor]:
-        self_r, _ = self.self_r(r, r, r, need_weights=False)
-        self_i, _ = self.self_i(i, i, i, need_weights=False)
-        r = self.self_norm_r(r + self.dropout(self_r))
-        i = self.self_norm_i(i + self.dropout(self_i))
+        if self.pre_attn:
+            self_r, _ = self.self_r(r, r, r, need_weights=False)
+            self_i, _ = self.self_i(i, i, i, need_weights=False)
+            r = self.self_norm_r(r + self.dropout(self_r))
+            i = self.self_norm_i(i + self.dropout(self_i))
         shared_r, private_r = self._decompose(r, self.shared_r)
         shared_i, private_i = self._decompose(i, self.shared_i)
         orthogonality_r = (shared_r * private_r).sum(dim=(1, 2))
@@ -329,8 +366,11 @@ class CrossModalFusionLayer(nn.Module):
         private_att_i, _ = self.private_self_i(
             private_i, private_i, private_i, need_weights=False
         )
-        private_r = self.private_norm_r(private_r + self.dropout(private_att_r))
-        private_i = self.private_norm_i(private_i + self.dropout(private_att_i))
+        if self.private_attn == "residual_ln":
+            private_r = self.private_norm_r(private_r + self.dropout(private_att_r))
+            private_i = self.private_norm_i(private_i + self.dropout(private_att_i))
+        else:
+            private_r, private_i = private_att_r, private_att_i
 
         land_r, value_land_r = self._landmarks(shared_r, self.score_r, self.value_r)
         land_i, value_land_i = self._landmarks(shared_i, self.score_i, self.value_i)
@@ -377,9 +417,15 @@ class OmniFuser(nn.Module):
         self.temporal_embedding = TemporalEmbedding(self.config)
         self.temporal_encoder = MultiResolutionTemporalExtractor(self.config)
         self.image_branch = ImageBranch(self.config)
-        self.fusion_layers = nn.ModuleList(
-            CrossModalFusionLayer(self.config) for _ in range(self.config.num_fusion_layers)
-        )
+        if self.config.share_c2f:
+            shared_layer = CrossModalFusionLayer(self.config)
+            self.fusion_layers = nn.ModuleList(
+                shared_layer for _ in range(self.config.num_fusion_layers)
+            )
+        else:
+            self.fusion_layers = nn.ModuleList(
+                CrossModalFusionLayer(self.config) for _ in range(self.config.num_fusion_layers)
+            )
         self.refine_sensor = nn.ModuleList(
             nn.Linear(self.config.d_model, self.config.d_model, bias=False)
             for _ in range(max(self.config.num_fusion_layers - 1, 0))
@@ -398,8 +444,35 @@ class OmniFuser(nn.Module):
         else:
             self.forecast_step_embedding = None
             self.forecast_projection = None
-        self.force_head = nn.Linear(d, self.config.force_channels)
-        self.classification_head = nn.Linear(d, self.config.num_classes)
+        if self.config.prediction_head == "direct":
+            self.direct_force = nn.Linear(
+                d, self.config.horizon * self.config.force_channels
+            )
+            self.direct_class = nn.Linear(
+                d, self.config.horizon * self.config.num_classes
+            )
+        else:
+            self.force_head = nn.Linear(d, self.config.force_channels)
+            self.classification_head = nn.Linear(d, self.config.num_classes)
+
+    def _mask_modalities(
+        self, sensor: Tensor, image: Tensor, drop_modality: str | None
+    ) -> tuple[Tensor, Tensor]:
+        if drop_modality == "sensor":
+            return torch.zeros_like(sensor), image
+        if drop_modality == "image":
+            return sensor, torch.zeros_like(image)
+        if drop_modality is not None:
+            raise ValueError("drop_modality must be None, 'sensor' or 'image'")
+        probability = self.config.modality_dropout
+        if self.training and probability > 0.0:
+            draw = torch.rand(sensor.shape[0], device=sensor.device)
+            keep_sensor = (draw >= probability / 2).to(sensor.dtype)
+            keep_image = ((draw < probability / 2) | (draw >= probability)).to(
+                image.dtype
+            )
+            return sensor * keep_sensor[:, None, None], image * keep_image[:, None, None]
+        return sensor, image
 
     def forward(
         self,
@@ -409,6 +482,7 @@ class OmniFuser(nn.Module):
         cycle: Tensor | None = None,
         batch_code: Tensor | None = None,
         relative: Tensor | None = None,
+        drop_modality: str | None = None,
     ) -> dict[str, Any]:
         if force.ndim != 3 or force.shape[1] != self.config.input_len:
             raise ValueError(f"force must have shape (batch, {self.config.input_len}, channels)")
@@ -418,6 +492,7 @@ class OmniFuser(nn.Module):
             self.temporal_embedding(force, cycle, batch_code, relative)
         )
         image = self.image_branch(images, image_indices, cycle, batch_code, relative)
+        sensor, image = self._mask_modalities(sensor, image, drop_modality)
         original_sensor, original_image = sensor, image
         fused: Tensor | None = None
         alignment_loss = force.new_zeros(())
@@ -436,7 +511,14 @@ class OmniFuser(nn.Module):
         if fused is None:
             raise RuntimeError("OmniFuser requires at least one fusion layer")
         final = fused[:, -1]
-        if self.config.prediction_head == "paper_literal":
+        if self.config.prediction_head == "direct":
+            force_output = self.direct_force(final).view(
+                -1, self.config.horizon, self.config.force_channels
+            )
+            class_output = self.direct_class(final).view(
+                -1, self.config.horizon, self.config.num_classes
+            )
+        elif self.config.prediction_head == "paper_literal":
             force_step = self.force_head(final)
             class_step = self.classification_head(final)
             force_output = force_step[:, None].expand(
@@ -498,9 +580,13 @@ def classification_metrics(logits: Tensor, targets: Tensor) -> dict[str, float]:
     precision = true_positive / confusion.sum(dim=0).clamp_min(1)
     recall = true_positive / confusion.sum(dim=1).clamp_min(1)
     f1 = 2 * precision * recall / (precision + recall).clamp_min(1e-12)
+    support = confusion.sum(dim=1).float() / confusion.sum().clamp_min(1)
     return {
         "accuracy": float(true_positive.sum() / confusion.sum().clamp_min(1)),
         "precision_macro": float(precision.mean()),
         "recall_macro": float(recall.mean()),
         "f1_macro": float(f1.mean()),
+        "precision_weighted": float((support * precision).sum()),
+        "recall_weighted": float((support * recall).sum()),
+        "f1_weighted": float((support * f1).sum()),
     }

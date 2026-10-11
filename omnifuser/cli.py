@@ -8,8 +8,91 @@ from typing import Sequence
 
 import numpy as np
 
-from omnifuser.data import load_nonastreda, make_tool_timelines
+from omnifuser.data import (
+    PASS_TRIM_REFERENCE_FRACTION,
+    PASS_TRIM_THRESHOLD_FRACTION,
+    PASS_TRIM_WINDOW_SAMPLES,
+    load_nonastreda,
+    make_tool_timelines,
+)
 from omnifuser.train import train_fold
+
+
+def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--pool",
+        type=int,
+        default=1,
+        help="mean-pool this many samples per time step after trimming and decimation",
+    )
+    parser.add_argument(
+        "--image-lag",
+        type=int,
+        choices=(0, 1),
+        default=0,
+        help="use the current pass photo (0) or preceding record's photo in tool order (1)",
+    )
+    parser.add_argument(
+        "--select-best",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="test the best validation-loss epoch instead of the last epoch",
+    )
+    parser.add_argument("--accumulation-steps", type=int, default=1)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--resume",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="resume interrupted folds and reuse complete matching CV folds",
+    )
+    parser.add_argument(
+        "--pre-attn",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="include extra self-attention before shared/private separation (not in paper figures)",
+    )
+    parser.add_argument(
+        "--als-mode",
+        choices=("time", "k_sum", "k_colnorm"),
+        default="time",
+        help="landmark weighting: time-softmax, paper Eq. 10, or Eq. 10 with column normalization",
+    )
+    parser.add_argument(
+        "--private-attn",
+        choices=("residual_ln", "plain"),
+        default="residual_ln",
+        help="private path: LayerNorm(P + MHA(P)) or MHA(P) as printed",
+    )
+    parser.add_argument(
+        "--share-c2f",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="reuse C2F weights across refinement rounds; paper Eq. 20 uses one G, figure shows layered blocks",
+    )
+    parser.add_argument("--modality-dropout", type=float, default=0.0)
+    parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument("--freeze-bn", action="store_true")
+
+
+def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
+    return {
+        "pool": args.pool,
+        "image_lag": args.image_lag,
+        "select_best": args.select_best,
+        "accumulation_steps": args.accumulation_steps,
+        "num_workers": args.num_workers,
+        "resume": args.resume,
+        "config_overrides": {
+            "pre_attn": args.pre_attn,
+            "als_mode": args.als_mode,
+            "private_attn": args.private_attn,
+            "share_c2f": args.share_c2f,
+            "modality_dropout": args.modality_dropout,
+            "pretrained": args.pretrained,
+            "freeze_bn": args.freeze_bn,
+        },
+    }
 
 
 def _inspect(args: argparse.Namespace) -> None:
@@ -18,6 +101,8 @@ def _inspect(args: argparse.Namespace) -> None:
         label_column=args.label_column,
         decimation=args.decimation,
         dedup_identical_forces=args.dedup_identical_forces,
+        trim_pass=args.trim_pass,
+        pool=args.pool,
     )
     label_names = (
         ("sharp", "used", "dulled")
@@ -36,20 +121,105 @@ def _inspect(args: argparse.Namespace) -> None:
         for blocks in pairs.values()
         if 3 in blocks and 4 in blocks and np.array_equal(blocks[3], blocks[4])
     )
+    force_groups: dict[tuple[str, int], list[np.ndarray]] = defaultdict(list)
+    duplicate_force_rows = 0
+    for record in records:
+        group = force_groups[(record.tool, record.run)]
+        if any(np.array_equal(record.force, existing) for existing in group):
+            duplicate_force_rows += 1
+        else:
+            group.append(record.force)
     timelines = make_tool_timelines(records)
+    window_stride = (
+        args.stride
+        if args.stride is not None
+        else args.input_len + args.horizon
+    )
+    if args.input_len < 1 or args.horizon < 1 or window_stride < 1:
+        raise ValueError("input length, horizon, and stride must be positive")
+    windows_by_tool = {
+        timeline.tool: max(
+            (len(timeline.force) - args.input_len - args.horizon) // window_stride + 1,
+            0,
+        )
+        for timeline in timelines
+    }
+    most_trimmed_records = sorted(
+        (
+            record
+            for record in records
+            if record.trimmed_lead_samples + record.trimmed_runout_samples > 0
+        ),
+        key=lambda record: (
+            record.trimmed_lead_samples + record.trimmed_runout_samples
+        )
+        / max(record.source_length_samples, 1),
+        reverse=True,
+    )[:10]
     report = {
         "records": len(records),
         "tools": len(by_tool),
         "classes": {name: counts[index] for index, name in enumerate(label_names)},
-        "force_length_after_decimation": {
+        "force_length_after_preprocessing": {
             "min": min(len(record.force) for record in records),
             "median": int(np.median([len(record.force) for record in records])),
             "max": max(len(record.force) for record in records),
         },
         "tool_stream_samples": {timeline.tool: len(timeline.force) for timeline in timelines},
+        "retained_record_images": len({record.image_path for record in records}),
+        "pool_dropped_samples": {
+            "per_record_sum": sum(record.pool_dropped_samples for record in records),
+            "unit": "post-decimation source samples",
+        },
+        "window": {
+            "input_len": args.input_len,
+            "horizon": args.horizon,
+            "stride": window_stride,
+            "windows_by_tool": windows_by_tool,
+            "total_windows": sum(windows_by_tool.values()),
+        },
         "exact_duplicate_B3_B4_pairs_remaining": duplicate_b3_b4,
+        "exact_duplicate_force_rows_remaining": duplicate_force_rows,
         "decimation": args.decimation,
+        "pool": args.pool,
         "dedup_identical_forces": args.dedup_identical_forces,
+        "trim_pass": args.trim_pass,
+        "pass_trimming": "span" if args.trim_pass else "none",
+        "pass_trimming_parameters": (
+            {
+                "envelope_window_samples": PASS_TRIM_WINDOW_SAMPLES,
+                "early_reference_fraction": PASS_TRIM_REFERENCE_FRACTION,
+                "active_threshold_fraction": PASS_TRIM_THRESHOLD_FRACTION,
+            }
+            if args.trim_pass
+            else None
+        ),
+        "pass_trimming_report": {
+            "records_trimmed": sum(
+                1
+                for record in records
+                if record.trimmed_lead_samples + record.trimmed_runout_samples > 0
+            ),
+            "removed_lead_samples": sum(
+                record.trimmed_lead_samples for record in records
+            ),
+            "removed_runout_samples": sum(
+                record.trimmed_runout_samples for record in records
+            ),
+            "most_trimmed_records": [
+                {
+                    "record_id": record.record_id,
+                    "source_length_samples": record.source_length_samples,
+                    "trimmed_lead_samples": record.trimmed_lead_samples,
+                    "trimmed_runout_samples": record.trimmed_runout_samples,
+                    "removed_fraction": (
+                        record.trimmed_lead_samples + record.trimmed_runout_samples
+                    )
+                    / max(record.source_length_samples, 1),
+                }
+                for record in most_trimmed_records
+            ],
+        },
         "duplicate_policy": (
             "retain record with greatest flank_wear"
             if args.dedup_identical_forces
@@ -70,12 +240,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
     inspect_parser.add_argument("--decimation", type=int, default=1)
+    inspect_parser.add_argument("--pool", type=int, default=1)
+    inspect_parser.add_argument("--input-len", type=int, default=96)
+    inspect_parser.add_argument("--horizon", type=int, default=24)
+    inspect_parser.add_argument("--stride", type=int)
+    inspect_parser.add_argument(
+        "--trim-pass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="trim only pass lead-in/run-out with the Nonastreda span rule (default)",
+    )
     duplicate_group = inspect_parser.add_mutually_exclusive_group()
     duplicate_group.add_argument(
         "--dedup-identical-forces",
         dest="dedup_identical_forces",
         action="store_true",
-        help="merge exact B3/B4 force duplicates using the more-worn record annotation (default)",
+        help="merge exact force duplicates within each tool/run using the most-worn annotation (default)",
     )
     duplicate_group.add_argument(
         "--keep-identical-forces",
@@ -91,7 +271,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--test-tool", default="T10")
     train_parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
     train_parser.add_argument("--epochs", type=int, default=5)
-    train_parser.add_argument("--batch-size", type=int, default=2)
+    train_parser.add_argument("--batch-size", type=int, default=32)
     train_parser.add_argument("--learning-rate", type=float, default=1e-4)
     train_parser.add_argument("--input-len", type=int, default=96)
     train_parser.add_argument("--horizon", type=int, default=24)
@@ -102,6 +282,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     train_parser.add_argument("--decimation", type=int, default=1)
     train_parser.add_argument(
+        "--trim-pass",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="trim only pass lead-in/run-out with the Nonastreda span rule (default)",
+    )
+    train_parser.add_argument(
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
     duplicate_group = train_parser.add_mutually_exclusive_group()
@@ -109,7 +295,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dedup-identical-forces",
         dest="dedup_identical_forces",
         action="store_true",
-        help="merge exact B3/B4 force duplicates using the more-worn record annotation (default)",
+        help="merge exact force duplicates within each tool/run using the most-worn annotation (default)",
     )
     duplicate_group.add_argument(
         "--keep-identical-forces",
@@ -126,10 +312,11 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--d-model", type=int, default=32)
     train_parser.add_argument(
         "--prediction-head",
-        choices=("paper_literal", "lead_conditioned"),
+        choices=("paper_literal", "lead_conditioned", "direct"),
         default="lead_conditioned",
-        help="paper-literal repeated head or lead-conditioned multi-horizon head",
+        help="paper-literal repeated, direct per-lead, or lead-conditioned head",
     )
+    add_protocol_arguments(train_parser)
     train_parser.add_argument("--max-train-windows", type=int)
     train_parser.add_argument("--max-eval-windows", type=int)
     train_parser.add_argument("--device", default="cpu")
@@ -152,6 +339,7 @@ def _train(args: argparse.Namespace) -> None:
         decimation=args.decimation,
         label_column=args.label_column,
         dedup_identical_forces=args.dedup_identical_forces,
+        trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         d_model=args.d_model,
         prediction_head=args.prediction_head,
@@ -159,6 +347,7 @@ def _train(args: argparse.Namespace) -> None:
         max_eval_windows=args.max_eval_windows,
         device_name=args.device,
         seed=args.seed,
+        **protocol_kwargs(args),
     )
     print(json.dumps(result, indent=2))
 

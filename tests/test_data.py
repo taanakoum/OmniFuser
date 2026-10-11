@@ -62,6 +62,21 @@ def test_windows_keep_force_label_and_image_alignment_across_records() -> None:
     assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
 
 
+def test_lag_one_uses_previous_pass_image_but_current_pass_target() -> None:
+    first = _record("T1R1B1", "T1", 1, 1, 1.0, 0)
+    second = _record("T1R1B2", "T1", 1, 2, 2.0, 1)
+    timeline = make_tool_timelines([first, second], image_lag=1)[0]
+    dataset = WindowDataset(
+        [timeline], ForceNormalizer.fit([timeline]), input_len=12, horizon=6, stride=6
+    )
+
+    sample = dataset[9]
+
+    assert sample["image_paths"] == (first.image_path,) * 12
+    assert sample["shown_label"] == 0
+    assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
+
+
 def test_loto_keeps_each_tool_in_one_split() -> None:
     folds = list(leave_one_tool_out_folds(["T1", "T2", "T3", "T4"]))
     fold = folds[0]
@@ -103,6 +118,7 @@ def test_collate_keeps_images_batched_and_indices_local(tmp_path: Path) -> None:
         "force": np.zeros((4, 3), dtype=np.float32),
         "force_target": np.zeros((2, 3), dtype=np.float32),
         "class_target": np.zeros(2, dtype=np.int64),
+        "shown_label": np.int64(0),
         "cycle": np.zeros(4, dtype=np.int64),
         "batch": np.zeros(4, dtype=np.int64),
         "relative": np.zeros(4, dtype=np.int64),
@@ -119,10 +135,11 @@ def test_collate_keeps_images_batched_and_indices_local(tmp_path: Path) -> None:
     assert batch["image_indices"][1].tolist() == [0, 0, 0, 0]
 
 
-def test_exact_b3_b4_force_duplicate_keeps_more_worn_annotation(tmp_path: Path) -> None:
+def test_exact_force_duplicates_keep_most_worn_annotation_per_run(tmp_path: Path) -> None:
     (tmp_path / "tool").mkdir()
     rows = np.empty((4, 5), dtype=object)
     force = np.arange(3 * 120, dtype=np.float64).reshape(3, 120)
+    duplicate_force = force + 1000
     ids = [f"T1R1B{block}" for block in range(1, 5)]
     labels = ("sharp", "sharp", "used", "dulled")
     for index, record_id in enumerate(ids):
@@ -132,7 +149,7 @@ def test_exact_b3_b4_force_duplicate_keeps_more_worn_annotation(tmp_path: Path) 
             filename,
             labels[index],
             "1",
-            force.copy() if index in {2, 3} else force + index,
+            force.copy() if index in {0, 1} else duplicate_force.copy(),
             "",
         ]
     savemat(tmp_path / "forces_xyz_raw.mat", {"baseDatastore": rows})
@@ -149,16 +166,60 @@ def test_exact_b3_b4_force_duplicate_keeps_more_worn_annotation(tmp_path: Path) 
         )
 
     kept = load_nonastreda(
-        tmp_path, decimation=1, dedup_identical_forces=False
+        tmp_path, decimation=1, dedup_identical_forces=False, trim_pass=False
     )
-    deduplicated = load_nonastreda(tmp_path, decimation=1)
+    deduplicated = load_nonastreda(tmp_path, decimation=1, trim_pass=False)
     assert len(kept) == 4
-    assert len(deduplicated) == 3
+    assert len(deduplicated) == 2
     assert {record.record_id for record in deduplicated} == {
-        "T1R1B1",
         "T1R1B2",
         "T1R1B4",
     }
+    selected_first_duplicate = next(r for r in deduplicated if r.block == 2)
+    assert selected_first_duplicate.label == 0
+    assert selected_first_duplicate.image_path.name == "T1R1B2.jpg"
     selected_duplicate = next(r for r in deduplicated if r.block == 4)
     assert selected_duplicate.label == 2
     assert selected_duplicate.image_path.name == "T1R1B4.jpg"
+
+
+def test_default_span_trimming_preserves_record_label_and_image(tmp_path: Path) -> None:
+    (tmp_path / "tool").mkdir()
+    record_ids = ("T1R1B1", "T1R1B2")
+    for record_id in record_ids:
+        Image.new("RGB", (20, 10)).save(tmp_path / "tool" / f"{record_id}.jpg")
+    force = np.zeros((3, 1000), dtype=np.float64)
+    force[:, 10:990] = 10
+    force[:, 500:510] = 0
+    rows = np.empty((2, 5), dtype=object)
+    rows[0] = [f"{record_ids[0]}.jpg", "used", "1", force, ""]
+    rows[1] = [
+        f"{record_ids[1]}.jpg",
+        "dulled",
+        "1",
+        np.full((3, 1000), 20, dtype=np.float64),
+        "",
+    ]
+    savemat(tmp_path / "forces_xyz_raw.mat", {"baseDatastore": rows})
+    with (tmp_path / "labels.csv").open("w", newline="", encoding="utf-8") as file:
+        file.write("id,image_label,tool_label\n")
+        file.writelines(f"{record_id},{label},1\n" for record_id, label in zip(record_ids, ("used", "dulled")))
+    with (tmp_path / "labels_reg.csv").open(
+        "w", newline="", encoding="utf-8"
+    ) as file:
+        file.write("id,gaps,flank_wear,overhang\n")
+        file.writelines(f"{record_id},0,40,0\n" for record_id in record_ids)
+
+    trimmed = load_nonastreda(tmp_path)[0]
+    untrimmed = load_nonastreda(tmp_path, trim_pass=False)[0]
+
+    assert len(untrimmed.force) == 1000
+    assert 900 < len(trimmed.force) < len(untrimmed.force)
+    assert trimmed.label == 1
+    assert trimmed.image_path == tmp_path / "tool" / f"{record_ids[0]}.jpg"
+    assert np.any(np.all(trimmed.force == 0, axis=1))
+    assert trimmed.source_length_samples == 1000
+    assert trimmed.trimmed_lead_samples > 0
+    assert trimmed.trimmed_runout_samples > 0
+    assert untrimmed.trimmed_lead_samples == 0
+    assert untrimmed.trimmed_runout_samples == 0
