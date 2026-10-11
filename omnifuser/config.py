@@ -19,6 +19,7 @@ class ModelConfig:
     num_landmarks: int = 4
     fusion_rank: int = 8
     decomp_mode: str = "branch"
+    prediction_head: str = "lead_conditioned"
     image_encoder: str = "efficientnet_b0"
     image_height: int = 128
     image_width: int = 384
@@ -31,6 +32,10 @@ class ModelConfig:
             raise ValueError("model width and force channel count must be positive")
         if self.decomp_mode not in {"branch", "literal"}:
             raise ValueError("decomp_mode must be 'branch' or 'literal'")
+        if self.prediction_head not in {"paper_literal", "lead_conditioned"}:
+            raise ValueError(
+                "prediction_head must be 'paper_literal' or 'lead_conditioned'"
+            )
         if self.fusion_rank < 1 or self.num_landmarks < 1:
             raise ValueError("fusion_rank and num_landmarks must be positive")
         if self.num_fusion_layers < 1:

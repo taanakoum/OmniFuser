@@ -35,6 +35,23 @@ Run a capped local end-to-end check with the full EfficientNet-B0 model:
 .\.venv\Scripts\python.exe scripts\train_local.py
 ```
 
+Compare the two prediction heads on the same capped T10 fold and seed using
+separate artifact directories:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\train_local.py --prediction-head paper_literal `
+  --output-dir outputs\comparison-paper-literal
+.\.venv\Scripts\python.exe scripts\train_local.py --prediction-head lead_conditioned `
+  --output-dir outputs\comparison-lead-conditioned
+```
+
+Use `--image-encoder compact` to make this smoke comparison faster on CPU. These
+short runs verify that both model variants train and emit evaluation artifacts;
+their metrics are not meaningful performance comparisons. For a full
+cross-validation comparison, run `scripts\train_lightning.py` twice with the
+same settings and seed, changing `--prediction-head` and using a different
+`--output-dir` for each run.
+
 Run a full 10-fold experiment on a GPU machine (including a Lightning AI
 Studio):
 
@@ -42,7 +59,8 @@ Studio):
 python scripts/train_lightning.py \
   --data-dir /path/to/Nonastreda_Data \
   --output-dir /path/to/persistent-storage/omnifuser \
-  --epochs 5 --batch-size 16 --device cuda
+  --epochs 5 --batch-size 16 --device cuda \
+  --prediction-head lead_conditioned
 ```
 
 For each held-out test tool, the next tool in numeric order is validation and
@@ -95,6 +113,7 @@ python -m pip install -e ".[test]"
 omnifuser inspect --data-dir /path/to/Nonastreda_Data
 omnifuser train --data-dir /path/to/Nonastreda_Data --test-tool T10 \
   --epochs 50 --batch-size 16 --device cuda \
+  --prediction-head lead_conditioned \
   --output-dir /path/to/persistent-storage/omnifuser
 ```
 
@@ -104,6 +123,7 @@ Run all ten held-out-tool folds from the Studio terminal with:
 for tool in T1 T2 T3 T4 T5 T6 T7 T8 T9 T10; do
   omnifuser train --data-dir /path/to/Nonastreda_Data --test-tool "$tool" \
     --epochs 50 --batch-size 16 --device cuda \
+    --prediction-head lead_conditioned \
     --output-dir /path/to/persistent-storage/omnifuser
 done
 ```
@@ -148,13 +168,21 @@ rate experiment.
   projections with the paper's Frobenius-orthogonal private residual, learned
   proxy landmarks, cross-modal attention, global/local hybrid gates, bottleneck
   low-rank fusion, and recursive re-injection of the original modalities.
-  Fixed sine/cosine positional encodings and learned cycle, batch, and
-  within-record period embeddings are used in both modality streams.
-- The paper's prediction equations use only the final fused token and define
-  the same linear force/classification head at every forecast step. We
-  implement that literally, so each sample's predicted force and class logits
-  are constant over its horizon. This is an explicit consequence of the
-  printed equations and may underfit force dynamics.
+  Fixed sine/cosine positional encodings and learned period embeddings are
+  used in both modality streams: the dataset run number supplies the spindle
+  cycle ID, the block/pass number supplies the batch ID, and each sample's
+  fractional position in its record is quantized into one of 16 learned
+  relative-position bins. The three learned vectors are summed with the value
+  and position embeddings. The 16-bin mapping is a Nonastreda implementation
+  choice; see [IMPLEMENTATION_AUDIT.md](IMPLEMENTATION_AUDIT.md).
+- Two prediction heads are available with `--prediction-head`: `paper_literal`
+  reproduces the paper's printed final-token linear equations and therefore
+  repeats the same result at every lead; `lead_conditioned` (default) adds a
+  learned forecast-step embedding to the final fused context before shared
+  decoding, allowing lead-specific outputs. The latter is a deliberate,
+  documented deviation from the paper. Compare the variants using the same
+  data, fold seeds, and training parameters, and use separate output
+  directories so fold artifacts cannot overwrite one another.
 - Paper hyperparameters include Adam at 1e-4, four GAT layers/heads, four
   landmarks, and two progressive-fusion rounds. The local training batch
   defaults to 2 rather than the paper's 32 to accommodate limited compute; use

@@ -389,6 +389,15 @@ class OmniFuser(nn.Module):
             for _ in range(max(self.config.num_fusion_layers - 1, 0))
         )
         d = self.config.d_model
+        if self.config.prediction_head == "lead_conditioned":
+            self.forecast_step_embedding = nn.Embedding(self.config.horizon, d)
+            self.forecast_projection = nn.Sequential(
+                nn.Linear(2 * d, d),
+                nn.GELU(),
+            )
+        else:
+            self.forecast_step_embedding = None
+            self.forecast_projection = None
         self.force_head = nn.Linear(d, self.config.force_channels)
         self.classification_head = nn.Linear(d, self.config.num_classes)
 
@@ -427,11 +436,28 @@ class OmniFuser(nn.Module):
         if fused is None:
             raise RuntimeError("OmniFuser requires at least one fusion layer")
         final = fused[:, -1]
-        force_step = self.force_head(final)
-        class_step = self.classification_head(final)
+        if self.config.prediction_head == "paper_literal":
+            force_step = self.force_head(final)
+            class_step = self.classification_head(final)
+            force_output = force_step[:, None].expand(
+                -1, self.config.horizon, -1
+            )
+            class_output = class_step[:, None].expand(
+                -1, self.config.horizon, -1
+            )
+        else:
+            if self.forecast_step_embedding is None or self.forecast_projection is None:
+                raise RuntimeError("lead-conditioned prediction layers are not initialized")
+            lead_codes = self.forecast_step_embedding.weight.unsqueeze(0).expand(
+                final.shape[0], -1, -1
+            )
+            context = final.unsqueeze(1).expand(-1, self.config.horizon, -1)
+            future = self.forecast_projection(torch.cat((context, lead_codes), dim=-1))
+            force_output = self.force_head(future)
+            class_output = self.classification_head(future)
         return {
-            "force": force_step[:, None].expand(-1, self.config.horizon, -1),
-            "class_logits": class_step[:, None].expand(-1, self.config.horizon, -1),
+            "force": force_output,
+            "class_logits": class_output,
             "alignment_loss": alignment_loss / len(self.fusion_layers),
             "orthogonality_loss": orthogonality_loss / len(self.fusion_layers),
         }

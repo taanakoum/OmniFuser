@@ -23,6 +23,11 @@ def main() -> None:
         default="efficientnet_b0",
     )
     parser.add_argument(
+        "--prediction-head",
+        choices=("paper_literal", "lead_conditioned"),
+        default="lead_conditioned",
+    )
+    parser.add_argument(
         "--full",
         action="store_true",
         help="run the selected fold without smoke-test window limits",
@@ -37,6 +42,7 @@ def main() -> None:
         batch_size=args.batch_size,
         device_name=args.device,
         image_encoder=args.image_encoder,
+        prediction_head=args.prediction_head,
         max_train_windows=None if args.full else 2,
         max_eval_windows=None if args.full else 1,
     )

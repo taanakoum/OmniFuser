@@ -187,6 +187,7 @@ def run_cross_validation(
     dedup_identical_forces: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
+    prediction_head: str = "lead_conditioned",
     device_name: str = "cuda",
     seed: int = 42,
     max_train_windows: int | None = None,
@@ -221,6 +222,7 @@ def run_cross_validation(
             dedup_identical_forces=dedup_identical_forces,
             image_encoder=image_encoder,
             d_model=d_model,
+            prediction_head=prediction_head,
             max_train_windows=max_train_windows,
             max_eval_windows=max_eval_windows,
             device_name=device_name,
@@ -238,6 +240,7 @@ def run_cross_validation(
 
     summary = {
         "protocol": "10-fold leave-one-tool-out; 8 train tools, next cyclic tool validation, 1 test tool",
+        "prediction_head": prediction_head,
         "tools": tools,
         "folds": results,
         "cv_mean_std": _summarize_folds(results),

@@ -42,7 +42,7 @@ labels, split, preprocessing, and training protocol are also matched.
 | File | Responsibilities |
 |---|---|
 | [`omnifuser/__init__.py`](omnifuser/__init__.py) | Package marker and version (`0.1.0`). |
-| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, and RTD mode. Rejects several invalid dimension/config choices. |
+| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, and the selected prediction head. Validates the head choice and several dimension/config constraints. |
 | [`omnifuser/data.py`](omnifuser/data.py) | CSV/MAT loading and cross-file validation, record parsing, optional force decimation and duplicate handling, per-tool timeline construction, tool folds, training-only force normalization, sliding windows, image transforms, and batch collation. |
 | [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force embeddings, RTD/MRTE blocks, image feature encoder, temporal graph attention, C2F layers, dual-task heads, loss, and small classification metrics helper. |
 | [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, optimizer loop, validation logging, final test pass, prediction/ROC artifacts, and checkpoint persistence. |
@@ -57,7 +57,7 @@ labels, split, preprocessing, and training protocol are also matched.
 | [`scripts/train_local.py`](scripts/train_local.py) | One-fold local smoke run; caps train/evaluation windows unless `--full` is supplied. Defaults to CPU, batch size 1, and EfficientNet-B0. |
 | [`scripts/train_lightning.py`](scripts/train_lightning.py) | Full ten-fold runner intended to be launched on a GPU machine or in a Lightning AI Studio. It invokes the package's PyTorch loop; it is not a Lightning Trainer implementation. |
 | [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, tool-level fold partitions, train-only normalization, image collation, and exact B3/B4 duplicate selection. |
-| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal positions, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, model forward/backward, repeated horizon outputs, and classification metrics. |
+| [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, both paper-literal and lead-conditioned forecast heads, model forward/backward, and classification metrics. |
 | [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, and original-unit regression metrics. |
 | [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, and missing-AUC fold handling. |
 
@@ -145,12 +145,13 @@ by 255, then normalized channel-wise with ImageNet mean/std.
 ### 1. Force temporal embedding
 
 Each force vector is projected through `Linear(3,d) -> GELU -> Linear(d,d)`.
-The resulting representation receives fixed positional encodings and learned
-cycle/run, block, and relative-position embeddings, then dropout:
+The resulting representation receives fixed positional encodings and the
+paper's summed learned period code, then dropout:
 
 \[
-X_t = \mathrm{Dropout}\bigl(f_{\mathrm{force}}(F_t)
-+ PE_t + E_{\mathrm{cycle}} + E_{\mathrm{block}} + E_{\mathrm{relative}}\bigr).
+E_t^{\mathrm{per}} =
+E_c(c_t)+E_b(b_t)+E_p(p_t),\qquad
+X_t = \mathrm{Dropout}\bigl(f_{\mathrm{force}}(F_t)+PE_t+E_t^{\mathrm{per}}\bigr).
 \]
 
 The fixed sine/cosine encoding follows the Transformer form:
@@ -162,7 +163,32 @@ PE(p,2i+1)=\cos\left(p/10000^{2i/d}\right).
 
 It is a non-trainable buffer (not a parameter). For odd feature widths, the
 implementation truncates the cosine columns to fit; the default width 32 is
-even. Metadata embedding indices are clamped into table range.
+even.
+
+The paper calls \(E_t^{\mathrm{per}}\) the **period embedding** and defines its
+three categorical inputs as spindle cycle \(c_t\), cutting batch \(b_t\), and
+relative position \(p_t\) within that cycle (paper Eq. 1). In this dataset
+mapping, a tool record's run number supplies the cycle code; its block/pass
+number supplies the batch code; and each force sample receives a relative
+position code. The code quantizes that sample's fractional location in its
+own record into 16 bins (`0..15`). Separate trainable PyTorch embedding
+tables map cycle, batch, and relative-position IDs to 32-vectors; the vectors
+are **summed**, not concatenated, with one another and with the value and
+position vectors. Their table sizes are 128 cycle IDs, 8 batch IDs, and 16
+relative-position IDs. These cardinalities and the relative-position
+quantization are implementation choices for Nonastreda, not values stated by
+the paper. Indices outside each table's range are clamped to its last valid
+index; normal dataset-generated codes fit the tables.
+
+The image branch uses the same period-code attributes and adds its vectors
+after the temporal GAT stack, but it has its **own, untied embedding tables**;
+the sensor and image branches do not share those learned weights. Thus, the
+learned period code is a discrete learned lookup for process phase/context,
+whereas the sine/cosine code provides absolute position inside the fixed input
+window. It is not a continuous sinusoidal code, and it is not a pretrained
+embedding. Omitting metadata at the model API supplies index zero for each
+table rather than removing the period-code contribution; training paths pass
+metadata explicitly.
 
 ### 2. Multi-resolution temporal extractor (MRTE / RTD)
 
@@ -246,24 +272,59 @@ encoded modalities. Round 2 adds a learned linear transform of round 1's fused
 sequence separately to each **original** modality stream before repeating C2F.
 Shared-alignment and orthogonality scalars are returned for diagnostics.
 
-### 5. Prediction heads and objective
+### 5. Lead-conditioned prediction heads and objective
 
-For final fused sequence \(\tilde Z\in\mathbb{R}^{B\times T\times d}\), the
-implementation selects \(\tilde z_T\) and applies separate linear heads:
+For final fused sequence
+\(\tilde Z\in\mathbb{R}^{B\times T\times d}\), the implementation extracts
+\(\tilde z_T\), concatenates it with a learned embedding \(e_p\) for each
+future lead \(p\), then decodes each lead with a shared nonlinear projection:
 
 \[
-\hat y_t=W_r\tilde z_T+b_r,\quad
-\ell_t=W_c\tilde z_T+b_c,\quad t=T+1,\ldots,T+P.
+h_p = \mathrm{GELU}\left(W_f[\tilde z_T;e_p]+b_f\right),\qquad
+\hat y_{T+p}=W_r h_p+b_r,\qquad
+\ell_{T+p}=W_c h_p+b_c,\quad p=1,\ldots,P.
 \]
 
-The vectors are broadcast to every horizon position. Therefore, for an
-individual input window, all \(P\) force predictions are exactly equal, and
-all \(P\) class-logit vectors are exactly equal. This is verified by a model
-test. It is an important property of the paper's printed head equations, not
-an accidental broadcasting bug, but it limits horizon-specific forecasting.
-Under force MSE, the model is learning one history-conditioned point forecast
-to be repeated across future steps; the classifier is also asked to represent
-all future labels with one distribution.
+Here \(e_p\in\mathbb{R}^{d}\), the concatenated decoder input is \(2d\), and
+the decoded lead feature is \(d\). The heads return force estimates with
+shape \((B,P,3)\) and class logits with shape \((B,P,3)\). The learned lead
+embedding allows the shared decoder to condition on forecast distance while
+retaining the same observed multimodal context. This is direct multi-horizon
+prediction, not an autoregressive decoder: later predictions do not consume
+earlier predicted values.
+
+Two selectable head variants are implemented and share the same sensor/image
+encoders, C2F fusion, losses, metrics, and data splits:
+
+1. **`paper_literal`** applies `force_head` and `classification_head` directly
+   to \(\tilde z_T\), then expands both predictions to all \(P\) leads. It
+   implements the paper's printed prediction equations literally; every lead
+   is consequently identical. Its weights add no lead-index parameters.
+2. **`lead_conditioned`** is the default and uses the learned \(e_p\) and
+   decoder above. It fixes the repeated-output limitation but is a deliberate
+   extension, not the paper's exact prediction head.
+
+Tests assert that the paper-literal head returns identical values across all
+leads, while the lead-conditioned head returns lead-varying values and
+receives gradients in its lead embeddings. Thus the two model variants differ
+only in the prediction head; their upstream architecture and experimental
+protocol can be held constant for a controlled comparison.
+
+| Variant | Prediction equation | Expected horizon behavior | Paper status |
+|---|---|---|---|
+| `paper_literal` | \(\hat y_{T+p}=W_y\tilde z_T+b_y\) for every \(p\) | Identical force vector and class logits at all leads | Literal implementation of the printed prediction-head equations |
+| `lead_conditioned` | \(h_p=\mathrm{GELU}(W_h[\tilde z_T;e_p]+b_h)\), then task-specific linear heads | May vary by lead; not autoregressive | Deliberate decoder extension |
+
+The `paper_literal` mode is exact only with respect to the printed prediction
+head. It does not make the full Nonastreda implementation an exact paper
+reproduction: the dataset, tool-level split, preprocessing, and other
+underspecified architecture choices remain as described in this audit.
+
+Checkpoints created by the earlier repeated-head implementation do not
+contain the learned lead embedding or forecast projection. Their model weights
+are compatible with `paper_literal` when the rest of the configuration matches,
+but not with `lead_conditioned`; retrain rather than treating such a checkpoint
+as a valid lead-conditioned model.
 
 The optimized objective is:
 
@@ -312,7 +373,7 @@ fold scores.
 |---|---|---|
 | Dual task | Paper predicts future wear state and multivariate cutting force from multimodal sequences. | Implements three-class future wear classification plus three-channel force prediction. The numeric wear columns are not used as regression targets. Dataset label meanings are controlled by `--label-column`; default is expert/image label. |
 | Datasets | Paper's reported experiments name MATWI and Mudestreda. | This build uses the supplied Nonastreda dataset. This is a dataset adaptation and requires its own results; it cannot reproduce the paper's dataset scores by itself. |
-| Sensor position encoding | Paper describes time/position embeddings; guide gives sine/cosine construction. | Fixed Transformer-style sine/cosine encoding is implemented and tested; cycle/run, block and within-record relative embeddings are learned. |
+| Sensor position and period encoding | Paper Eq. 1 defines fixed/position information plus a learned sum for spindle cycle, cutting batch, and relative position within cycle; the guide gives the sine/cosine construction. | Fixed sine/cosine \(PE_t\) and three separately learned \(d\)-dimensional embeddings are added to the force MLP. Dataset mapping uses run, block/pass, and a 16-bin normalized within-record position. Table cardinalities/binning are adaptation choices. |
 | Image position encoding | Paper aligns image and sensor streams temporally; the guide recommends associating each pass image with its force samples. | Each pass image is gathered for its corresponding input force samples. The code does not copy image files. Position and metadata embeddings are added after GAT. |
 | Force signal rate | The paper/guide discusses dataset sampling and frequency preservation; the supplied guide favors retaining the original rate for initial runs. | Default decimation 1 retains stored samples. Optional decimation uses SciPy zero-phase filtering. The loader itself does not verify sampling-rate metadata or reconstruct timestamps. |
 | Pass duplicates | The paper does not define this supplied-data cleanup. The second guide recommends identifying exact B3/B4 duplicates. | Actual data inspection found 128 exact B3/B4 pairs; default retains one record per exact pair using larger `flank_wear` (tie -> B3). This changes the data from 512 to 384 records and changes retained class counts. `--keep-identical-forces` is available for an ablation. |
@@ -329,7 +390,7 @@ fold scores.
 | Proxy landmarks | Paper introduces adaptive landmarks and proxy-based cross-modal attention; scoring details are not completely specified. | Learned per-time logits are softmax-normalized over time to form \(K=4\) weighted average landmarks and values. The exact scorer/value formulation is a practical interpretation. |
 | Hybrid local/global gate | Paper combines global and local gate terms; exact convolution/gate details are incomplete. | Local gate uses depthwise Conv1d kernel 3. The global/local mixing scalar starts at 0, so sigmoid mixing starts evenly at 0.5. These are explicit selected values. |
 | Progressive fusion | Paper describes recursive anchoring and reports two refinement iterations. | Two layers by default; each later layer adds a learned transform of the last fused representation to both original modality streams before fusion. |
-| Prediction heads | Paper equations (including the force head on page 7) use the final fused token at every future time. | Literally implemented with one linear prediction expanded over \(P\). This is paper-aligned but is a notable forecasting limitation; do not claim the outputs are lead-specific. |
+| Prediction heads | Paper equations (including the force head on page 7) use the same final fused token with the same linear map at every future time, which produces identical outputs across leads. | Both variants are available: `paper_literal` follows the paper equation and repeats outputs; `lead_conditioned` (default) concatenates a learned per-lead embedding with final fused context before shared decoding. The second resolves repeated outputs but is a deliberate deviation. |
 | Loss | Paper defines the two prognostic tasks; objective weighting/regularization for this dataset is not fully determined in the sources used here. | Unweighted force MSE + per-step class cross-entropy. C2F alignment/orthogonality are diagnostics only. This must be included in any reproduction report. |
 | Optimizer | Paper reports Adam, learning rate \(10^{-4}\), batch size 32, dropout 0.1, and two progressive fusion iterations (paper page 9). | Adam and \(10^{-4}\), dropout 0.1 and two rounds align with those reported values. Local CLI uses batch 2, local smoke uses 1, CV script defaults to 16; paper batch 32 requires explicit `--batch-size 32`. |
 | Epoch/model selection | The code and guides support runnable experiments; the exact lifecycle should not be confused with a paper-reported best-checkpoint result. | Defaults are five epochs in the training API/CV script and one in local smoke. Validation is evaluated but no early stopping, scheduler, or best-checkpoint selection is implemented. Test metrics are from the last epoch. |
@@ -374,12 +435,50 @@ fold scores.
   **sharp 148 / used 119 / dulled 117**, force lengths **52,002–152,668**
   (median **98,528**) samples after no decimation, and **zero remaining exact
   B3/B4 duplicates**. Timeline sample counts were produced for all ten tools.
-- The preceding implementation work ran the full test suite successfully:
-  **19 tests passed**. The current audit session also reran pytest successfully:
-  `19 passed`.
-- The preceding work completed a capped local EfficientNet-B0 smoke training
-  run and ten capped CV folds. These establish pipeline execution and fold
-  orchestration only; capped runs are not valid model-quality estimates.
+- The full test suite passed after adding the selectable prediction heads
+  (**22 tests**). Tests cover both head behaviors, reject an unknown head
+  setting, and verify the lead-conditioned embeddings receive gradients. The
+  paper-literal head outputs are mathematically identical at all forecast
+  leads.
+- Two local T10 smoke runs completed with the compact image encoder, the same
+  seed and capped window counts, one using each prediction head. Both wrote
+  fold JSON, checkpoint, prediction, and ROC artifacts; result JSON and
+  checkpoint configurations recorded the selected head. In the saved force
+  predictions the paper-literal run's maximum across-lead difference was
+  exactly 0, while the lead-conditioned run's was nonzero. These short-run
+  metrics are not performance estimates.
+- The new period
+  embedding regression test independently reconstructs the sum of value,
+  fixed position, and all three learned period embeddings, and verifies that
+  all three embedding tables receive gradients.
+- The current local EfficientNet-B0 T10 smoke run completed one epoch on CPU
+  with 2 training windows and 1 validation/test window. It wrote the fold JSON,
+  checkpoint (~17 MB), predictions, and ROC artifact. The smoke test's scores
+  are not performance estimates.
+- After introducing the lead-conditioned decoder, the EfficientNet-B0 T10
+  smoke was rerun successfully; it again wrote checkpoint, prediction, and ROC
+  artifacts. A capped compact-encoder run of all ten folds also completed and
+  saved all ten fold checkpoints/predictions plus pooled out-of-fold metrics
+  and mean ROC. On the first capped fold, per-lead standard deviations were
+  nonzero for both force predictions and class probabilities, confirming the
+  outputs now vary with forecast lead. These smoke metrics are not model
+  quality estimates.
+- The current ten-fold evaluation entry point completed all folds locally
+  using the compact test encoder, 2 training windows and 1 validation/test
+  window per fold. It wrote ten fold checkpoints and prediction files plus
+  the CV summary and mean ROC artifact. This verifies orchestration and
+  evaluation outputs, not full-model performance or the full-data workload.
+- At default stride 120 and batch size 16, one complete fold has approximately
+  247,000–265,000 training windows (about 15,500–16,600 optimizer steps per
+  epoch). Ten folds at the script's default five epochs imply roughly
+  780,000 optimizer steps in total. This is executable in principle but is a
+  substantial compute commitment; runtime and cost must be measured on the
+  target GPU before launching all folds.
+- There is no mid-epoch checkpoint or resume option. A fold checkpoint is
+  written after that fold's final test evaluation, while a progress JSON is
+  written only after each fold. An interruption during a fold loses that
+  fold's in-progress model/optimizer state; rerunning the CV command starts
+  the loop from fold 1.
 - A CPU-only local environment was available; a complete uncapped GPU run on
   Lightning AI has **not** been performed. The 3 GiB CUDA check is a guard, not
   a guarantee of sufficient memory. Full-run memory, throughput, convergence,
@@ -396,15 +495,21 @@ tool-grouped folds, normalization scope, model tensor shapes, metrics, and
 artifact aggregation. It contains the requested local smoke and full
 ten-fold/GPU-capable entry points.
 
-The strongest architectural caveat is the paper's own final-token prediction
-equation: every future time step receives the same force vector and the same
-class logits. Before interpreting regression as a genuinely lead-dependent
-forecast, compare the literal paper head with an explicitly labeled
-lead-conditioned or sequence decoder ablation. Other essential reporting
-items are the Nonastreda-vs-paper dataset difference, duplicate consolidation,
-8/1/1 split, RTD branch interpretation, unweighted loss, random EfficientNet
-initialization, batch-size deviation, last-epoch test checkpoint, and default
-stride.
+The embedding equations are internally consistent: the value MLP lifts each
+3-channel force vector to \(d=32\); fixed sine/cosine positions distinguish
+locations within a window; the learned period code adds categorical run,
+pass, and within-record phase context. The mapping follows the paper's three
+period attributes but uses a dataset-specific interpretation and table
+cardinalities as described above.
+
+The prediction head can be selected for a controlled comparison: `paper_literal`
+exposes the repeated-horizon behavior implied by the printed equation, while
+`lead_conditioned` avoids that limitation with an explicit non-paper extension.
+Neither choice makes the entire implementation an exact reproduction. Other
+essential reporting items are the
+Nonastreda-vs-paper dataset difference, duplicate consolidation, 8/1/1 split,
+RTD branch interpretation, unweighted loss, random EfficientNet initialization,
+batch-size deviation, last-epoch test checkpoint, and default stride.
 
 For a defensible full experiment, first run one uncapped fold on the intended
 Lightning AI GPU, record peak memory and epoch time, then run all ten folds

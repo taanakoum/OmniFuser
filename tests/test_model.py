@@ -15,7 +15,7 @@ from omnifuser.models import (
 )
 
 
-def _config() -> ModelConfig:
+def _config(prediction_head: str = "lead_conditioned") -> ModelConfig:
     return ModelConfig(
         d_model=32,
         input_len=12,
@@ -28,6 +28,7 @@ def _config() -> ModelConfig:
         num_landmarks=2,
         image_encoder="compact",
         dropout=0.0,
+        prediction_head=prediction_head,
     )
 
 
@@ -55,6 +56,34 @@ def test_position_encoding_uses_fixed_sine_cosine_pairs() -> None:
     assert "position_encoding" not in dict(embedding.named_parameters())
     assert tuple(embedding.value[0].weight.shape) == (32, 3)
     assert tuple(embedding.value[2].weight.shape) == (32, 32)
+
+
+def test_learned_period_codes_are_added_and_receive_gradients() -> None:
+    embedding = TemporalEmbedding(_config()).eval()
+    force = torch.zeros(2, 12, 3)
+    cycle = torch.tensor([[1] * 12, [2] * 12])
+    batch_code = torch.tensor([[1] * 12, [2] * 12])
+    relative = torch.tensor([list(range(12)), list(range(4, 16))])
+
+    output = embedding(force, cycle, batch_code, relative)
+    expected = (
+        embedding.value(force)
+        + embedding.position_encoding[None]
+        + embedding.cycle(cycle)
+        + embedding.batch(batch_code)
+        + embedding.relative(relative)
+    )
+
+    assert output.shape == (2, 12, 32)
+    assert torch.allclose(output, expected)
+    assert embedding.cycle.num_embeddings == 128
+    assert embedding.batch.num_embeddings == 8
+    assert embedding.relative.num_embeddings == 16
+    output.sum().backward()
+    assert embedding.cycle.weight.grad is not None
+    assert embedding.batch.weight.grad is not None
+    assert embedding.relative.weight.grad is not None
+    assert "position_encoding" not in dict(embedding.named_parameters())
 
 
 def test_image_branch_adds_positions_after_gat() -> None:
@@ -113,9 +142,15 @@ def test_rtd_and_multitask_model_forward_backward() -> None:
     )
     assert outputs["force"].shape == (2, config.horizon, 3)
     assert outputs["class_logits"].shape == (2, config.horizon, 3)
-    assert torch.equal(outputs["force"][:, 0], outputs["force"][:, -1])
-    assert torch.equal(outputs["class_logits"][:, 0], outputs["class_logits"][:, -1])
+    assert not torch.allclose(outputs["force"][:, 0], outputs["force"][:, -1])
+    assert not torch.allclose(
+        outputs["class_logits"][:, 0], outputs["class_logits"][:, -1]
+    )
     assert model.force_head.weight.shape == (3, config.d_model)
+    assert model.forecast_step_embedding.weight.shape == (
+        config.horizon,
+        config.d_model,
+    )
     loss, metrics = multitask_loss(
         outputs,
         torch.randn(2, config.horizon, 3),
@@ -126,6 +161,37 @@ def test_rtd_and_multitask_model_forward_backward() -> None:
     assert all(torch.isfinite(value) for value in metrics.values())
     assert model.refine_sensor[0].weight.grad is not None
     assert model.refine_image[0].weight.grad is not None
+    assert model.forecast_step_embedding.weight.grad is not None
+    assert model.forecast_step_embedding.weight.grad.abs().sum() > 0
+
+
+def test_paper_literal_head_repeats_outputs_across_horizon() -> None:
+    config = _config(prediction_head="paper_literal")
+    model = OmniFuser(config)
+    force = torch.randn(2, config.input_len, 3)
+    images = torch.randn(2, 2, 3, 16, 24)
+    image_indices = torch.zeros(2, config.input_len, dtype=torch.long)
+    metadata = torch.ones(2, config.input_len, dtype=torch.long)
+
+    outputs = model(force, images, image_indices, metadata, metadata, metadata)
+
+    assert outputs["force"].shape == (2, config.horizon, 3)
+    assert outputs["class_logits"].shape == (2, config.horizon, 3)
+    assert torch.equal(
+        outputs["force"],
+        outputs["force"][:, :1].expand(-1, config.horizon, -1),
+    )
+    assert torch.equal(
+        outputs["class_logits"],
+        outputs["class_logits"][:, :1].expand(-1, config.horizon, -1),
+    )
+    assert model.forecast_step_embedding is None
+    assert model.forecast_projection is None
+
+
+def test_model_config_rejects_unknown_prediction_head() -> None:
+    with pytest.raises(ValueError, match="prediction_head"):
+        _config(prediction_head="unknown")
 
 
 def test_classification_metrics_report_macro_scores() -> None:

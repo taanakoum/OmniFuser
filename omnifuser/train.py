@@ -154,6 +154,7 @@ def train_fold(
     dedup_identical_forces: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
+    prediction_head: str = "lead_conditioned",
     max_train_windows: int | None = None,
     max_eval_windows: int | None = None,
     device_name: str = "cpu",
@@ -209,6 +210,7 @@ def train_fold(
         input_len=input_len,
         horizon=horizon,
         image_encoder=image_encoder,
+        prediction_head=prediction_head,
     )
     collate = partial(
         collate_windows, height=config.image_height, width=config.image_width
@@ -253,6 +255,7 @@ def train_fold(
         "test_tool": test_tool,
         "validation_tool": fold.validation_tools[0],
         "train_tools": list(fold.train_tools),
+        "prediction_head": config.prediction_head,
         "label_column": label_column,
         "dedup_identical_forces": dedup_identical_forces,
         "decimation": decimation,

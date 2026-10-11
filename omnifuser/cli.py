@@ -124,6 +124,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="efficientnet_b0",
     )
     train_parser.add_argument("--d-model", type=int, default=32)
+    train_parser.add_argument(
+        "--prediction-head",
+        choices=("paper_literal", "lead_conditioned"),
+        default="lead_conditioned",
+        help="paper-literal repeated head or lead-conditioned multi-horizon head",
+    )
     train_parser.add_argument("--max-train-windows", type=int)
     train_parser.add_argument("--max-eval-windows", type=int)
     train_parser.add_argument("--device", default="cpu")
@@ -148,6 +154,7 @@ def _train(args: argparse.Namespace) -> None:
         dedup_identical_forces=args.dedup_identical_forces,
         image_encoder=args.image_encoder,
         d_model=args.d_model,
+        prediction_head=args.prediction_head,
         max_train_windows=args.max_train_windows,
         max_eval_windows=args.max_eval_windows,
         device_name=args.device,

@@ -33,6 +33,11 @@ def main() -> None:
         choices=("efficientnet_b0", "compact"),
         default="efficientnet_b0",
     )
+    parser.add_argument(
+        "--prediction-head",
+        choices=("paper_literal", "lead_conditioned"),
+        default="lead_conditioned",
+    )
     parser.add_argument("--d-model", type=int, default=32)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
@@ -62,6 +67,7 @@ def main() -> None:
         dedup_identical_forces=args.deduplicate_identical_forces,
         image_encoder=args.image_encoder,
         d_model=args.d_model,
+        prediction_head=args.prediction_head,
         device_name=args.device,
         seed=args.seed,
         max_train_windows=args.max_train_windows,
