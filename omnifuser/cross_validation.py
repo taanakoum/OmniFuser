@@ -386,7 +386,7 @@ def run_cross_validation(
     trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
-    prediction_head: str = "lead_conditioned",
+    prediction_head: str = "direct",
     device_name: str = "cuda",
     seed: int = 42,
     max_train_windows: int | None = None,

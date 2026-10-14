@@ -10,6 +10,13 @@ from omnifuser.data import CLASS_NAMES
 
 
 PAPER_HORIZONS = (12, 24, 36, 48, 60, 72, 84, 96)
+# OmniFuser on "Mudestreda" in the paper's Tables IV-V, indexed like PAPER_HORIZONS.
+PAPER_OMNIFUSER_RESULTS = {
+    "mse": (0.467, 0.514, 0.586, 0.686, 0.772, 0.830, 0.917, 0.902),
+    "mae": (0.475, 0.509, 0.548, 0.590, 0.630, 0.654, 0.686, 0.693),
+    "accuracy": (0.886, 0.928, 0.838, 0.866, 0.820, 0.863, 0.869, 0.863),
+    "precision": (0.890, 0.922, 0.905, 0.913, 0.802, 0.862, 0.853, 0.842),
+}
 
 
 def _macro_scores(targets: np.ndarray, predicted: np.ndarray) -> dict[str, float]:

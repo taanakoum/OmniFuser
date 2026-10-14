@@ -71,20 +71,26 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--als-mode",
         choices=("time", "k_sum", "k_colnorm"),
-        default="time",
-        help="landmark weighting: time-softmax, paper Eq. 10, or Eq. 10 with column normalization",
+        default="k_colnorm",
+        help="landmark weighting: Eq. 10 with column normalization (default), printed Eq. 10 sums, or time-softmax",
     )
     parser.add_argument(
         "--private-attn",
         choices=("residual_ln", "plain"),
-        default="residual_ln",
-        help="private path: LayerNorm(P + MHA(P)) or MHA(P) as printed",
+        default="plain",
+        help="private path: MHA(P) as printed (default) or LayerNorm(P + MHA(P))",
     )
     parser.add_argument(
         "--share-c2f",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="reuse C2F weights across refinement rounds; paper Eq. 20 uses one G, figure shows layered blocks",
+    )
+    parser.add_argument(
+        "--exact-split",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="use the Eq. 7 projection c*S as the shared part so Z = P + S exactly",
     )
     parser.add_argument("--modality-dropout", type=float, default=0.0)
     parser.add_argument("--pretrained", action="store_true")
@@ -135,6 +141,7 @@ def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "als_mode": args.als_mode,
         "private_attn": args.private_attn,
         "share_c2f": args.share_c2f,
+        "exact_split": args.exact_split,
         "modality_dropout": args.modality_dropout,
         "pretrained": args.pretrained,
         "freeze_bn": args.freeze_bn,
@@ -301,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--decimation", type=int, default=1)
     inspect_parser.add_argument("--pool", type=int, default=1)
     inspect_parser.add_argument("--input-len", type=int, default=96)
-    inspect_parser.add_argument("--horizon", type=int, default=24)
+    inspect_parser.add_argument("--horizon", type=int, default=96)
     inspect_parser.add_argument("--stride", type=int)
     inspect_parser.add_argument(
         "--trim-pass",
@@ -333,7 +340,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--batch-size", type=int, default=32)
     train_parser.add_argument("--learning-rate", type=float, default=1e-4)
     train_parser.add_argument("--input-len", type=int, default=96)
-    train_parser.add_argument("--horizon", type=int, default=24)
+    train_parser.add_argument("--horizon", type=int, default=96)
     train_parser.add_argument(
         "--stride",
         type=int,
@@ -372,8 +379,8 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--prediction-head",
         choices=("paper_literal", "lead_conditioned", "direct"),
-        default="lead_conditioned",
-        help="paper-literal repeated, direct per-lead, or lead-conditioned head",
+        default="direct",
+        help="direct per-lead Eq. 21-22 head (default), paper-literal repeated, or lead-conditioned",
     )
     add_protocol_arguments(train_parser)
     train_parser.add_argument("--max-train-windows", type=int)

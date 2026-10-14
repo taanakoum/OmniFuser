@@ -18,15 +18,21 @@ class ModelConfig:
     num_fusion_layers: int = 2
     num_landmarks: int = 4
     fusion_rank: int = 8
+    # Fig. 5: separate trend/seasonal feed-forwards (printed Eq. 3 cancels to H).
     decomp_mode: str = "branch"
-    prediction_head: str = "lead_conditioned"
+    # Eq. 21-22 read as lead-indexed W_r, b_r applied to z_T only.
+    prediction_head: str = "direct"
     image_encoder: str = "efficientnet_b0"
     image_height: int = 128
     image_width: int = 384
     dropout: float = 0.1
     pre_attn: bool = False
-    als_mode: str = "time"
-    private_attn: str = "residual_ln"
+    # Eq. 10 per-token softmax over k, then each landmark normalized to a weighted mean.
+    als_mode: str = "k_colnorm"
+    # Sec. V-C step 2: P_hat = MHA(P), no residual or normalization.
+    private_attn: str = "plain"
+    # Eq. 5 keeps S = Z W'; True uses the projection c*S so that Z = P + S exactly (Eq. 7).
+    exact_split: bool = False
     share_c2f: bool = False
     modality_dropout: float = 0.0
     pretrained: bool = False

@@ -307,7 +307,7 @@ def train_fold(
     trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
-    prediction_head: str = "lead_conditioned",
+    prediction_head: str = "direct",
     max_train_windows: int | None = None,
     max_eval_windows: int | None = None,
     device_name: str = "cpu",

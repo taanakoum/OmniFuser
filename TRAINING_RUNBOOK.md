@@ -12,7 +12,7 @@ reproduce them exactly.
 
 | Step | What it runs | 10-fold CV runs | Output folder |
 |---|---|---|---|
-| 0 | Tests, data inspection, GPU check | 0 | (none) |
+| 0 | Tests, data inspection, GPU check, EDA | 0 | `experiment_results/eda/` |
 | 1 | Capped one-fold smoke test | 0 (1 fold) | `experiment_results/validation/gpu-smoke/` |
 | 2 | Uncapped one-fold pilot (timing) | 0 (1 fold) | `experiment_results/pilot/T10/` |
 | 3 | Full model, all 10 folds | 1 | `experiment_results/main/full-model/` |
@@ -20,6 +20,7 @@ reproduce them exactly.
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/<run-id>/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
+| (opt) | Printed-paper readings of the four deviations | 4 | `experiment_results/paper-literal/<arm>/` |
 
 Every 10-fold run evaluates the selected checkpoint three ways: with both
 inputs (`full`), with the force signal masked (`sensor_missing`), and with the
@@ -37,7 +38,7 @@ restart.
 cd /teamspace/studios/this_studio
 git clone <your-repository-url> OmniFuser
 cd OmniFuser
-python -m pip install -e ".[test]"
+python -m pip install -e ".[test,eda]"
 ```
 
 `Nonastreda_Data/` is not in Git. Upload it to the repository root using the
@@ -86,6 +87,14 @@ Before continuing, confirm three things:
 - CUDA reports `True`.
 - `inspect` reports 10 tools, 378 retained records, and no remaining duplicate
   forces.
+
+Then run the exploratory data analysis. It writes tables, a JSON summary,
+and figures to `experiment_results/eda/`. [`EDA.md`](EDA.md) explains every
+metric it reports. Expect several minutes and about 3 GB of RAM.
+
+```bash
+python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
+```
 
 ## 3. Step 1: capped GPU smoke test
 
@@ -257,6 +266,29 @@ for head in paper_literal lead_conditioned direct; do
     2>&1 | tee experiment_results/logs/head-$head.log
 done
 ```
+
+## 10b. Optional: printed-paper readings
+
+The defaults follow the printed paper wherever its equations are usable. Four
+places still deviate. Each has a flag that restores the printed reading, and
+`PAPER_IMPLEMENTATION_ALIGNMENT.md` explains why each default was chosen. Run
+these arms to measure what each deviation changes. Again, the later flag
+overrides the one in `$PROTOCOL`:
+
+```bash
+python scripts/train_lightning.py $PROTOCOL --image-lag 0   --output-dir experiment_results/paper-literal/same-pass-image
+python scripts/train_lightning.py $PROTOCOL --prediction-head paper_literal   --output-dir experiment_results/paper-literal/repeated-head
+python scripts/train_lightning.py $PROTOCOL --decomp-mode literal   --output-dir experiment_results/paper-literal/eq3-literal
+python scripts/train_lightning.py $PROTOCOL --als-mode k_sum   --output-dir experiment_results/paper-literal/eq10-unnormalized
+```
+
+Two further flags reproduce the defaults used before 2026-10-14: `--exact-split`
+(the Eq. 7 reading of the shared/private split) and
+`--private-attn residual_ln --als-mode time`.
+
+When comparing the same-pass-image arm, compare its accuracy with the
+`persistence_class_accuracy` baseline in the same fold JSON. With lag 0, the
+shown photo's label already equals most future labels.
 
 ## 11. Running unattended and resuming
 

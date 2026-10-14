@@ -21,6 +21,147 @@ bit-for-bit reproduction. The exact-match column below is deliberately narrow:
 where activation functions, preprocessing, or operator details are absent
 from the paper, they are not called exact.
 
+## Paper fidelity review (2026-10-14)
+
+This review checks every item that the paper states (or leaves open) against
+the maintained code. Verdicts:
+
+- **Match**: the code does what the paper prints.
+- **Match + choice**: the paper leaves a detail open and the code fills it.
+- **Deviation (flag)**: the default differs from the printed text, and a flag
+  selects the printed reading.
+- **Forced**: the printed text is internally inconsistent, so no reading
+  satisfies all of it.
+- **Not verifiable**: cannot be judged from code or this data.
+
+### Architecture
+
+| # | Paper item | Code (default) | Verdict |
+|---|---|---|---|
+| A1 | Eq. 1: two-layer value MLP to \(d\), fixed sine/cosine positions, learned cycle/batch/relative-position tables | `TemporalEmbedding`; GELU between layers; run → cycle, block → batch, 16 position bins → relative | Match + choice |
+| A2 | Eq. 2: depthwise temporal conv, kernel = stride \(s_l\), then \(W^{(l)}\), zero padding | `RTDBlock.depthwise` + `mix` | Match |
+| A3 | MRTE: RTD blocks stacked, \(Z^r=\sum_l \tilde U^{(l)}\) | Cascaded blocks (each downsamples the previous), outputs summed | Match + choice |
+| A4 | Eq. 3: \(T=\hat H PQ\), \(S=\hat H-T\), \(U=T+S\) | `decomp_mode=branch`: separate trend/seasonal FFNs, then sum (Fig. 5) | Deviation (flag `--decomp-mode literal`). As printed, \(U=T+S=\hat H\), so the low-rank split does nothing. Fig. 5 draws one FFN per component. Fig. 13's re-LR-MA ablation changes the MSE, which also implies the split matters. |
+| A5 | FFD restores length \(T_l\to T\) | Linear over time + channel MLP | Match + choice |
+| A6 | Eq. 4: lightweight EfficientNet (Fig. 4 lists the B0 stages) | torchvision EfficientNet-B0, 128×384 input, random init (`--pretrained` optional) | Match + choice |
+| A7 | GAT over the \(T\) frame features, fully connected temporal graph | `GraphAttentionLayer` ×4, 4 heads, residual + LayerNorm + ELU | Match + choice |
+| A8 | Positional and periodic embeddings added after the GAT | `ImageBranch.forward` | Match |
+| A9 | Eq. 5: \(S=ZW'\), Frobenius-orthogonal \(P\) | `_decompose` | Match |
+| A10 | Text after Eq. 5: "\(Z=P+S\), \(P\perp S\)"; Eq. 7 defines \(S=\Pi(Z)\) | Eq. 5 gives \(Z=P+cS\) with \(c=\langle Z,S\rangle_F/\lVert S\rVert_F^2\) | Forced. `--exact-split` uses \(cS\) so that \(Z=P+S\) holds exactly (Eq. 7 reading); off by default. |
+| A11 | No attention before the shared/private split | `pre_attn=False` | Match |
+| A12 | Private path \(\hat P=\mathrm{MHA}(P)\) | `private_attn=plain` (changed today; was `residual_ln`) | Match (residual + LayerNorm remains a flag) |
+| A13 | Eq. 10: \(\alpha_t=\mathrm{softmax}(f(S_t))\in\mathbb R^k\), \(L=\alpha^T S\) | `als_mode=k_colnorm` (changed today; was `time`): printed weights; each landmark divided by its weight mass | Deviation in scale only (flag `--als-mode k_sum`). The printed sum grows with \(T\) and saturates Eq. 11. |
+| A14 | Eq. 11: cross messages use the *other* modality's landmarks, \(/\sqrt d\), \(V_L=\alpha^T S W_v\) | `CrossModalFusionLayer.forward` | Match |
+| A15 | Eq. 16: concatenate cross and private features | `torch.cat((cross, private))` | Match |
+| A16 | Eq. 17: \(W_l\in\mathbb R^{2d\times 2d}\), depthwise Conv1d, learnable \(\alpha\) initialized to 0.5 | global gate \(2d\to d\); depthwise conv (kernel 3) then \(2d\to d\); \(\alpha=\sigma(0)=0.5\) | Forced: Eq. 18 multiplies the gate with \(d\)-wide features, so the gate must be \(d\) wide |
+| A17 | Eq. 18: \(U=G\odot H+(1-G)\odot\hat P\) | same | Match |
+| A18 | Eq. 19: \(W_3\,\phi(W_2[U^r,U^i])\), \(2d\to r\to d\), GELU | `project` (with biases) | Match + choice |
+| A19 | Eq. 20: \(n=2\) recursive rounds re-injecting \(Z^m+\mathcal P_m(\hat Z)\) | separate C2F weights per round (`--share-c2f` for one \(G\)) | Match + choice (one \(G\) in Eq. 20, "Layer 1..n" in Fig. 4) |
+| A20 | Eqs. 21-22: \(\hat y_t=f_{reg}(\hat Z,t)=W_r\hat z_T+b_r\) | `direct`: lead-indexed \(W_r,b_r\) on \(\hat z_T\) | Deviation (flag `--prediction-head paper_literal`). The printed right-hand side drops \(t\), making all 96 leads identical. |
+| A21 | Eq. 23: argmax of softmax | `classification_report` | Match |
+| A22 | Modality dropout in training, masking at inference (Sec. VI-B4) | `modality_dropout`; every fold evaluates sensor-/image-masked inputs | Match + choice (rate not given) |
+
+### Training, data, and evaluation
+
+| # | Paper item | Code / protocol | Verdict |
+|---|---|---|---|
+| B1 | Adam, lr \(10^{-4}\), batch 32, dropout 0.1 | same | Match |
+| B2 | \(d=32\), \(L=4\), \(s_l=3\), \(r=8\), GAT 4 layers × 4 heads, \(k=4\), \(n=2\) | `ModelConfig` defaults (test `test_defaults_select_the_printed_paper_readings`) | Match |
+| B3 | Loss weighting | MSE + cross-entropy, 1:1 | Match + choice (not stated) |
+| B4 | Epochs, checkpoint selection | 30 epochs, best validation loss | Match + choice (not stated) |
+| B5 | Metrics: MSE, MAE; Accuracy, Precision, Recall, F1 | all, plus weighted variants, AUC, RMSE, per lead/channel | Match |
+| B6 | Horizons 12-96 | one \(P=96\) model, cumulative leads 1..h | Match + choice (paper may train one model per horizon) |
+| B7 | Image replicated over every sensor reading of the **same** pass | protocol `--image-lag 1` (previous pass's photo); `--image-lag 0` is the paper reading | Deviation (flag). With lag 0, copying the shown photo's label scores 0.92-0.99 cumulative accuracy at 1 s steps, above the paper's own OmniFuser (EDA.md §7). Accuracy then mostly measures reading the label off the input. |
+| B8 | Input length \(T\), time step, normalization, data split | \(T=96\); 1 s mean pooling; train-tool z-score; 10-fold leave-one-tool-out | Not verifiable (paper is silent); choices recorded in the EDA |
+| B9 | Fig. 13 ablations | 9 variants (`--ablation`) | Match + choice (replacement operators unspecified) |
+| B10 | Figs. 7-8 sensitivity | 8 axes in `run_experiment_suite.py --study sensitivity` | Match |
+| B11 | Comparative baselines (Tables IV-V) | not implemented; persistence/last-value baselines reported | Not implemented |
+| B12 | ~\(10^{11}\) FLOPs per iteration | measured: forward \(2.46\times10^{10}\) per batch of 32 windows (EfficientNet is 98 %), so about \(7.4\times10^{10}\) forward+backward with one photo per window and \(1.5\times10^{11}\) with two | Match. `torch.utils.flop_counter` overcounts grouped-conv backward by about the group count, so its raw \(10^{12}\) is an artifact. |
+| B13 | 7.26 GB memory | needs a GPU | Not verifiable here |
+
+**Tally:**
+
+| Verdict | Count | Items |
+|---|---|---|
+| Match or Match + choice | 26 | All items not listed below |
+| Deviation (flag) | 3 | A4, A20, B7 |
+| Deviation in scale only | 1 | A13 |
+| Forced | 2 | A10, A16 |
+| Not verifiable | 2 | B8, B13 |
+| Not implemented | 1 | B11 |
+
+Every deviation has a flag that restores the printed reading.
+
+### Fixes made in this review
+
+- **`private_attn` default → `plain`** (A12): \(\hat P=\mathrm{MHA}(P)\) as
+  printed.
+- **`als_mode` default → `k_colnorm`** (A13): keeps the printed per-token
+  softmax; previously normalized over time.
+- **`exact_split` option** (A10): selects the Eq. 7 reading \(Z=P+S\).
+- **`prediction_head` default `direct` everywhere** (A20): the CLI and
+  `train_lightning.py` defaulted to `lead_conditioned` with horizon 24, while
+  the suite used `direct`/96. All entry points now use `direct`, horizon 96.
+- **`ImageFeatureEncoder` rejects unknown encoder names**: it previously fell
+  back to the compact CNN without an error.
+- **w/o-ALS uses fixed segment-mean landmarks**: the old version averaged
+  every landmark over all time steps, which made them identical. Results
+  produced before this fix are not comparable.
+- **The hybrid gate is no longer computed in w/o-HG.**
+
+Folds trained before these default changes have a different `config` and are
+retrained automatically, never reused.
+
+### Behavioral checks
+
+These checks confirm that the code behaves as the paper describes. They are
+not a reproduction of the paper's scores.
+
+- **Compute.** One batch of 32 windows with EfficientNet-B0 at 128×384 costs
+  \(2.46	imes10^{10}\) forward FLOPs. That is about \(7\)-\(15	imes10^{10}\)
+  forward+backward, depending on whether a window shows one or two photos. The
+  paper reports ~\(10^{11}\) (B12).
+- **Learning capacity.** The model was trained for 400 Adam steps (lr
+  \(10^{-3}\)) on 32 fixed real windows (1 s steps, \(T=P=96\), lag 1, compact
+  encoder). Every configuration memorizes them:
+
+  | Configuration | Force MSE (z-scored) | Class loss | Accuracy |
+  |---|---|---|---|
+  | Paper-reading defaults | 0.93 → 0.18 | 1.11 → 0.023 | 0.35 → 0.996 |
+  | Previous defaults (`time`, `residual_ln`) | → 0.17 | → 0.023 | 0.999 |
+  | `--exact-split` | → 0.19 | → 0.019 | 1.000 |
+
+  The default changes do not reduce the model's capacity to fit.
+- **A capped 8-epoch run is not a learning check.** 64 windows at batch 16 is
+  only 32 Adam steps at lr \(10^{-4}\), and the loss barely moves. Use the
+  uncapped pilot in the runbook to judge training.
+- **Missing-modality masking.** A masked modality's input provably cannot
+  change the predictions
+  (`tests/test_model.py::test_masked_modality_input_cannot_influence_predictions`).
+
+### Paper inconsistencies (not fixable in code)
+
+- **Eq. 3 cancels:** \(U=T+S=\hat H\).
+- **Eq. 5 vs. \(Z=P+S\):** Eq. 5 gives \(Z=P+cS\), not \(Z=P+S\).
+- **Gate width:** Eq. 17's \(2d\times2d\) gate cannot multiply Eq. 18's
+  \(d\)-wide features.
+- **Eqs. 21-22:** the left side \(f_{reg}(\hat Z,t)\) takes \(t\); the right
+  side drops it.
+- **The symbol \(r\) has three meanings:** RTD rank (Eq. 3), the fusion
+  bottleneck (Eq. 19), and the refinement-step index (Eq. 20).
+- **\(k\):** the text says \(k=2\) gives the lowest error in Fig. 7, yet the
+  configuration uses \(k=4\).
+- **Fig. 13's base MSE (0.5749) matches no Table IV figure:**
+  - Mudestreda mean: 0.709
+  - MATWI mean: 0.102
+  - Mean of the two datasets: 0.405
+- **Table IV disagrees with itself:** OmniFuser's MATWI MSE at \(h=84\) is
+  0.141 in the upper block and 0.142 in the lower block.
+- **Table V disagrees with itself:** OmniFuser's precision at \(h=12\) is
+  0.890 in the upper block and 0.889 in the lower block.
+- **Dataset identity:** the text calls the dataset "Mudestreda", but its
+  reference [18] is the *Nonastreda* data paper.
+
 ## Equation and architecture map
 
 | Paper location | Implementation | Verdict and exactness boundary |
@@ -33,11 +174,11 @@ from the paper, they are not called exact.
 | Sec. V-B, image temporal graph attention | `GraphAttentionLayer` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | A fully connected temporal graph and learned attention are implemented. The additive source/target score, LeakyReLU slope, residual connection, ELU, LayerNorm, and projection details are not fully specified in the paper and are choices. The stated layer/head counts are defaults. |
 | Sec. VI-A, image-to-pass association | `make_tool_timelines`, `WindowDataset`, and `collate_windows` in [`omnifuser/data.py`](omnifuser/data.py); image gathering in `ImageBranch`. | A pass image is represented at every force sample in its pass and selected for each timestep. The implementation indexes and gathers each unique photo; it does not duplicate image files or materialize one image tensor per force row. `image_lag=0` is the same-record association; `image_lag=1` is a preceding-record causal-timing ablation. Acquisition timestamps are absent, so photo timing relative to a pass is not verified. |
 | Eq. 5 and Sec. V-C, shared/private information separation | `_decompose` in `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The shared projection and Frobenius-orthogonal private residual follow the equation, including the projection across the complete sequence-feature matrix. The stabilizing denominator clamp is a numerical detail. |
-| Eq. 10, adaptive landmark weighting | `_landmarks` in `CrossModalFusionLayer`. | The default `als_mode=time` normalizes over time to form temporal weighted averages. The printed equation can instead be read as a softmax over landmarks (`k_sum`); `k_colnorm` is another normalized option. This is an explicit notation/scale ambiguity, not an exact claim. |
+| Eq. 10, adaptive landmark weighting | `_landmarks` in `CrossModalFusionLayer`. | Default `als_mode=k_colnorm` (since 2026-10-14): the printed per-token softmax over the \(k\) landmarks, with each landmark column renormalized to a weighted mean. The renormalization changes only landmark magnitude, not direction. Without it, the printed \(L=\alpha^T S\) is a sum over time whose norm grows with \(T\) and saturates Eq. 11's softmax. `k_sum` is the unnormalized printed form; `time` (the previous default) normalizes over time instead, which departs from the printed per-token softmax. |
 | Eq. 11, bidirectional cross-modal landmark attention | `CrossModalFusionLayer.forward` in [`omnifuser/models.py`](omnifuser/models.py). | Each modality attends over projected landmarks/values from the other modality. The selected attention scaling and its tensor normalization follow the implemented reading; no separate learned cross-attention block is silently substituted. |
 | Eqs. 16-19, hybrid local/global gate and low-rank fusion | `_hybrid_gate` and `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The global/local gated mixture and low-rank bottleneck are implemented. Gate width, depthwise kernel size 3, sigmoid mixture initialized to 0.5, and MLP biases are choices where the paper's displayed dimensions do not fully constrain a runnable layer. |
 | Eq. 20, progressive C2F recursion | `OmniFuser.forward` and `--share-c2f` in [`omnifuser/models.py`](omnifuser/models.py) and [`omnifuser/cli.py`](omnifuser/cli.py). | The next round re-injects original streams plus learned projections of the prior fused stream. Separate weights are the default, matching the stacked layers in the architecture figure; `--share-c2f` tests the single-\(G\) equation reading. |
-| Eqs. 21-23, prediction heads | `OmniFuser.forward` in [`omnifuser/models.py`]. | `paper_literal` repeats the final-token output over the horizon, matching the printed head equations. `direct` predicts each lead with separate output weights; `lead_conditioned` uses a learned horizon code. Both are comparison variants because the plotted trajectories vary by lead while the printed head expression drops the lead argument. |
+| Eqs. 21-23, prediction heads | `OmniFuser.forward` in [`omnifuser/models.py`]. | Default `direct` (since 2026-10-14 in every entry point): one \(W_r^{(t)}, b_r^{(t)}\) per lead applied to \(\hat z_T\) only. This is Eq. 21 with the lead argument the notation \(f_{reg}(\hat Z, t)\) carries. `paper_literal` drops \(t\) as the right-hand side is printed and repeats one output over all leads. `lead_conditioned` adds a learned lead code. |
 
 ## Decision chronology
 

@@ -146,6 +146,9 @@ def _nonastreda_span_bounds(force: np.ndarray) -> tuple[int, int]:
     reference_length = max(
         window_samples, int(len(force) * PASS_TRIM_REFERENCE_FRACTION)
     )
+    # A lead-in longer than ~2.5 % of the pass makes this median an idle level and
+    # leaves the lead-in untrimmed. A pass-level fallback was rejected: on the real
+    # file it also cuts low-force cutting ramps (T7R1B2, T9R1B2); see EDA.md.
     reference_level = float(np.median(envelope[:reference_length]))
     if not np.isfinite(reference_level) or reference_level <= np.finfo(float).eps:
         return 0, len(force)

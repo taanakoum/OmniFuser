@@ -190,6 +190,8 @@ class ImageFeatureEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.freeze_bn = freeze_bn
+        if name not in {"efficientnet_b0", "compact"}:
+            raise ValueError(f"unknown image encoder: {name!r}")
         if name == "efficientnet_b0":
             from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0
 
@@ -358,7 +360,10 @@ class CrossModalFusionLayer(nn.Module):
         shared = shared_projection(x)
         numerator = (x * shared).sum(dim=(1, 2), keepdim=True)
         denominator = shared.square().sum(dim=(1, 2), keepdim=True).clamp_min(self.eps)
-        private = x - numerator / denominator * shared
+        projection = numerator / denominator * shared
+        private = x - projection
+        if self.config.exact_split:
+            return projection, private
         return shared, private
 
     @staticmethod

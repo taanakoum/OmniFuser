@@ -100,7 +100,7 @@ def test_config_accepts_new_options_and_rejects_bad_ones():
 
     config = ModelConfig(prediction_head="direct", als_mode="k_colnorm", modality_dropout=0.2, pre_attn=True)
     assert config.prediction_head == "direct" and config.pre_attn
-    assert ModelConfig().pre_attn is False and ModelConfig().als_mode == "time"
+    assert ModelConfig().pre_attn is False and ModelConfig().als_mode == "k_colnorm"
     for bad in ({"als_mode": "x"}, {"modality_dropout": 1.0}, {"modality_dropout": -0.1}, {"prediction_head": "x"}):
         try:
             ModelConfig(**bad)

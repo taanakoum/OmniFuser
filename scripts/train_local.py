@@ -32,7 +32,7 @@ def main() -> None:
     parser.add_argument(
         "--prediction-head",
         choices=("paper_literal", "lead_conditioned", "direct"),
-        default="lead_conditioned",
+        default="direct",
     )
     parser.add_argument(
         "--full",

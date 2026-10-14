@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--input-len", type=int, default=96)
-    parser.add_argument("--horizon", type=int, default=24)
+    parser.add_argument("--horizon", type=int, default=96)
     parser.add_argument("--stride", type=int)
     parser.add_argument("--decimation", type=int, default=1)
     parser.add_argument(
@@ -43,7 +43,7 @@ def main() -> None:
     parser.add_argument(
         "--prediction-head",
         choices=("paper_literal", "lead_conditioned", "direct"),
-        default="lead_conditioned",
+        default="direct",
     )
     parser.add_argument("--d-model", type=int, default=32)
     parser.add_argument("--device", default="cuda")

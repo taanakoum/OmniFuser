@@ -350,3 +350,62 @@ def test_classification_metrics_report_macro_scores() -> None:
     assert metrics["precision_weighted"] == pytest.approx(1.0)
     assert metrics["recall_weighted"] == pytest.approx(2 / 3)
     assert metrics["f1_weighted"] == pytest.approx(7 / 9)
+
+
+def test_defaults_select_the_printed_paper_readings() -> None:
+    config = ModelConfig()
+    assert config.private_attn == "plain"  # P_hat = MHA(P)
+    assert config.als_mode == "k_colnorm"  # alpha_t = softmax over k per token
+    assert config.pre_attn is False  # no attention before the shared/private split
+    assert config.decomp_mode == "branch"  # Fig. 5 trend/seasonal feed-forwards
+    assert config.prediction_head == "direct"  # Eq. 21-22 from z_T, one W_r per lead
+    assert config.exact_split is False
+    assert (config.d_model, config.num_rtd_layers, config.rtd_stride, config.rtd_rank) == (32, 4, 3, 8)
+    assert (config.num_gat_layers, config.num_gat_heads, config.num_landmarks) == (4, 4, 4)
+    assert (config.num_fusion_layers, config.dropout) == (2, 0.1)
+
+
+def test_default_landmarks_keep_the_printed_per_token_softmax_but_bounded_scale() -> None:
+    layer = CrossModalFusionLayer(_config())
+    for steps in (12, 48):
+        values = torch.randn(2, steps, 32)
+        landmarks, _ = layer._landmarks(values, layer.score_r, torch.nn.Identity())
+        alpha = torch.softmax(layer.score_r(values), dim=-1)  # Eq. 10: softmax over k
+        printed = alpha.transpose(1, 2) @ values  # L = alpha^T S
+        column_mass = alpha.sum(dim=1).unsqueeze(-1)
+        assert torch.allclose(landmarks, printed / column_mass, atol=1e-5)
+        # each landmark is a convex combination, so its norm cannot exceed the largest token norm
+        assert landmarks.norm(dim=-1).max() <= values.norm(dim=-1).max() + 1e-5
+
+
+def test_exact_split_makes_shared_plus_private_reconstruct_the_input() -> None:
+    values = torch.randn(2, 12, 32)
+    default = CrossModalFusionLayer(_config())
+    exact = CrossModalFusionLayer(ModelConfig(**{**_config().__dict__, "exact_split": True}))
+    exact.load_state_dict(default.state_dict())
+
+    shared, private = default._decompose(values, default.shared_r)
+    exact_shared, exact_private = exact._decompose(values, exact.shared_r)
+
+    assert torch.allclose(private, exact_private)
+    assert torch.allclose(exact_shared + exact_private, values, atol=1e-5)  # Z = P + S
+    assert not torch.allclose(shared + private, values, atol=1e-3)  # Eq. 5 alone gives Z = P + cS
+    dot = (exact_shared * exact_private).sum(dim=(1, 2))
+    assert torch.allclose(dot, torch.zeros_like(dot), atol=1e-3)
+    OmniFuser(ModelConfig(**{**_config().__dict__, "exact_split": True}))(*_model_inputs(_config(), 0))
+
+
+def test_residual_private_path_remains_available() -> None:
+    config = ModelConfig(**{**_config().__dict__, "private_attn": "residual_ln"})
+    layer = OmniFuser(config).fusion_layers[0]
+    assert hasattr(layer, "private_norm_r")
+    OmniFuser(config)(*_model_inputs(config, 0))
+
+
+def test_image_encoder_rejects_unknown_names_instead_of_falling_back() -> None:
+    from omnifuser.models import ImageFeatureEncoder
+
+    with pytest.raises(ValueError, match="unknown image encoder"):
+        ImageFeatureEncoder("efficientnet-b0", 32)
+    with pytest.raises(ValueError, match="image_encoder"):
+        ModelConfig(image_encoder="efficientnet-b0")

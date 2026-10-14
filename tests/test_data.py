@@ -304,3 +304,16 @@ def test_default_span_trimming_preserves_record_label_and_image(tmp_path: Path) 
     assert trimmed.trimmed_runout_samples > 0
     assert untrimmed.trimmed_lead_samples == 0
     assert untrimmed.trimmed_runout_samples == 0
+
+
+def test_span_trim_keeps_a_lead_in_longer_than_half_the_reference_window() -> None:
+    """Documents the rule's known limit; EDA.md lists the affected real passes."""
+    from omnifuser.data import _nonastreda_span_bounds
+
+    short = np.full((10_000, 3), 50.0)
+    short[:200] = 0.5  # 2 % lead-in: the early window still measures cutting level
+    assert 190 <= _nonastreda_span_bounds(short)[0] <= 210
+
+    long = np.full((10_000, 3), 50.0)
+    long[:600] = 0.5  # 6 % lead-in fills most of the 5 % reference window
+    assert _nonastreda_span_bounds(long)[0] == 0
