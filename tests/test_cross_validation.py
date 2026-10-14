@@ -3,11 +3,12 @@ import pytest
 
 from omnifuser.cross_validation import (
     _aggregate_out_of_fold,
-    _summarize_modality_evaluations,
     _summarize_folds,
+    _summarize_modality_evaluations,
     _summarize_paper_horizons,
 )
 from omnifuser.evaluation import classification_report
+from omnifuser.train import save_roc_curves
 
 
 def test_cross_validation_aggregates_predictions_and_mean_roc(tmp_path) -> None:
@@ -22,14 +23,7 @@ def test_cross_validation_aggregates_predictions_and_mean_roc(tmp_path) -> None:
         force_predictions=np.zeros((1, 3, 3), dtype=np.float32),
         force_targets=np.ones((1, 3, 3), dtype=np.float32),
     )
-    np.savez_compressed(
-        tmp_path / "roc.npz",
-        **{
-            f"{name}_{coordinate}": values
-            for name, curve in curves.items()
-            for coordinate, values in zip(("fpr", "tpr", "thresholds"), curve)
-        },
-    )
+    save_roc_curves(tmp_path / "roc.npz", curves)
     result = {
         "test_tool": "T1",
         "artifacts": {

@@ -14,6 +14,7 @@ import tempfile
 import traceback
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import numpy as np
@@ -24,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 try:
-    import torch  # noqa: F401
+    import torch
 
     HAVE_TORCH = hasattr(torch, "nn")
 except ImportError:  # pragma: no cover
@@ -101,7 +102,10 @@ def test_config_accepts_new_options_and_rejects_bad_ones():
     config = ModelConfig(prediction_head="direct", als_mode="k_colnorm", modality_dropout=0.2, pre_attn=True)
     assert config.prediction_head == "direct" and config.pre_attn
     assert ModelConfig().pre_attn is False and ModelConfig().als_mode == "k_colnorm"
-    for bad in ({"als_mode": "x"}, {"modality_dropout": 1.0}, {"modality_dropout": -0.1}, {"prediction_head": "x"}):
+    bad_options: tuple[dict[str, Any], ...] = (
+        {"als_mode": "x"}, {"modality_dropout": 1.0}, {"modality_dropout": -0.1}, {"prediction_head": "x"}
+    )
+    for bad in bad_options:
         try:
             ModelConfig(**bad)
         except ValueError:
@@ -166,6 +170,7 @@ def test_image_lag_uses_previous_pass_photo_but_own_label():
                 assert shown_path == record.image_path
             else:
                 assert shown_path == previous.image_path
+                assert lag.image_labels is not None
                 assert (lag.image_labels[segment] == previous.label).all()
             assert own.image_paths[int(own.image_codes[segment][0])] == record.image_path
             previous, start = record, start + len(record.force)
@@ -178,7 +183,12 @@ def test_image_lag_uses_previous_pass_photo_but_own_label():
 
 
 def test_window_item_exposes_label_of_the_shown_photo():
-    from omnifuser.data import ForceNormalizer, WindowDataset, load_nonastreda, make_tool_timelines
+    from omnifuser.data import (
+        ForceNormalizer,
+        WindowDataset,
+        load_nonastreda,
+        make_tool_timelines,
+    )
 
     with Workspace() as tmp:
         make_nonastreda(tmp, tools=(1,), runs=(1,), length=300)
@@ -188,7 +198,9 @@ def test_window_item_exposes_label_of_the_shown_photo():
             data = WindowDataset(timelines, ForceNormalizer.fit(timelines), 96, 24, 120)
             for index in range(len(data)):
                 item = data[index]
-                expected = timelines[0].image_labels[index * 120 + 95]
+                shown = timelines[0].image_labels
+                assert shown is not None
+                expected = shown[index * 120 + 95]
                 assert int(item["shown_label"]) == int(expected)
         # a ToolTimeline built without image_labels (old call sites) still works
         import dataclasses
@@ -246,6 +258,7 @@ def test_regression_report_has_normalised_per_horizon_metrics():
 
 def test_diagnostics_window_starts():
     spec = importlib.util.spec_from_file_location("task_diagnostics", ROOT / "scripts" / "task_diagnostics.py")
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     starts = module.window_starts(1000, 96, 24, 24, None)
@@ -273,6 +286,7 @@ def _compact(**kwargs):
 def test_forward_shapes_for_every_head_and_literal_repeats(tmp=None):
     need_torch()
     import torch
+
     from omnifuser.models import OmniFuser
 
     for head in ("paper_literal", "lead_conditioned", "direct"):
@@ -300,6 +314,7 @@ def test_pre_attn_flag_removes_the_extra_attention():
 def test_als_modes_normalise_as_documented():
     need_torch()
     import torch
+
     from omnifuser.models import CrossModalFusionLayer
 
     torch.manual_seed(0)
@@ -319,6 +334,7 @@ def test_als_modes_normalise_as_documented():
 def test_modality_masking():
     need_torch()
     import torch
+
     from omnifuser.models import OmniFuser
 
     torch.manual_seed(0)
@@ -347,6 +363,7 @@ def test_modality_masking():
 def test_freeze_bn_keeps_batchnorm_in_eval_mode():
     need_torch()
     import torch
+
     from omnifuser.models import OmniFuser
 
     for freeze in (True, False):
@@ -360,6 +377,7 @@ def test_freeze_bn_keeps_batchnorm_in_eval_mode():
 def test_backward_gives_finite_gradients_for_every_option():
     need_torch()
     import torch
+
     from omnifuser.models import OmniFuser, multitask_loss
 
     options = [
@@ -384,8 +402,16 @@ def test_backward_gives_finite_gradients_for_every_option():
 def test_bank_tensor_equals_image_tensor_and_collate_carries_shown_label():
     need_torch()
     import torch
-    from omnifuser.data import (ForceNormalizer, ImageBank, WindowDataset, collate_windows, image_tensor,
-                                load_nonastreda, make_tool_timelines)
+
+    from omnifuser.data import (
+        ForceNormalizer,
+        ImageBank,
+        WindowDataset,
+        collate_windows,
+        image_tensor,
+        load_nonastreda,
+        make_tool_timelines,
+    )
 
     with Workspace() as tmp:
         make_nonastreda(tmp, tools=(1,), runs=(1,), length=300)
@@ -402,9 +428,10 @@ def test_bank_tensor_equals_image_tensor_and_collate_carries_shown_label():
         assert with_bank["shown_label"].shape == (2,) and with_bank["shown_label"].dtype == torch.int64
 
 
-def _smoke_kwargs(root, out):
-    return dict(data_dir=root, output_dir=out, epochs=2, batch_size=2, device_name="cpu", trim_pass=False,
-                image_encoder="compact", max_train_windows=4, max_eval_windows=2, num_workers=0)
+def _smoke_kwargs(root: Path, out: Path) -> dict[str, Any]:
+    return {"data_dir": root, "output_dir": out, "epochs": 2, "batch_size": 2, "device_name": "cpu",
+            "trim_pass": False, "image_encoder": "compact", "max_train_windows": 4, "max_eval_windows": 2,
+            "num_workers": 0}
 
 
 def test_train_fold_end_to_end_with_new_options_and_resume():
@@ -428,6 +455,7 @@ def test_train_fold_end_to_end_with_new_options_and_resume():
         assert json.loads((out / "fold-T1.json").read_text())["selected_epoch"] == result["selected_epoch"]
         # a finished fold is reused only when every setting matches
         from dataclasses import asdict
+
         from omnifuser.config import ModelConfig
 
         expected = asdict(ModelConfig(image_encoder="compact", prediction_head="direct", **overrides))
@@ -467,7 +495,7 @@ if __name__ == "__main__":
         except unittest.SkipTest as reason:
             skipped += 1
             print(f"SKIP  {name}  ({reason})")
-        except Exception:
+        except Exception:  # noqa: BLE001 - standalone runner reports every failure and continues
             failed += 1
             print(f"FAIL  {name}")
             traceback.print_exc()

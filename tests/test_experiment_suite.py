@@ -75,6 +75,8 @@ def test_experiment_suite_parser_exposes_studies_and_durable_output_layout() -> 
     assert args.study == "ablations"
     assert str(args.output_root) == "experiment_results"
     assert args.modality_dropout_rates == [0.2]
+    # protocol defaults: 1 s steps and the previous-pass photo
+    assert (args.pool, args.image_lag, args.stride, args.horizon, args.epochs) == (1000, 1, 24, 96, 30)
     # combined study: 9 ablation arms + 21 sensitivity points + 1 dropout arm
     assert len(_experiment_runs("all")) == 31
 
@@ -106,9 +108,11 @@ def test_suite_writes_manifest_summary_and_resumes_only_unfinished_runs(tmp_path
             raise RuntimeError("simulated interruption")
         return _fake_cross_validation(**kwargs)
 
-    with mock.patch.object(suite, "run_cross_validation", failing_second_run):
-        with pytest.raises(RuntimeError, match="simulated"):
-            suite.main(argv)
+    with (
+        mock.patch.object(suite, "run_cross_validation", failing_second_run),
+        pytest.raises(RuntimeError, match="simulated"),
+    ):
+        suite.main(argv)
     study_root = tmp_path / "missing-modality" / "unit"
     manifest = json.loads((study_root / "suite.json").read_text(encoding="utf-8"))
     statuses = {key: run["status"] for key, run in manifest["runs"].items()}

@@ -12,8 +12,10 @@ import csv
 import json
 import math
 from collections import Counter, defaultdict
+from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -242,10 +244,10 @@ def label_dynamics(rows: list[dict[str, Any]], subset: str) -> tuple[dict[str, A
     for tool, records in by_tool.items():
         records.sort(key=lambda row: (row["run"], row["block"]))
         sequence = [index[row["image_label"]] for row in records]
-        backward += sum(b < a for a, b in zip(sequence, sequence[1:]))
-        forward += sum(b > a for a, b in zip(sequence, sequence[1:]))
+        backward += sum(b < a for a, b in pairwise(sequence))
+        forward += sum(b > a for a, b in pairwise(sequence))
         flank_decreases += sum(
-            b["flank_wear"] < a["flank_wear"] for a, b in zip(records, records[1:])
+            b["flank_wear"] < a["flank_wear"] for a, b in pairwise(records)
         )
         by_run: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for row in records:
@@ -274,13 +276,23 @@ def label_dynamics(rows: list[dict[str, Any]], subset: str) -> tuple[dict[str, A
 
 
 # ----------------------------------------------------------------------------- windows and folds
+def _spearman(x: Sequence[float], y: Sequence[float]) -> dict[str, float]:
+    result: Any = spearmanr(x, y)  # SciPy's result object has no usable stubs
+    return {"rho": float(result.statistic), "p_value": float(result.pvalue)}
+
+
+def _shown_labels(timeline: ToolTimeline) -> np.ndarray:
+    """Label of the photo shown at each step (the step's own label if not tracked)."""
+    return timeline.image_labels if timeline.image_labels is not None else timeline.labels
+
+
 def _record_codes(timeline: ToolTimeline) -> np.ndarray:
     return timeline.cycle_codes.astype(np.int64) * 100 + timeline.batch_codes
 
 
 def protocol_windows(
     data_dir: Path, pool: int, input_len: int, horizon: int, stride: int
-) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, list[ToolTimeline]]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[int, list[ToolTimeline]]]:
     records = load_nonastreda(data_dir, pool=pool)
     timelines = {lag: make_tool_timelines(records, image_lag=lag) for lag in (0, 1)}
     eval_stride = max(stride, horizon)
@@ -297,8 +309,8 @@ def protocol_windows(
             change.append(bool((target != timeline.labels[end_input - 1]).any()))
             multi_record.append(len(np.unique(codes[start:end_input])) > 1)
             images.append(len(np.unique(lagged.image_codes[start:end_input])))
-            persistence[0].append(float((target == timeline.image_labels[end_input - 1]).mean()))
-            persistence[1].append(float((target == lagged.image_labels[end_input - 1]).mean()))
+            persistence[0].append(float((target == _shown_labels(timeline)[end_input - 1]).mean()))
+            persistence[1].append(float((target == _shown_labels(lagged)[end_input - 1]).mean()))
         counts = Counter(timeline.labels.tolist())
         tool_rows.append(
             {
@@ -397,8 +409,8 @@ def difficulty_by_pool(
                     abs_last[h].append(np.abs(future[:h] - last).mean())
                     errors_zero[h].append(np.square(future[:h]).mean())
                     changed[h].append(bool((labels[:h] != timeline.labels[end_input - 1]).any()))
-                    persistence[(0, h)].append((labels[:h] == timeline.image_labels[end_input - 1]).mean())
-                    persistence[(1, h)].append((labels[:h] == lagged.image_labels[end_input - 1]).mean())
+                    persistence[(0, h)].append((labels[:h] == _shown_labels(timeline)[end_input - 1]).mean())
+                    persistence[(1, h)].append((labels[:h] == _shown_labels(lagged)[end_input - 1]).mean())
         for index, h in enumerate(PAPER_HORIZONS):
             rows.append(
                 {
@@ -485,6 +497,7 @@ def make_figures(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
 
     plt.rcParams.update({"figure.facecolor": SURFACE, "savefig.facecolor": SURFACE, "font.size": 9})
     figures = out / "figures"
@@ -521,7 +534,7 @@ def make_figures(
         for spine in axis.spines.values():
             spine.set_visible(False)
     np.atleast_1d(axes)[-1].set_xlabel("record position in (run, block) order", color=INK_MUTED)
-    handles = [plt.Rectangle((0, 0), 1, 1, color=CLASS_COLORS[name]) for name in CLASS_NAMES]
+    handles = [Rectangle((0, 0), 1, 1, color=CLASS_COLORS[name]) for name in CLASS_NAMES]
     fig.legend(handles, CLASS_NAMES, frameon=False, ncol=3, loc="upper right")
     fig.suptitle("Wear class of each retained pass, in tool order", x=0.01, ha="left", color=INK, fontsize=11)
     save(fig, "02_label_sequence_by_tool.png")
@@ -628,9 +641,9 @@ def make_figures(
     axis.plot(steps, timeline.force[:, 0], color=INK_MUTED, linewidth=0.7)
     boundaries = np.flatnonzero(np.diff(_record_codes(timeline))) + 1
     edges = np.r_[0, boundaries, len(steps)]
-    for left, right in zip(edges[:-1], edges[1:]):
+    for left, right in pairwise(edges):
         axis.axvspan(left, right, color=CLASS_COLORS[CLASS_NAMES[timeline.labels[left]]], alpha=0.18, linewidth=0)
-    handles = [plt.Rectangle((0, 0), 1, 1, color=CLASS_COLORS[name], alpha=0.4) for name in CLASS_NAMES]
+    handles = [Rectangle((0, 0), 1, 1, color=CLASS_COLORS[name], alpha=0.4) for name in CLASS_NAMES]
     axis.legend(handles, CLASS_NAMES, frameon=False, ncol=3, loc="upper left")
     _style(axis, f"{timeline.tool} force stream Fx after trimming and 1 s pooling (shading = pass label)", "pooled step", "Fx")
     save(fig, "11_tool_stream_example.png")
@@ -681,8 +694,6 @@ def run_eda(
     difficulty = difficulty_by_pool(data_dir, difficulty_pools, input_len, windows_per_tool)
 
     class_counts = {split: Counter(row["image_label"] for row in rows) for split, rows in (("raw", raw_rows), ("retained", retained))}
-    rho, p_value = spearmanr([row["flank_wear"] for row in retained], [CLASS_NAMES.index(row["image_label"]) for row in retained])
-    force_rho, force_p = spearmanr([row["flank_wear"] for row in retained], [row["magnitude_mean"] for row in retained])
     summary: dict[str, Any] = {
         "data_dir": str(data_dir.resolve()),
         "sampling_rate_hz_assumed": fs,
@@ -708,7 +719,7 @@ def run_eda(
             "flank_wear_by_class": {
                 name: _quantiles([r["flank_wear"] for r in retained if r["image_label"] == name]) for name in CLASS_NAMES
             },
-            "spearman_flank_wear_vs_class": {"rho": float(rho), "p_value": float(p_value)},
+            "spearman_flank_wear_vs_class": _spearman([r["flank_wear"] for r in retained], [CLASS_NAMES.index(r["image_label"]) for r in retained]),
             "dynamics_raw": raw_dynamics,
             "dynamics_retained": retained_dynamics,
         },
@@ -719,7 +730,7 @@ def run_eda(
             "channel_mean": {c: _quantiles([row[f"{c}_mean"] for row in retained]) for c in CHANNELS},
             "channel_std": {c: _quantiles([row[f"{c}_std"] for row in retained]) for c in CHANNELS},
             "magnitude_sum_per_pass": _quantiles([row["magnitude_sum"] for row in retained]),
-            "spearman_flank_wear_vs_mean_force": {"rho": float(force_rho), "p_value": float(force_p)},
+            "spearman_flank_wear_vs_mean_force": _spearman([r["flank_wear"] for r in retained], [r["magnitude_mean"] for r in retained]),
         },
         "trimming": {
             "rule": {

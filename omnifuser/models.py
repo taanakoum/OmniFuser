@@ -36,6 +36,8 @@ def _metadata_code(
 
 
 class TemporalEmbedding(nn.Module):
+    position_encoding: Tensor  # registered buffer; declared for type checkers
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         d = config.d_model
@@ -218,7 +220,7 @@ class ImageFeatureEncoder(nn.Module):
             input_width = 96
         self.projection = nn.Linear(input_width, d_model)
 
-    def train(self, mode: bool = True) -> "ImageFeatureEncoder":
+    def train(self, mode: bool = True) -> ImageFeatureEncoder:
         super().train(mode)
         if mode and self.freeze_bn:
             for module in self.modules():
@@ -236,6 +238,8 @@ class ImageFeatureEncoder(nn.Module):
 
 
 class ImageBranch(nn.Module):
+    position_encoding: Tensor  # registered buffer; declared for type checkers
+
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.encoder = ImageFeatureEncoder(
@@ -333,7 +337,7 @@ class CrossModalFusionLayer(nn.Module):
         self.eps = 1e-8
 
     def _landmarks(
-        self, x: Tensor, scorer: nn.Linear, value_projection: nn.Linear
+        self, x: Tensor, scorer: nn.Linear, value_projection: nn.Module
     ) -> tuple[Tensor, Tensor]:
         if self.config.ablation == "without_als":
             # Fixed, non-adaptive landmarks: means of k contiguous time segments.

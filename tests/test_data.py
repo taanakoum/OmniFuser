@@ -9,8 +9,8 @@ from omnifuser.data import (
     Record,
     WindowDataset,
     collate_windows,
-    load_nonastreda,
     leave_one_tool_out_folds,
+    load_nonastreda,
     make_tool_timelines,
 )
 

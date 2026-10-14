@@ -18,6 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8.0"]
 eda = ["matplotlib>=3.8"]
+dev = ["ruff>=0.17", "pyright>=1.1.414"]
 
 [project.scripts]
 omnifuser = "omnifuser.cli:main"
@@ -28,3 +29,12 @@ include = ["omnifuser*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+# Archived Blocks 9-12 patch folders are reference material, not maintained code.
+extend-exclude = ["omnifuser_blocks12", "omnifuser_blocks911", "Literature", "experiment_results"]
+
+[tool.pyright]
+include = ["omnifuser", "scripts", "tests"]
+venvPath = "."
+venv = ".venv"

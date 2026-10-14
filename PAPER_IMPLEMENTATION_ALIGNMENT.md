@@ -1,25 +1,27 @@
 # OmniFuser paper-to-code alignment
 
 **Paper reviewed:** `Literature/2511.01320v1.pdf` (arXiv:2511.01320v1).
-**Code reviewed:** the maintained root `omnifuser/` package, `scripts/`,
-`tests/`, README, implementation audit, and the supplied Blocks 12 notes and
-diff.
+**Code reviewed:** the maintained `omnifuser/` package, `scripts/` and
+`tests/` (state of 2026-10-14).
 **Scope:** Nonastreda only. MATWI remains deferred.
 
-## How to read the verdicts
+This document compares the paper with the code. It is organized as follows:
 
-- **Implemented as specified** means the code follows the equation or
-  experimental instruction that the paper actually states. It does not mean
-  the full training run or reported benchmark has been reproduced.
-- **Choice** marks a paper ambiguity that required an implementation decision.
-- **Variant** is a runnable alternative to the paper-literal reading.
-- **Dataset/protocol adaptation** identifies a choice imposed by the available
-  Nonastreda files or the requested tool-held-out experiment.
+| Section | Contents |
+|---|---|
+| **Paper fidelity review** | The authoritative item-by-item verdicts, the fixes, behavioral checks, and the paper's own inconsistencies |
+| **Equation and architecture map** | Where and how each equation is implemented |
+| **Decision chronology** | When each choice was made |
+| **Theorems** | What the code does and does not validate |
+| **Training, data and metric decisions** | The protocol choices the paper leaves open |
+| **Blocks 12 command-line integration** | The architecture flags |
+| **Verification boundary** | What is and is not checked here |
 
-The paper does not specify enough implementation details to claim a
-bit-for-bit reproduction. The exact-match column below is deliberately narrow:
-where activation functions, preprocessing, or operator details are absent
-from the paper, they are not called exact.
+The full module-level reference is [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md).
+
+The paper does not specify enough detail for a bit-for-bit reproduction.
+Where an activation, preprocessing step or operator detail is missing from the
+paper, the code's choice is labelled a choice, never an exact match.
 
 ## Paper fidelity review (2026-10-14)
 
@@ -172,11 +174,11 @@ not a reproduction of the paper's scores.
 | Text after Eq. 3, restore the temporal length | `time_up` followed by GELU and a channel feed-forward in `RTDBlock`. | The output length is restored, but a learned linear map over the time dimension plus the channel MLP is a choice: the paper does not specify the internals of the independent restoration feed-forward. |
 | Eq. 4 and Sec. V-B, image representation | `ImageFeatureEncoder` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | EfficientNet is implemented with torchvision EfficientNet-B0 by default. B0, image resize to 128x384, random rather than pretrained initialization, and the projection from 1280 features to \(d\) are decisions because the paper calls the backbone lightweight EfficientNet without fixing all these choices. `--pretrained` opts into ImageNet weights. |
 | Sec. V-B, image temporal graph attention | `GraphAttentionLayer` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | A fully connected temporal graph and learned attention are implemented. The additive source/target score, LeakyReLU slope, residual connection, ELU, LayerNorm, and projection details are not fully specified in the paper and are choices. The stated layer/head counts are defaults. |
-| Sec. VI-A, image-to-pass association | `make_tool_timelines`, `WindowDataset`, and `collate_windows` in [`omnifuser/data.py`](omnifuser/data.py); image gathering in `ImageBranch`. | A pass image is represented at every force sample in its pass and selected for each timestep. The implementation indexes and gathers each unique photo; it does not duplicate image files or materialize one image tensor per force row. `image_lag=0` is the same-record association; `image_lag=1` is a preceding-record causal-timing ablation. Acquisition timestamps are absent, so photo timing relative to a pass is not verified. |
-| Eq. 5 and Sec. V-C, shared/private information separation | `_decompose` in `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The shared projection and Frobenius-orthogonal private residual follow the equation, including the projection across the complete sequence-feature matrix. The stabilizing denominator clamp is a numerical detail. |
+| Sec. VI-A, image-to-pass association | `make_tool_timelines`, `WindowDataset`, and `collate_windows` in [`omnifuser/data.py`](omnifuser/data.py); image gathering in `ImageBranch`. | A pass image is represented at every force sample in its pass and selected for each timestep. The implementation indexes and gathers each unique photo; it does not duplicate image files or materialize one image tensor per force row. `image_lag=0` is the paper's same-pass association; `image_lag=1` (the protocol) shows the preceding pass's photo. With lag 0, copying the photo's label already scores 0.92-0.99 cumulative accuracy at 1 s steps (`EDA.md` §7), hence the lag-1 protocol. Acquisition timestamps are absent, so photo timing relative to a pass is not verified. |
+| Eq. 5 and Sec. V-C, shared/private information separation | `_decompose` in `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The shared projection and Frobenius-orthogonal private residual follow the equation, including the projection across the complete sequence-feature matrix. The stabilizing denominator clamp is a numerical detail. Eq. 5 gives \(Z=P+cS\), not the stated \(Z=P+S\). `--exact-split` uses the projection \(cS\) as the shared part, so \(Z=P+S\) holds exactly (the Eq. 7 reading). It is off by default. |
 | Eq. 10, adaptive landmark weighting | `_landmarks` in `CrossModalFusionLayer`. | Default `als_mode=k_colnorm` (since 2026-10-14): the printed per-token softmax over the \(k\) landmarks, with each landmark column renormalized to a weighted mean. The renormalization changes only landmark magnitude, not direction. Without it, the printed \(L=\alpha^T S\) is a sum over time whose norm grows with \(T\) and saturates Eq. 11's softmax. `k_sum` is the unnormalized printed form; `time` (the previous default) normalizes over time instead, which departs from the printed per-token softmax. |
 | Eq. 11, bidirectional cross-modal landmark attention | `CrossModalFusionLayer.forward` in [`omnifuser/models.py`](omnifuser/models.py). | Each modality attends over projected landmarks/values from the other modality. The selected attention scaling and its tensor normalization follow the implemented reading; no separate learned cross-attention block is silently substituted. |
-| Eqs. 16-19, hybrid local/global gate and low-rank fusion | `_hybrid_gate` and `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The global/local gated mixture and low-rank bottleneck are implemented. Gate width, depthwise kernel size 3, sigmoid mixture initialized to 0.5, and MLP biases are choices where the paper's displayed dimensions do not fully constrain a runnable layer. |
+| Eqs. 16-19, hybrid local/global gate and low-rank fusion | `_hybrid_gate` and `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The global/local gated mixture and low-rank bottleneck are implemented. The gate width \(2d\to d\) is forced: Eq. 17's \(2d\times2d\) cannot multiply Eq. 18's \(d\)-wide features. The depthwise kernel size 3 and the MLP biases are choices. The mixture \(\alpha=\sigma(0)=0.5\) matches the paper's stated initialization. |
 | Eq. 20, progressive C2F recursion | `OmniFuser.forward` and `--share-c2f` in [`omnifuser/models.py`](omnifuser/models.py) and [`omnifuser/cli.py`](omnifuser/cli.py). | The next round re-injects original streams plus learned projections of the prior fused stream. Separate weights are the default, matching the stacked layers in the architecture figure; `--share-c2f` tests the single-\(G\) equation reading. |
 | Eqs. 21-23, prediction heads | `OmniFuser.forward` in [`omnifuser/models.py`]. | Default `direct` (since 2026-10-14 in every entry point): one \(W_r^{(t)}, b_r^{(t)}\) per lead applied to \(\hat z_T\) only. This is Eq. 21 with the lead argument the notation \(f_{reg}(\hat Z, t)\) carries. `paper_literal` drops \(t\) as the right-hand side is printed and repeats one output over all leads. `lead_conditioned` adds a learned lead code. |
 
@@ -196,20 +198,23 @@ selection points are:
   main diagnostic arm after comparing persistence baselines. `pool=300`,
   lag 0, and the alternative forecast heads remain comparison arms. These
   selections and their numeric rationale are recorded in
-  [`omnifuser_part2_status_final.md`](omnifuser_part2_status_final.md); they
+  `Literature/omnifuser_part2_status_final.md` and
+  `Literature/omnifuser_alignment_review_final.md` (local review notes); they
   were inferences from the available dataset diagnostics, not values specified
-  in the paper.
+  in the paper. `EDA.md` §6-7 re-derives both from the real data.
 - **2026-10-11, Blocks 12 integration:** the paper's parameter/sensitivity
   dimensions were exposed as CLI flags. The defaults remain the existing
   `ModelConfig` values so existing runs are not silently reconfigured; the
   flags make controlled ablations possible. Positive-dimension, dropout, and
   attention-divisibility guards were added at the same time so invalid
   experiments fail before model construction.
-- **Lightning AI preparation in this review:** the one-fold then ten-fold
-  command sequence in `README.md` uses the previously selected comparison
-  values, persistent output storage, and an explicit CUDA availability check.
-  It is operational guidance, not evidence that a Lightning AI GPU has already
-  been exercised.
+- **2026-10-14, paper fidelity review:** the defaults were switched to the
+  printed readings (`private_attn=plain`, `als_mode=k_colnorm`; `direct` head
+  and horizon 96 at every entry point). Also added: `--exact-split`, the Fig. 13
+  ablations, the Figs. 7-8 sensitivity mapping, missing-modality evaluation,
+  and the EDA. Lightning AI commands live in
+  [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md); no GPU run has been performed
+  yet.
 
 ## Theoretical statements versus executable code
 
@@ -233,10 +238,10 @@ or empirical verification of Theorem 2.
 | Item | Paper evidence | Current setting or options | When/why selected |
 |---|---|---|---|
 | Dataset identity | The paper reports Mudestreda; the supplied project data is Nonastreda. | Nonastreda only, loaded by [`omnifuser/data.py`](omnifuser/data.py). | Scope retained from the user's instruction to defer MATWI and train on Nonastreda. Paper scores are plausibility references, not like-for-like reproduction results. |
-| Time step | No unambiguous pooling/aggregation interval is stated. | `--pool` default is 1. Prior task diagnostics selected pool 1000 (one second at the recorded 1 kHz) as the main comparison and 300 as an ablation. | The one-second interval brought the 96-step persistence MSE near the paper's range; it did not match the 12-step range. It is an inference from baseline diagnostics, not a paper value. The flag is exposed but the chosen experiment value is not forced as a global default. |
-| Image timing | Same-pass image replication is described; acquisition time for Nonastreda is not confirmed. | `--image-lag 0` is paper-literal; `--image-lag 1` is the causal timing ablation. | Lag 1 was selected as the main forecast comparison to avoid an image captured after its target pass; lag 0 remains the direct paper-alignment arm. |
+| Time step | No unambiguous pooling/aggregation interval is stated. | The `--pool` library default is 1; the protocol uses `--pool 1000` (1 s at the recorded 1 kHz). | `EDA.md` §6: at 1 s the last-value baseline scores z-scored MSE 0.58/0.65/0.86 at P=12/48/96, inside the paper's range (OmniFuser 0.467/0.686/0.902). At 1 ms it is 23-29× easier. An earlier diagnostic, which used separate windows per horizon, matched only P=96. This is an inference from difficulty matching, not a paper value. |
+| Image timing | Same-pass image replication is described; acquisition time for Nonastreda is not confirmed. | The library default is `--image-lag 0` (paper reading); the protocol uses `--image-lag 1`. | `EDA.md` §7: with lag 0, copying the shown photo's label scores 0.92-0.99 cumulative accuracy, above the paper's OmniFuser. Lag 1 lowers this to about 0.80, so the model must forecast. Lag 0 remains a runbook arm (§10b). |
 | Label and period codes | Paper describes class labels and cycle/batch/relative-position context but does not define a direct Nonastreda mapping. | `image_label` by default; run number -> cycle table, block number -> batch table, 16-bin position-within-record -> relative table. | Selected from the provided dataset fields and prior inspection; class names and the physical semantics/cardinalities of paper \(R\)/\(B\) are not fully established. |
-| Window protocol | Paper tables report forecast horizons 12 through 96; the exact 8/1/1 split is not specified as a universal protocol. | The CV implementation holds one tool out for test, the next numeric tool for validation, and trains on the remaining eight. Training horizon/stride are independently configurable; use 96/24 to score paper horizons. | Tool grouping prevents windows from the same tool appearing in train and test. This is the requested evaluation protocol, not a paper-exact split. |
+| Window protocol | Paper tables report forecast horizons 12 through 96; input length and split are not stated. | 10-fold leave-one-tool-out: test tool, the next tool cyclically for validation, 8 for training. Protocol: \(T=96\), \(P=96\), training stride 24, evaluation stride 96. That gives 1,127-1,213 training and 28-51 test windows per fold. | Tool grouping keeps every window of a test tool out of training. This is the requested protocol, not a paper-exact split. |
 | Force preprocessing | The paper does not define this Nonastreda-specific cleanup. | Exact duplicate force arrays are consolidated by default, selecting the maximum-flank-wear annotation; span trimming is on by default and can be disabled. Pooling is per record; incomplete trailing blocks are dropped/reported. | Chosen from supplied guide/data audit. The precise envelope/threshold and dedup policy are documented in [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md); they are not paper formulas. |
 | Loss | No complete scalar objective and weighting for the two tasks is specified. | `multitask_loss` uses force MSE + class cross-entropy with 1:1 weighting. Alignment/orthogonality diagnostics are recorded but not added to total loss. | Simple equal weighting was selected because the paper does not give coefficients. It is not a reproduction of an unstated objective. |
 | Optimizer/training lifecycle | Adam and learning rate \(10^{-4}\) are paper defaults; number of epochs/checkpoint selection are not fully prescribed. | Adam at \(10^{-4}\); best validation-loss checkpoint by default; resumable epoch-boundary checkpoints; gradient clipping and optional accumulation. | Best-checkpoint selection/resume/clipping are reliability choices for finite compute, not claims about the authors' exact training run. |
@@ -273,4 +278,6 @@ memory, or training quality. Before production training, confirm CUDA in the
 Lightning AI Studio, run one uncapped fold using the intended EfficientNet
 settings and persistent storage, inspect epoch time/peak memory and validation
 metrics, and only then launch the ten-fold run. The executable commands are in
-[`README.md`](README.md).
+[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). The complete record of what was
+verified on 2026-10-14 (static checks, 104 tests, real-data runs of every
+entry point and flag) is in `IMPLEMENTATION_AUDIT.md` §10.

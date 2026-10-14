@@ -5,11 +5,21 @@ import json
 import math
 import os
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
-
+CSV_FIELDS: tuple[str, ...] = (
+    "timestamp_utc",
+    "run_id",
+    "fold",
+    "epoch",
+    "split",
+    "evaluation_mode",
+    "metric",
+    "value",
+)
 # Hardware/library details may change when a run resumes on another machine.
 RUNTIME_METADATA_KEY = "runtime"
 
@@ -34,9 +44,7 @@ def _numeric_leaves(
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
             yield from _numeric_leaves(child, f"{prefix}.{index}")
-    elif isinstance(value, bool):
-        yield prefix, float(value)
-    elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+    elif isinstance(value, bool) or isinstance(value, (int, float)) and math.isfinite(float(value)):
         yield prefix, float(value)
 
 
@@ -88,16 +96,7 @@ class ExperimentTracker:
     def _migrate_csv_context_column(self) -> None:
         if not self.csv_path.is_file():
             return
-        fieldnames = (
-            "timestamp_utc",
-            "run_id",
-            "fold",
-            "epoch",
-            "split",
-            "evaluation_mode",
-            "metric",
-            "value",
-        )
+        fieldnames = CSV_FIELDS
         with self.csv_path.open(newline="", encoding="utf-8") as file:
             reader = csv.DictReader(file)
             existing_fields = reader.fieldnames
@@ -156,19 +155,7 @@ class ExperimentTracker:
         if rows:
             write_header = not self.csv_path.exists()
             with self.csv_path.open("a", newline="", encoding="utf-8") as file:
-                writer = csv.DictWriter(
-                    file,
-                    fieldnames=(
-                        "timestamp_utc",
-                        "run_id",
-                        "fold",
-                        "epoch",
-                        "split",
-                        "evaluation_mode",
-                        "metric",
-                        "value",
-                    ),
-                )
+                writer = csv.DictWriter(file, fieldnames=CSV_FIELDS)
                 if write_header:
                     writer.writeheader()
                 writer.writerows(rows)

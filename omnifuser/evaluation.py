@@ -8,7 +8,6 @@ from torch import Tensor
 
 from omnifuser.data import CLASS_NAMES
 
-
 PAPER_HORIZONS = (12, 24, 36, 48, 60, 72, 84, 96)
 # OmniFuser on "Mudestreda" in the paper's Tables IV-V, indexed like PAPER_HORIZONS.
 PAPER_OMNIFUSER_RESULTS = {

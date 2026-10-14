@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import argparse
 import math
-from pathlib import Path
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,9 +17,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from omnifuser.config import ModelConfig  # noqa: E402
-from omnifuser.models import OmniFuser  # noqa: E402
-
+from omnifuser.config import ModelConfig
+from omnifuser.models import OmniFuser
 
 EFFICIENTNET_B0_FEATURE_PARAMETERS = 4_007_548
 

@@ -1,11 +1,12 @@
-import torch
 import pytest
+import torch
 
 from omnifuser.config import ModelConfig
 from omnifuser.models import (
     CrossModalFusionLayer,
     GraphAttentionLayer,
     ImageBranch,
+    MultiResolutionTemporalExtractor,
     OmniFuser,
     RTDBlock,
     TemporalEmbedding,
@@ -54,8 +55,10 @@ def test_position_encoding_uses_fixed_sine_cosine_pairs() -> None:
     assert torch.allclose(encoding, expected)
     embedding = TemporalEmbedding(_config())
     assert "position_encoding" not in dict(embedding.named_parameters())
-    assert tuple(embedding.value[0].weight.shape) == (32, 3)
-    assert tuple(embedding.value[2].weight.shape) == (32, 32)
+    first, second = embedding.value[0], embedding.value[2]
+    assert isinstance(first, torch.nn.Linear) and isinstance(second, torch.nn.Linear)
+    assert tuple(first.weight.shape) == (32, 3)
+    assert tuple(second.weight.shape) == (32, 32)
 
 
 def test_learned_period_codes_are_added_and_receive_gradients() -> None:
@@ -147,6 +150,7 @@ def test_rtd_and_multitask_model_forward_backward() -> None:
         outputs["class_logits"][:, 0], outputs["class_logits"][:, -1]
     )
     assert model.force_head.weight.shape == (3, config.d_model)
+    assert model.forecast_step_embedding is not None
     assert model.forecast_step_embedding.weight.shape == (
         config.horizon,
         config.d_model,
@@ -159,10 +163,13 @@ def test_rtd_and_multitask_model_forward_backward() -> None:
     loss.backward()
     assert torch.isfinite(loss)
     assert all(torch.isfinite(value) for value in metrics.values())
-    assert model.refine_sensor[0].weight.grad is not None
-    assert model.refine_image[0].weight.grad is not None
-    assert model.forecast_step_embedding.weight.grad is not None
-    assert model.forecast_step_embedding.weight.grad.abs().sum() > 0
+    refine_sensor, refine_image = model.refine_sensor[0], model.refine_image[0]
+    assert isinstance(refine_sensor, torch.nn.Linear) and isinstance(refine_image, torch.nn.Linear)
+    assert refine_sensor.weight.grad is not None
+    assert refine_image.weight.grad is not None
+    assert model.forecast_step_embedding is not None
+    lead_gradient = model.forecast_step_embedding.weight.grad
+    assert lead_gradient is not None and lead_gradient.abs().sum() > 0
 
 
 def test_paper_literal_head_repeats_outputs_across_horizon() -> None:
@@ -281,6 +288,7 @@ def test_paper_ablation_variants_change_the_intended_component() -> None:
         return OmniFuser(ModelConfig(**{**_config().__dict__, "ablation": ablation}))
 
     full = build("none")
+    assert isinstance(full.temporal_encoder, MultiResolutionTemporalExtractor)
     assert len(full.temporal_encoder.layers) == 2 and len(full.fusion_layers) == 2
 
     assert isinstance(build("without_mrte").temporal_encoder, torch.nn.Identity)
@@ -294,6 +302,7 @@ def test_paper_ablation_variants_change_the_intended_component() -> None:
     assert all(not isinstance(layer, CrossModalFusionLayer) for layer in concat.fusion_layers)
     assert len(concat.fusion_layers) == 2
     moving_average = build("moving_average")
+    assert isinstance(moving_average.temporal_encoder, MultiResolutionTemporalExtractor)
     assert all(
         block.low_rank_left is None and block.use_moving_average
         for block in moving_average.temporal_encoder.layers
@@ -327,6 +336,7 @@ def test_without_hybrid_gate_uses_fixed_equal_mixture() -> None:
     )
     loss.backward()
     layer = model.fusion_layers[0]
+    assert isinstance(layer, CrossModalFusionLayer)
     assert layer.global_gate_r.weight.grad is None
     assert layer.gate_mix_r.grad is None
     assert layer.private_self_r.in_proj_weight.grad is not None

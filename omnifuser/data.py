@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import csv
 import re
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Any
 
 import numpy as np
 import torch
@@ -14,7 +15,6 @@ from scipy.ndimage import uniform_filter1d
 from scipy.signal import decimate
 from torch import Tensor
 from torch.utils.data import Dataset
-
 
 CLASS_NAMES = ("sharp", "used", "dulled")
 CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
@@ -165,7 +165,7 @@ def load_nonastreda(
     *,
     label_column: str = "image_label",
     decimation: int = 1,
-    dedup_identical_forces: bool = True,
+    dedup_identical_forces: bool = True, ## Change to Arg to Choose either True or False and compare !!!
     trim_pass: bool = True,
     pool: int = 1,
 ) -> list[Record]:
@@ -403,7 +403,7 @@ class ForceNormalizer:
     scale: np.ndarray
 
     @classmethod
-    def fit(cls, timelines: Sequence[ToolTimeline]) -> "ForceNormalizer":
+    def fit(cls, timelines: Sequence[ToolTimeline]) -> ForceNormalizer:
         if not timelines:
             raise ValueError("cannot fit force normalization without training timelines")
         count = 0
@@ -427,7 +427,7 @@ class ForceNormalizer:
         return (values - self.mean) / self.scale
 
 
-class WindowDataset(Dataset[dict[str, object]]):
+class WindowDataset(Dataset[dict[str, Any]]):
     def __init__(
         self,
         timelines: Sequence[ToolTimeline],
@@ -456,7 +456,7 @@ class WindowDataset(Dataset[dict[str, object]]):
     def __len__(self) -> int:
         return self.total
 
-    def __getitem__(self, index: int) -> dict[str, object]:
+    def __getitem__(self, index: int) -> dict[str, Any]:
         if index < 0:
             index += self.total
         if not 0 <= index < self.total:
@@ -519,7 +519,7 @@ class ImageBank:
     @classmethod
     def from_timelines(
         cls, timelines: Sequence[ToolTimeline], height: int = 128, width: int = 384
-    ) -> "ImageBank":
+    ) -> ImageBank:
         return cls(
             [path for timeline in timelines for path in timeline.image_paths],
             height,
@@ -536,18 +536,18 @@ class ImageBank:
 
 
 def collate_windows(
-    samples: Sequence[dict[str, object]],
+    samples: Sequence[dict[str, Any]],
     height: int = 128,
     width: int = 384,
     bank: ImageBank | None = None,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     image_paths: list[list[Path]] = []
     image_indices: list[list[int]] = []
     for sample in samples:
         paths: list[Path] = []
         lookup: dict[Path, int] = {}
         row: list[int] = []
-        for path in sample["image_paths"]:  # type: ignore[union-attr]
+        for path in sample["image_paths"]:
             path = Path(path)
             if path not in lookup:
                 lookup[path] = len(paths)

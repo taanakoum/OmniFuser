@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from typing import Any, TypedDict
 
 import numpy as np
 
@@ -134,8 +135,20 @@ ARCHITECTURE_OPTIONS = {
 }
 
 
-def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
-    overrides: dict[str, object] = {
+class ProtocolKwargs(TypedDict):
+    """Keyword arguments shared by ``train_fold`` and ``run_cross_validation``."""
+
+    pool: int
+    image_lag: int
+    select_best: bool
+    accumulation_steps: int
+    num_workers: int
+    resume: bool
+    config_overrides: dict[str, Any]
+
+
+def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
+    overrides: dict[str, Any] = {
         "ablation": args.ablation,
         "pre_attn": args.pre_attn,
         "als_mode": args.als_mode,
@@ -335,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser = subparsers.add_parser("train", help="train and evaluate one tool-held-out fold")
     train_parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
     train_parser.add_argument("--test-tool", default="T10")
-    train_parser.add_argument("--output-dir", type=Path, default=Path("outputs"))
+    train_parser.add_argument("--output-dir", type=Path, default=Path("experiment_results/train"))
     train_parser.add_argument("--epochs", type=int, default=5)
     train_parser.add_argument("--batch-size", type=int, default=32)
     train_parser.add_argument("--learning-rate", type=float, default=1e-4)

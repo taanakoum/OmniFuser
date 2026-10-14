@@ -13,7 +13,6 @@ from omnifuser.cli import add_protocol_arguments, protocol_kwargs
 from omnifuser.config import ModelConfig
 from omnifuser.cross_validation import EVALUATION_MODES, run_cross_validation
 
-
 # Paper Figs. 7-8 axes: (run-name prefix, ModelConfig field, paper symbol, values).
 SENSITIVITY_AXES = (
     ("landmarks", "num_landmarks", "k", (2, 4, 8, 16)),
@@ -224,6 +223,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-windows", type=int)
     parser.add_argument("--max-eval-windows", type=int)
     add_protocol_arguments(parser)
+    # The suite's other defaults (30 epochs, stride 24, horizon 96) assume 1 s steps
+    # and the previous-pass photo; keep pool/lag consistent with them.
+    parser.set_defaults(pool=1000, image_lag=1)
     return parser
 
 
@@ -281,12 +283,19 @@ def main(argv: list[str] | None = None) -> Path:
                 "Sensitivity symbols map to ModelConfig fields: "
                 + ", ".join(f"{symbol} -> {field}" for _, field, symbol, _ in SENSITIVITY_AXES)
                 + ".",
-                "Sensitivity values equal to the baseline are not retrained; read them from sensitivity-baseline "
-                "(or paper-ablation/full-model in the combined study).",
-                "Missing-modality rates are explicit choices because the paper does not report one; every "
-                "variant is also evaluated with sensor-only and image-only masking at inference.",
-                "w/o-ALS uses fixed segment-mean landmarks, w/o-C2F an equal-weight stream mean, w/o-HG a fixed "
-                "0.5 mixture, and re-LR-MA a three-token moving average; the paper does not specify these operators.",
+                (
+                    "Sensitivity values equal to the baseline are not retrained; read them from "
+                    "sensitivity-baseline (or paper-ablation/full-model in the combined study)."
+                ),
+                (
+                    "Missing-modality rates are explicit choices because the paper does not report one; "
+                    "every variant is also evaluated with sensor-only and image-only masking at inference."
+                ),
+                (
+                    "w/o-ALS uses fixed segment-mean landmarks, w/o-C2F an equal-weight stream mean, "
+                    "w/o-HG a fixed 0.5 mixture, and re-LR-MA a three-token moving average; the paper "
+                    "does not specify these operators."
+                ),
             ],
             "baseline_config": baseline,
             "shared_settings": shared_settings,
@@ -321,6 +330,8 @@ def main(argv: list[str] | None = None) -> Path:
         manifest["runs"][run_key] = run_record
         _write_manifest(manifest_path, manifest)
         print(f"=== {run_key} ({changed_settings or 'baseline'}) ===", flush=True)
+        run_protocol = common_protocol.copy()
+        run_protocol["config_overrides"] = config_overrides
         try:
             summary = run_cross_validation(
                 data_dir=args.data_dir,
@@ -342,12 +353,7 @@ def main(argv: list[str] | None = None) -> Path:
                 seed=args.seed,
                 max_train_windows=args.max_train_windows,
                 max_eval_windows=args.max_eval_windows,
-                config_overrides=config_overrides,
-                **{
-                    key: value
-                    for key, value in common_protocol.items()
-                    if key != "config_overrides"
-                },
+                **run_protocol,
             )
         except BaseException as exception:
             run_record["status"] = "failed"

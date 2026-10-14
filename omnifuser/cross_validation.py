@@ -16,9 +16,8 @@ from omnifuser.data import (
     leave_one_tool_out_folds,
     nonastreda_source_signature,
 )
-from omnifuser.train import train_fold
 from omnifuser.tracking import ExperimentTracker
-
+from omnifuser.train import save_arrays, train_fold
 
 RECORD_IMAGE = re.compile(r"^T(?P<tool>\d+)R\d+B\d+$")
 EVALUATION_MODES = ("full", "sensor_missing", "image_missing")
@@ -315,7 +314,7 @@ def _aggregate_out_of_fold(
         if mode == "full"
         else f"cross-validation-mean-roc-{mode}.npz"
     )
-    np.savez_compressed(output_dir / roc_file, **curve_arrays)
+    save_arrays(output_dir / roc_file, curve_arrays)
     aggregate["classification"]["mean_roc_curve_file"] = roc_file
     aggregate["evaluation_mode"] = mode
     return aggregate

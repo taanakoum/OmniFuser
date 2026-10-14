@@ -14,10 +14,16 @@ def main() -> None:
     )
     parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
     parser.add_argument("--test-tool", default="T10")
-    parser.add_argument("--output-dir", type=Path, default=Path("outputs/local-smoke"))
+    parser.add_argument("--output-dir", type=Path, default=Path("experiment_results/validation/local-smoke"))
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--horizon", type=int, default=96, help="forecast steps (paper horizons go to 96)")
+    parser.add_argument(
+        "--stride",
+        type=int,
+        help="training-window stride; defaults to input length + horizon",
+    )
     parser.add_argument(
         "--trim-pass",
         action=argparse.BooleanOptionalAction,
@@ -49,6 +55,8 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch_size,
         device_name=args.device,
+        horizon=args.horizon,
+        stride=args.stride,
         trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         prediction_head=args.prediction_head,

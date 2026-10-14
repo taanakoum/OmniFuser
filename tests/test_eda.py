@@ -3,9 +3,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from test_alignment_patch import make_nonastreda
 
 from scripts.eda import autocorrelation, label_dynamics, run_eda, trimming_diagnostics
-from test_alignment_patch import make_nonastreda
 
 
 def summary_rows(out: Path) -> list[dict]:

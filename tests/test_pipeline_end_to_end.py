@@ -7,11 +7,11 @@ from pathlib import Path
 from unittest import mock
 
 import numpy as np
+from test_alignment_patch import make_nonastreda
 
 from omnifuser import cross_validation
 from omnifuser.cross_validation import EVALUATION_MODES, run_cross_validation
 from omnifuser.data import ForceNormalizer, load_nonastreda, make_tool_timelines
-from test_alignment_patch import make_nonastreda
 
 
 def _run(root: Path, output: Path) -> dict:

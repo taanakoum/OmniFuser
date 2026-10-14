@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-import random
 import platform
+import random
 import time
+from collections.abc import Mapping, Sized
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -16,11 +17,11 @@ from torch.utils.data import DataLoader, Subset
 
 from omnifuser.config import ModelConfig
 from omnifuser.data import (
-    ForceNormalizer,
-    ImageBank,
     PASS_TRIM_REFERENCE_FRACTION,
     PASS_TRIM_THRESHOLD_FRACTION,
     PASS_TRIM_WINDOW_SAMPLES,
+    ForceNormalizer,
+    ImageBank,
     WindowDataset,
     collate_windows,
     leave_one_tool_out_folds,
@@ -37,6 +38,28 @@ from omnifuser.evaluation import (
 )
 from omnifuser.models import OmniFuser, multitask_loss
 from omnifuser.tracking import ExperimentTracker
+
+
+def save_arrays(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
+    # NumPy's stubs let a ``**`` key bind ``allow_pickle``; every key here is an array name.
+    np.savez_compressed(path, **arrays)  # pyright: ignore[reportArgumentType]
+
+
+def save_roc_curves(
+    path: Path, curves: Mapping[str, tuple[np.ndarray, np.ndarray, np.ndarray]]
+) -> None:
+    save_arrays(
+        path,
+        {
+            f"{name}_{coordinate}": values
+            for name, curve in curves.items()
+            for coordinate, values in zip(("fpr", "tpr", "thresholds"), curve)
+        },
+    )
+
+
+def _dataset_size(loader: DataLoader[Any]) -> int:
+    return len(cast(Sized, loader.dataset))
 
 
 def _limit_dataset(dataset: WindowDataset, limit: int | None, seed: int) -> Any:
@@ -153,7 +176,7 @@ def _run_epoch(
                 if loader.batch_size is None:
                     raise ValueError("gradient accumulation requires a fixed DataLoader batch size")
                 group_samples = _accumulation_group_sample_count(
-                    len(loader.dataset), loader.batch_size, step, accumulation_steps
+                    _dataset_size(loader), loader.batch_size, step, accumulation_steps
                 )
                 batch_samples = tensors["force"].shape[0]
                 (loss * (batch_samples / group_samples)).backward()
@@ -194,7 +217,7 @@ def _run_epoch(
     if not count:
         raise ValueError("the selected data split produced no evaluation batches")
     result: dict[str, Any] = {
-        key: value / len(loader.dataset) for key, value in totals.items()
+        key: value / _dataset_size(loader) for key, value in totals.items()
     }
     result["classification_accuracy"] = correct / count
     result["force_mse_normalized"] = force_squared_error / force_elements
@@ -667,7 +690,7 @@ def train_fold(
                 context={
                     "evaluation_mode": mode,
                     "selected_checkpoint_evaluation": True,
-                    "windows": len(loader.dataset),
+                    "windows": _dataset_size(loader),
                 },
             )
 
@@ -705,17 +728,8 @@ def train_fold(
         )
         prediction_name = f"{stem}-predictions-{mode}.npz"
         roc_name = f"{stem}-roc-{mode}.npz"
-        np.savez_compressed(output_path / prediction_name, **modality_predictions)
-        np.savez_compressed(
-            output_path / roc_name,
-            **{
-                f"{name}_{coordinate}": values
-                for name, curve in mode_roc_curves.items()
-                for coordinate, values in zip(
-                    ("fpr", "tpr", "thresholds"), curve
-                )
-            },
-        )
+        save_arrays(output_path / prediction_name, modality_predictions)
+        save_roc_curves(output_path / roc_name, mode_roc_curves)
         modality_artifacts[f"{mode}_predictions"] = prediction_name
         modality_artifacts[f"{mode}_roc_curves"] = roc_name
 
@@ -794,15 +808,8 @@ def train_fold(
     }
     with (output_path / f"{stem}.json").open("w", encoding="utf-8") as file:
         json.dump(result, file, indent=2)
-    np.savez_compressed(output_path / f"{stem}-predictions.npz", **test_predictions)
-    np.savez_compressed(
-        output_path / f"{stem}-roc.npz",
-        **{
-            f"{name}_{coordinate}": values
-            for name, curve in roc_curves.items()
-            for coordinate, values in zip(("fpr", "tpr", "thresholds"), curve)
-        },
-    )
+    save_arrays(output_path / f"{stem}-predictions.npz", test_predictions)
+    save_roc_curves(output_path / f"{stem}-roc.npz", roc_curves)
     torch.save(
         {
             "model_state": model.state_dict(),

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
 
 from omnifuser.cli import ARCHITECTURE_OPTIONS, build_parser, protocol_kwargs
 from omnifuser.config import ModelConfig
-from omnifuser.models import OmniFuser, sinusoidal_position_encoding
+from omnifuser.models import (
+    CrossModalFusionLayer,
+    MultiResolutionTemporalExtractor,
+    OmniFuser,
+    sinusoidal_position_encoding,
+)
 
 
 def test_architecture_options_are_optional_and_reach_model_config() -> None:
@@ -61,6 +68,7 @@ def test_architecture_options_are_optional_and_reach_model_config() -> None:
         **overrides,
     )
     model = OmniFuser(config)
+    assert isinstance(model.temporal_encoder, MultiResolutionTemporalExtractor)
     assert [block.output_steps for block in model.temporal_encoder.layers] == [
         48,
         24,
@@ -68,7 +76,9 @@ def test_architecture_options_are_optional_and_reach_model_config() -> None:
     ]
     assert len(model.image_branch.layers) == 2
     assert len(model.fusion_layers) == 3
-    assert model.fusion_layers[0].score_r.weight.shape == (6, 32)
+    first_round = model.fusion_layers[0]
+    assert isinstance(first_round, CrossModalFusionLayer)
+    assert first_round.score_r.weight.shape == (6, 32)
 
 
 @pytest.mark.parametrize(
@@ -86,7 +96,7 @@ def test_architecture_options_are_optional_and_reach_model_config() -> None:
     ],
 )
 def test_invalid_architecture_overrides_fail_early(
-    overrides: dict[str, object], message: str
+    overrides: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
         ModelConfig(**overrides)
