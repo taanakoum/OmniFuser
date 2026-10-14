@@ -31,6 +31,7 @@ class ModelConfig:
     modality_dropout: float = 0.0
     pretrained: bool = False
     freeze_bn: bool = False
+    ablation: str = "none"
 
     def __post_init__(self) -> None:
         if self.input_len < 1 or self.horizon < 1:
@@ -63,6 +64,18 @@ class ModelConfig:
             raise ValueError("modality_dropout must be in [0, 1)")
         if self.pretrained and self.image_encoder != "efficientnet_b0":
             raise ValueError("pretrained weights are only supported for efficientnet_b0")
+        if self.ablation not in {
+            "none",
+            "without_rr",
+            "without_mrte",
+            "without_rr_mrte",
+            "concat_c2f",
+            "without_c2f",
+            "without_als",
+            "without_hybrid_gate",
+            "moving_average",
+        }:
+            raise ValueError(f"unsupported ablation: {self.ablation}")
         if self.fusion_rank < 1 or self.num_landmarks < 1:
             raise ValueError("fusion_rank and num_landmarks must be positive")
         if self.num_fusion_layers < 1:

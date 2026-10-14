@@ -55,8 +55,10 @@ def test_windows_keep_force_label_and_image_alignment_across_records() -> None:
     )
 
     sample = dataset[9]
-    assert np.allclose(sample["force"][:6], sample["force"][0])
-    assert np.allclose(sample["force"][6:], sample["force"][-1])
+    normalizer = dataset.normalizer
+    assert np.allclose(sample["force"][:6], normalizer.transform(first.force[0]))
+    assert np.allclose(sample["force"][6:], normalizer.transform(second.force[0]))
+    assert not np.allclose(sample["force"][0], sample["force"][-1])
     assert sample["image_paths"][:6] == (first.image_path,) * 6
     assert sample["image_paths"][6:] == (second.image_path,) * 6
     assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
@@ -75,6 +77,85 @@ def test_lag_one_uses_previous_pass_image_but_current_pass_target() -> None:
     assert sample["image_paths"] == (first.image_path,) * 12
     assert sample["shown_label"] == 0
     assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
+
+
+def _ramp_record(record_id: str, tool: str, block: int, start: float, length: int) -> Record:
+    values = start + np.arange(length, dtype=np.float32)
+    return Record(
+        record_id=record_id,
+        tool=tool,
+        run=1,
+        block=block,
+        force=np.stack((values, -values, 2 * values), axis=1),
+        label=block - 1,
+        image_path=Path(f"{record_id}.jpg"),
+    )
+
+
+def test_forecast_target_is_exactly_the_next_horizon_samples() -> None:
+    timelines = make_tool_timelines(
+        [
+            _ramp_record("T1R1B1", "T1", 1, 0.0, 50),
+            _ramp_record("T1R1B2", "T1", 2, 50.0, 50),
+            _ramp_record("T2R1B1", "T2", 1, 1000.0, 40),
+        ]
+    )
+    normalizer = ForceNormalizer.fit(timelines)
+    dataset = WindowDataset(timelines, normalizer, input_len=10, horizon=5, stride=7)
+
+    # T1: (100 - 15) // 7 + 1 = 13 windows, T2: (40 - 15) // 7 + 1 = 4 windows
+    assert len(dataset) == 17
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        timeline = timelines[0] if index < 13 else timelines[1]
+        start = (index if index < 13 else index - 13) * 7
+        raw_input = timeline.force[start : start + 10]
+        raw_target = timeline.force[start + 10 : start + 15]
+        assert np.allclose(sample["force"], normalizer.transform(raw_input))
+        assert np.allclose(sample["force_target"], normalizer.transform(raw_target))
+        # the target continues the input ramp, so no sample is skipped or reused
+        restored = sample["force_target"] * normalizer.scale + normalizer.mean
+        assert np.allclose(restored[0, 0], raw_input[-1, 0] + 1)
+        assert np.array_equal(sample["class_target"], timeline.labels[start + 10 : start + 15])
+    # windows never mix tools: T2 windows only see T2's 1000+ force values
+    assert dataset[13]["force"][:, 0].min() * normalizer.scale[0] + normalizer.mean[0] >= 999.0
+
+
+def test_label_switch_inside_target_follows_record_boundary() -> None:
+    timeline = make_tool_timelines(
+        [
+            _ramp_record("T1R1B1", "T1", 1, 0.0, 20),
+            _ramp_record("T1R1B2", "T1", 2, 20.0, 20),
+        ]
+    )[0]
+    dataset = WindowDataset(
+        [timeline], ForceNormalizer.fit([timeline]), input_len=16, horizon=8, stride=16
+    )
+    sample = dataset[0]
+    # leads 1-4 are still record 1 (label 0), leads 5-8 are record 2 (label 1)
+    assert sample["class_target"].tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert sample["shown_label"] == 0
+
+
+def test_normalizer_pools_statistics_across_training_tools() -> None:
+    rng = np.random.default_rng(3)
+    records = [
+        Record(f"T{tool}R1B1", f"T{tool}", 1, 1,
+               rng.normal(tool * 10, tool, (100 + 37 * tool, 3)).astype(np.float32),
+               0, Path(f"T{tool}.jpg"))
+        for tool in (1, 2, 3)
+    ]
+    timelines = make_tool_timelines(records)
+    normalizer = ForceNormalizer.fit(timelines)
+    pooled = np.concatenate([timeline.force for timeline in timelines]).astype(np.float64)
+
+    assert np.allclose(normalizer.mean, pooled.mean(axis=0), rtol=1e-5)
+    assert np.allclose(normalizer.scale, pooled.std(axis=0), rtol=1e-5)
+    transformed = np.concatenate(
+        [normalizer.transform(timeline.force) for timeline in timelines]
+    )
+    assert np.allclose(transformed.mean(axis=0), 0.0, atol=1e-4)
+    assert np.allclose(transformed.std(axis=0), 1.0, atol=1e-4)
 
 
 def test_loto_keeps_each_tool_in_one_split() -> None:

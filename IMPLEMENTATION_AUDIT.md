@@ -43,10 +43,10 @@ labels, split, preprocessing, and training protocol are also matched.
 | File | Responsibilities |
 |---|---|
 | [`omnifuser/__init__.py`](omnifuser/__init__.py) | Package marker and version (`0.1.0`). |
-| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, prediction head, ALS mode, shared/separate C2F weights, private-attention variant, modality dropout, optional pretrained EfficientNet, and BatchNorm freezing. Validates supported settings and incompatible encoder/weight combinations. |
+| [`omnifuser/config.py`](omnifuser/config.py) | `ModelConfig`: model widths, sequence lengths, layer counts, ranks, image settings, RTD mode, prediction head, ALS mode, shared/separate C2F weights, private-attention variant, modality dropout, optional pretrained EfficientNet, BatchNorm freezing, and explicit paper ablation selection. Validates supported settings and incompatible encoder/weight combinations. |
 | [`omnifuser/data.py`](omnifuser/data.py) | CSV/MAT loading and cross-file validation, record parsing, exact-force deduplication, span trimming, optional force decimation and per-record block-mean pooling, optional preceding-record image association, per-tool timelines/folds, training-only normalization, sliding windows, cached image loading, and source-file signatures. |
-| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force/period embeddings, RTD/MRTE blocks, compact or EfficientNet image encoder, temporal graph attention, selectable C2F ALS variants and weight-sharing, configurable private attention, optional modality dropout/pre-attention, dual-task heads, and joint loss. |
-| [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, sample-weighted gradient accumulation, periodic resumable state (including optimizer/RNG), validation-based best-checkpoint selection, final test pass, baseline/horizon summaries, predictions/ROC artifacts, and checkpoint persistence. |
+| [`omnifuser/models.py`](omnifuser/models.py) | Fixed sinusoidal positions, force/period embeddings, RTD/MRTE blocks, compact or EfficientNet image encoder, temporal graph attention, selectable C2F ALS variants and weight-sharing, configurable private attention, optional modality dropout/pre-attention, dual-task heads, joint loss, and paper component-ablation implementations. |
+| [`omnifuser/train.py`](omnifuser/train.py) | One held-out-tool run: loader setup, sample-weighted gradient accumulation, periodic resumable state (including optimizer/RNG), validation-based best-checkpoint selection, all-stage full/missing-modality evaluation, baseline/horizon summaries, predictions/ROC artifacts, and checkpoint persistence. |
 | [`omnifuser/evaluation.py`](omnifuser/evaluation.py) | Accuracy, macro and support-weighted precision/recall/F1, confusion matrix, one-vs-rest ROC/AUC, force-regression metrics in normalized and original units, cumulative-horizon metrics, and per-horizon persistence/force baselines. |
 | [`omnifuser/cross_validation.py`](omnifuser/cross_validation.py) | Ten-tool discovery, repeated held-out-tool folds, guarded matching-fold reuse, macro/weighted per-fold summaries, paper-horizon mean/std summaries, pooled out-of-fold metrics, and mean ROC curve artifacts. |
 | [`omnifuser/cli.py`](omnifuser/cli.py) | `omnifuser inspect` and `omnifuser train` command-line interface and argument wiring; inspection reports retained record/image counts, pool-tail drops, trimming, and window budget. |
@@ -58,12 +58,16 @@ labels, split, preprocessing, and training protocol are also matched.
 |---|---|
 | [`scripts/train_local.py`](scripts/train_local.py) | One-fold local smoke run; caps train/evaluation windows unless `--full` is supplied. Defaults to CPU, batch size 1, and EfficientNet-B0; supports the same alignment/training controls as the package CLI. |
 | [`scripts/train_lightning.py`](scripts/train_lightning.py) | Full ten-fold runner intended to be launched on a GPU machine or in a Lightning AI Studio. It invokes the package's PyTorch loop; it is not a Lightning Trainer implementation. |
+| [`scripts/run_experiment_suite.py`](scripts/run_experiment_suite.py) | Runs paper component ablations, supported parameter-sensitivity sweeps, or modality-dropout robustness studies as isolated, resumable 10-fold runs under one suite manifest. |
 | [`scripts/task_diagnostics.py`](scripts/task_diagnostics.py) | Compares simple force/classification baselines across chosen pool factors and horizons; uses capped samples and pooled-data normalization for descriptive diagnostics, not a training evaluation. |
 | [`scripts/compare_with_paper.py`](scripts/compare_with_paper.py) | Renders cumulative normalized-force and classification scores next to published Tables IV-V and includes matched Nonastreda persistence baselines. |
 | [`tests/test_data.py`](tests/test_data.py) | Tests timeline/window shapes and cross-record label/image alignment, including lag-1 image/current-label behavior, tool-level fold partitions, train-only normalization, image collation, within-run exact-force grouping, and span trimming. |
 | [`tests/test_model.py`](tests/test_model.py) | Tests sinusoidal and period embeddings, graph attention normalization, image position placement, orthogonal residuals, proxy pooling, shared/separate C2F and private attention options, forecast heads, model forward/backward, and macro/weighted classification metrics. |
 | [`tests/test_evaluation.py`](tests/test_evaluation.py) | Tests classification/ROC behavior, absent-class AUC, weighted scores, per-horizon baselines, cumulative metrics, and original-unit regression metrics. |
 | [`tests/test_cross_validation.py`](tests/test_cross_validation.py) | Tests pooled out-of-fold aggregation, ROC output, missing-AUC fold handling, weighted metrics, and paper-horizon aggregation. |
+| [`tests/test_model.py`](tests/test_model.py) | Also executes each paper ablation variant through forward/backward, checks that each variant changes the intended component, and checks that a masked modality's input cannot influence predictions. |
+| [`tests/test_pipeline_end_to_end.py`](tests/test_pipeline_end_to_end.py) | Synthetic 10-tool cross-validation run through the real loader: all split/mode metrics, per-mode pooled results, artifacts, tracking rows, training-tool-only normalizer, evaluation stride, and completed-fold reuse. |
+| [`tests/test_experiment_suite.py`](tests/test_experiment_suite.py) | Ablation list, the eight sensitivity axes and their config mappings, dropout arms, and suite manifest/summary/resume/failure behavior with a mocked trainer. |
 | [`tests/test_alignment_fixes.py`](tests/test_alignment_fixes.py) | Regression tests for sample-weighted partial gradient accumulation, pooled diagnostic normalization, strict completed-fold reuse, and dataset-file signatures. |
 | [`tests/test_alignment_patch.py`](tests/test_alignment_patch.py) | Integrated regression tests for the alignment features: data pooling/image lag, model options, evaluation, and resume behavior. |
 
@@ -676,8 +680,75 @@ include paper-horizon metrics and persistence baselines; the CV event contains
 fold means and pooled out-of-fold results. Reuse a unique output directory per
 independent run; matching fold resumption appends tracking events.
 
-Verification performed in this environment: **65 project tests pass**; a
-capped one-fold compact CPU run completed and wrote fold/checkpoint/tracking
+### Paper experiment coverage, modality robustness, and output archive
+
+The paper's Experiment section includes forecasting/classification comparisons,
+parameter sensitivity, the Figure 13 component ablations, and qualitative
+robustness to missing modalities. The repository now exposes the Figure 13
+variants through `--ablation` and `scripts/run_experiment_suite.py`:
+
+| Paper variant | Implementation setting | Boundary/choice |
+|---|---|---|
+| Full model | `none` | Shared reference arm for each suite. |
+| w/o-RR | `without_rr` | One C2F application; no recursive re-injection round. |
+| w/o-MRTE | `without_mrte` | Identity temporal extractor after force embedding. |
+| w/o-RR&MRTE | `without_rr_mrte` | Both changes above. |
+| re-C2F-Concat | `concat_c2f` | Concatenate the two streams and project back to `d_model` at each configured round. |
+| w/o-C2F | `without_c2f` | Equal-weight sensor/image stream mean feeds the heads; this fallback is an implementation choice because the paper does not specify a replacement operator. |
+| w/o-ALS | `without_als` | Fixed, non-adaptive landmarks: the means of `k` contiguous time segments (Nyström-style) replace learned selection. An earlier version used uniform weights over all time steps; that collapsed every landmark to the same global mean and removed cross-attention entirely, a stronger change than "reduces fidelity". |
+| w/o-HG | `without_hybrid_gate` | Equal mixture of cross-modal and private features replaces the learned hybrid gate. |
+| re-LR-MA | `moving_average` | Three-token centered mean replaces the low-rank trend map; the paper does not report the moving-average kernel. |
+
+The figure's paper-reported values are not used as acceptance thresholds. Each
+variant is retrained and evaluated with the same seed, data protocol, and
+hyperparameters; no variant is implemented by changing only its test-time
+inputs. The parameter-sensitivity runner covers all eight axes of Figs. 7-8.
+It maps \(k\) to `num_landmarks`, \(d\) to `d_model`, GAT heads/layers to
+`num_gat_heads`/`num_gat_layers`, and \(s_l\) to `rtd_stride`. It maps \(r\)
+to `rtd_rank`, because the paper describes \(r\) as the projection rank of the
+trend-seasonal decomposition. It maps \(L\) to `num_rtd_layers` (MRTE depth)
+and \(n\) to `num_fusion_layers` (recursive-refinement iterations). An earlier
+revision mapped \(r\) to the C2F `fusion_rank`, omitted \(L\), and documented
+\(L\)/\(n\) as not independently reproducible; that was incorrect. Sweep values
+equal to the baseline are not retrained.
+
+`OmniFuser.forward` supports zero-masking either input stream. After model
+selection, each fold now evaluates the final checkpoint in full-input,
+sensor-missing, and image-missing conditions on training, validation, and test
+splits. Epoch-by-epoch full-input training/validation metrics remain tracked;
+missing-input results are post-selection robustness evaluations. The
+separate `missing-modality` suite trains a no-dropout reference arm and arms
+with training modality dropout (default 0.2, configurable with
+`--modality-dropout-rates`). The rate is an explicit choice because the paper
+does not specify one. Cross-validation also pools out-of-fold test predictions
+for each masked mode (`out_of_fold_by_mode`). For each stage/mode,
+tracked metrics include task loss components, macro/weighted classification
+scores, one-vs-rest ROC/AUC, and force errors in normalized/original units by
+channel and forecast lead. Test predictions and ROC curves are stored for
+both missing-input conditions as well as the full-input condition.
+
+New suite outputs use
+`experiment_results/<study>/<run-id>/<group>/<variant>/`, with each variant
+holding its own fold artifacts and tracker; the parent `suite.json` indexes
+settings, status, and result paths, and `suite-summary.csv` compares the
+variants' test metrics per input mode. Fold reuse requires the missing-modality
+evaluations, so folds written by older code are retrained, not silently mixed
+in. The experiment tracker refuses to resume into a directory with different
+settings, but it accepts a different GPU or library version and records the
+change in `runtime_history`. This generated output directory is
+git-ignored except for its README layout index. Use
+[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) for all local, single-fold,
+10-fold, ablation, sensitivity, and missing-modality commands, including the
+Lightning AI persistent-storage setup and resume instructions.
+
+Verification performed in this environment: **94 project tests pass**. These
+include a synthetic 10-tool end-to-end cross-validation run and tests for
+exact window/target alignment, training-only normalization, and masked-modality
+input independence. Injecting an off-by-one target window, an all-tool
+normalizer, or a no-op sensor mask each makes the new tests fail. A capped
+real-data missing-modality suite (2 variants × 10 folds, compact encoder, CPU)
+completed and wrote `suite-summary.csv`. A capped one-fold compact CPU run
+completed and wrote fold/checkpoint/tracking
 artifacts with the new architecture overrides; an earlier capped compact CPU
 run through `scripts/train_lightning.py` completed all 10 folds and logged the
 final CV aggregate. The locally installed PyTorch is

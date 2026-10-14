@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 outputs/
+experiment_results/*
+!experiment_results/README.md
 Nonastreda_Data/
 *.pdf
 Literature/

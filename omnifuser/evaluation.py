@@ -227,6 +227,10 @@ def regression_report(
         channel: summarize(error[..., index])
         for index, channel in enumerate(("Fx", "Fy", "Fz"))
     }
+    by_channel_normalized = {
+        channel: summarize(normalized_error[..., index])
+        for index, channel in enumerate(("Fx", "Fy", "Fz"))
+    }
     by_horizon = [
         summarize(error[:, step, :]) for step in range(error.shape[1])
     ]
@@ -238,6 +242,7 @@ def regression_report(
         "units": "original force units",
         "overall": summarize(error),
         "by_channel": by_channel,
+        "by_channel_normalized": by_channel_normalized,
         "by_horizon": by_horizon,
         "by_horizon_normalized": by_horizon_normalized,
         "normalized": summarize(normalized_error),

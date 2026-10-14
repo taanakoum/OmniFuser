@@ -89,10 +89,15 @@ class RTDBlock(nn.Module):
             d, d, kernel_size=stride, stride=stride, groups=d, bias=False
         )
         self.mix = nn.Linear(d, d, bias=False)
-        self.low_rank_left = nn.Parameter(torch.empty(d, config.rtd_rank))
-        self.low_rank_right = nn.Parameter(torch.empty(config.rtd_rank, d))
-        nn.init.xavier_uniform_(self.low_rank_left)
-        nn.init.xavier_uniform_(self.low_rank_right)
+        self.use_moving_average = config.ablation == "moving_average"
+        if self.use_moving_average:
+            self.register_parameter("low_rank_left", None)
+            self.register_parameter("low_rank_right", None)
+        else:
+            self.low_rank_left = nn.Parameter(torch.empty(d, config.rtd_rank))
+            self.low_rank_right = nn.Parameter(torch.empty(config.rtd_rank, d))
+            nn.init.xavier_uniform_(self.low_rank_left)
+            nn.init.xavier_uniform_(self.low_rank_right)
         self.trend_ffn = nn.Sequential(nn.Linear(d, 2 * d), nn.GELU(), nn.Linear(2 * d, d))
         self.seasonal_ffn = nn.Sequential(nn.Linear(d, 2 * d), nn.GELU(), nn.Linear(2 * d, d))
         self.time_up = nn.Linear(output_steps, config.input_len)
@@ -109,7 +114,18 @@ class RTDBlock(nn.Module):
         if pad:
             down = F.pad(down, (0, pad))
         down = self.mix(self.depthwise(down).transpose(1, 2))
-        trend = (down @ self.low_rank_left) @ self.low_rank_right
+        if self.use_moving_average:
+            trend = F.avg_pool1d(
+                down.transpose(1, 2),
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                count_include_pad=False,
+            ).transpose(1, 2)
+        else:
+            if self.low_rank_left is None or self.low_rank_right is None:
+                raise RuntimeError("low-rank trend parameters are not initialized")
+            trend = (down @ self.low_rank_left) @ self.low_rank_right
         seasonal = down - trend
         if self.decomp_mode == "literal":
             decomposed = trend + seasonal
@@ -273,6 +289,7 @@ class ImageBranch(nn.Module):
 class CrossModalFusionLayer(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
+        self.config = config
         d = config.d_model
         self.shared_r = nn.Linear(d, d, bias=False)
         self.shared_i = nn.Linear(d, d, bias=False)
@@ -316,6 +333,14 @@ class CrossModalFusionLayer(nn.Module):
     def _landmarks(
         self, x: Tensor, scorer: nn.Linear, value_projection: nn.Linear
     ) -> tuple[Tensor, Tensor]:
+        if self.config.ablation == "without_als":
+            # Fixed, non-adaptive landmarks: means of k contiguous time segments.
+            k = scorer.out_features
+            landmarks = F.adaptive_avg_pool1d(x.transpose(1, 2), k).transpose(1, 2)
+            landmark_values = F.adaptive_avg_pool1d(
+                value_projection(x).transpose(1, 2), k
+            ).transpose(1, 2)
+            return landmarks, landmark_values
         logits = scorer(x)
         if self.als_mode == "time":
             weights = torch.softmax(logits, dim=1)
@@ -381,24 +406,26 @@ class CrossModalFusionLayer(nn.Module):
             shared_i @ land_r.transpose(1, 2) / math.sqrt(shared_i.shape[-1]), dim=-1
         ) @ value_land_r
 
-        pair_r = torch.cat((cross_r, private_r), dim=-1)
-        pair_i = torch.cat((cross_i, private_i), dim=-1)
-        gate_r = self._hybrid_gate(
-            pair_r,
-            self.global_gate_r,
-            self.local_depthwise_r,
-            self.local_gate_r,
-            self.gate_mix_r,
-        )
-        gate_i = self._hybrid_gate(
-            pair_i,
-            self.global_gate_i,
-            self.local_depthwise_i,
-            self.local_gate_i,
-            self.gate_mix_i,
-        )
-        fused_r = gate_r * cross_r + (1 - gate_r) * private_r
-        fused_i = gate_i * cross_i + (1 - gate_i) * private_i
+        if self.config.ablation == "without_hybrid_gate":
+            fused_r = 0.5 * (cross_r + private_r)
+            fused_i = 0.5 * (cross_i + private_i)
+        else:
+            gate_r = self._hybrid_gate(
+                torch.cat((cross_r, private_r), dim=-1),
+                self.global_gate_r,
+                self.local_depthwise_r,
+                self.local_gate_r,
+                self.gate_mix_r,
+            )
+            gate_i = self._hybrid_gate(
+                torch.cat((cross_i, private_i), dim=-1),
+                self.global_gate_i,
+                self.local_depthwise_i,
+                self.local_gate_i,
+                self.gate_mix_i,
+            )
+            fused_r = gate_r * cross_r + (1 - gate_r) * private_r
+            fused_i = gate_i * cross_i + (1 - gate_i) * private_i
         fused = self.project(torch.cat((fused_r, fused_i), dim=-1))
 
         norm_r = F.normalize(shared_r, dim=-1)
@@ -410,14 +437,38 @@ class CrossModalFusionLayer(nn.Module):
         return self.dropout(fused), shared_alignment, orthogonality
 
 
+class ConcatenationFusionLayer(nn.Module):
+    def __init__(self, d_model: int) -> None:
+        super().__init__()
+        self.project = nn.Linear(2 * d_model, d_model)
+
+    def forward(self, sensor: Tensor, image: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        zero = sensor.new_zeros(())
+        return self.project(torch.cat((sensor, image), dim=-1)), zero, zero
+
+
 class OmniFuser(nn.Module):
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
         self.config = config or ModelConfig()
         self.temporal_embedding = TemporalEmbedding(self.config)
-        self.temporal_encoder = MultiResolutionTemporalExtractor(self.config)
+        if self.config.ablation in {"without_mrte", "without_rr_mrte"}:
+            self.temporal_encoder = nn.Identity()
+        else:
+            self.temporal_encoder = MultiResolutionTemporalExtractor(self.config)
         self.image_branch = ImageBranch(self.config)
-        if self.config.share_c2f:
+        if self.config.ablation == "without_c2f":
+            self.fusion_layers = nn.ModuleList()
+        elif self.config.ablation in {"without_rr", "without_rr_mrte"}:
+            self.fusion_layers = nn.ModuleList(
+                [CrossModalFusionLayer(self.config)]
+            )
+        elif self.config.ablation == "concat_c2f":
+            self.fusion_layers = nn.ModuleList(
+                ConcatenationFusionLayer(self.config.d_model)
+                for _ in range(self.config.num_fusion_layers)
+            )
+        elif self.config.share_c2f:
             shared_layer = CrossModalFusionLayer(self.config)
             self.fusion_layers = nn.ModuleList(
                 shared_layer for _ in range(self.config.num_fusion_layers)
@@ -428,11 +479,11 @@ class OmniFuser(nn.Module):
             )
         self.refine_sensor = nn.ModuleList(
             nn.Linear(self.config.d_model, self.config.d_model, bias=False)
-            for _ in range(max(self.config.num_fusion_layers - 1, 0))
+            for _ in range(max(len(self.fusion_layers) - 1, 0))
         )
         self.refine_image = nn.ModuleList(
             nn.Linear(self.config.d_model, self.config.d_model, bias=False)
-            for _ in range(max(self.config.num_fusion_layers - 1, 0))
+            for _ in range(max(len(self.fusion_layers) - 1, 0))
         )
         d = self.config.d_model
         if self.config.prediction_head == "lead_conditioned":
@@ -497,6 +548,8 @@ class OmniFuser(nn.Module):
         fused: Tensor | None = None
         alignment_loss = force.new_zeros(())
         orthogonality_loss = force.new_zeros(())
+        if self.config.ablation == "without_c2f":
+            fused = 0.5 * (original_sensor + original_image)
         for index, layer in enumerate(self.fusion_layers):
             if index:
                 if fused is None:
@@ -540,8 +593,16 @@ class OmniFuser(nn.Module):
         return {
             "force": force_output,
             "class_logits": class_output,
-            "alignment_loss": alignment_loss / len(self.fusion_layers),
-            "orthogonality_loss": orthogonality_loss / len(self.fusion_layers),
+            "alignment_loss": (
+                alignment_loss / len(self.fusion_layers)
+                if self.fusion_layers
+                else alignment_loss
+            ),
+            "orthogonality_loss": (
+                orthogonality_loss / len(self.fusion_layers)
+                if self.fusion_layers
+                else orthogonality_loss
+            ),
         }
 
 

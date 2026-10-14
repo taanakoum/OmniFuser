@@ -424,3 +424,11 @@ The full cross-validation launcher uses the project’s native PyTorch loop; it
 does not require or instantiate a Lightning Trainer. CUDA execution and GPU
 capacity still need to be verified in the target Studio. The capped local
 smoke tests do not establish production throughput or model quality.
+
+For the complete command catalog, persistent-storage layout, ten-fold
+ablation/sensitivity suites, and missing-modality tracking, see
+[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). Run artifacts are isolated under
+`experiment_results/<study>/<run-id>/`; that generated folder is git-ignored
+except for its layout index. Each fold now tracks full-input,
+sensor-missing, and image-missing selected-checkpoint evaluations on train,
+validation, and test splits.

@@ -20,6 +20,22 @@ from omnifuser.train import train_fold
 
 def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "--ablation",
+        choices=(
+            "none",
+            "without_rr",
+            "without_mrte",
+            "without_rr_mrte",
+            "concat_c2f",
+            "without_c2f",
+            "without_als",
+            "without_hybrid_gate",
+            "moving_average",
+        ),
+        default="none",
+        help="paper experiment variant; 'none' is the full configured model",
+    )
+    parser.add_argument(
         "--pool",
         type=int,
         default=1,
@@ -114,6 +130,7 @@ ARCHITECTURE_OPTIONS = {
 
 def protocol_kwargs(args: argparse.Namespace) -> dict[str, object]:
     overrides: dict[str, object] = {
+        "ablation": args.ablation,
         "pre_attn": args.pre_attn,
         "als_mode": args.als_mode,
         "private_attn": args.private_attn,

@@ -40,7 +40,16 @@ def test_diagnostic_normalizer_uses_pooled_records() -> None:
 
 
 def test_finished_fold_reuse_checks_training_settings_and_artifacts(tmp_path: Path) -> None:
-    for name in ("fold-T1.pt", "fold-T1-predictions.npz", "fold-T1-roc.npz"):
+    artifacts = {
+        "checkpoint": "fold-T1.pt",
+        "test_predictions": "fold-T1-predictions.npz",
+        "roc_curves": "fold-T1-roc.npz",
+        "sensor_missing_predictions": "fold-T1-predictions-sensor_missing.npz",
+        "sensor_missing_roc_curves": "fold-T1-roc-sensor_missing.npz",
+        "image_missing_predictions": "fold-T1-predictions-image_missing.npz",
+        "image_missing_roc_curves": "fold-T1-roc-image_missing.npz",
+    }
+    for name in artifacts.values():
         (tmp_path / name).write_bytes(b"artifact")
     config = {"prediction_head": "direct"}
     result = {
@@ -56,10 +65,10 @@ def test_finished_fold_reuse_checks_training_settings_and_artifacts(tmp_path: Pa
             "seed": 7,
             "device": "cpu",
         },
-        "artifacts": {
-            "checkpoint": "fold-T1.pt",
-            "test_predictions": "fold-T1-predictions.npz",
-            "roc_curves": "fold-T1-roc.npz",
+        "artifacts": artifacts,
+        "modality_evaluations": {
+            mode: {"train": {}, "validation": {}, "test": {}}
+            for mode in ("full", "sensor_missing", "image_missing")
         },
     }
     (tmp_path / "fold-T1.json").write_text(json.dumps(result), encoding="utf-8")
@@ -83,6 +92,12 @@ def test_finished_fold_reuse_checks_training_settings_and_artifacts(tmp_path: Pa
         )
         is None
     )
+    # A fold written before missing-modality evaluation existed is retrained.
+    legacy = {
+        key: value for key, value in result.items() if key != "modality_evaluations"
+    }
+    (tmp_path / "fold-T1.json").write_text(json.dumps(legacy), encoding="utf-8")
+    assert _load_finished_fold(tmp_path, "T1", config, expected, 2, 4) is None
 
 
 def test_source_signature_tracks_dataset_files(tmp_path: Path) -> None:

@@ -210,6 +210,128 @@ def test_shared_c2f_weights_and_plain_private_attention_options() -> None:
     assert output[0].shape == (2, config.input_len, config.d_model)
 
 
+@pytest.mark.parametrize(
+    "ablation",
+    [
+        "without_rr",
+        "without_mrte",
+        "without_rr_mrte",
+        "concat_c2f",
+        "without_c2f",
+        "without_als",
+        "without_hybrid_gate",
+        "moving_average",
+    ],
+)
+def test_paper_ablation_variants_run_forward_and_backward(ablation: str) -> None:
+    config = ModelConfig(
+        **{
+            **_config().__dict__,
+            "ablation": ablation,
+        }
+    )
+    model = OmniFuser(config)
+    force = torch.randn(2, config.input_len, 3)
+    images = torch.randn(2, 2, 3, 16, 24)
+    indices = torch.tensor([[0] * 6 + [1] * 6, [1] * config.input_len])
+    outputs = model(force, images, indices)
+    loss, _ = multitask_loss(
+        outputs,
+        torch.randn(2, config.horizon, 3),
+        torch.randint(0, 3, (2, config.horizon)),
+    )
+    loss.backward()
+
+    assert outputs["force"].shape == (2, config.horizon, 3)
+    assert outputs["class_logits"].shape == (2, config.horizon, 3)
+    assert torch.isfinite(loss)
+
+
+def _model_inputs(config: ModelConfig, seed: int) -> tuple[torch.Tensor, ...]:
+    generator = torch.Generator().manual_seed(seed)
+    force = torch.randn(2, config.input_len, 3, generator=generator)
+    images = torch.randn(2, 2, 3, 16, 24, generator=generator)
+    indices = torch.tensor([[0] * 6 + [1] * 6, [1] * config.input_len])
+    return force, images, indices
+
+
+@pytest.mark.parametrize("ablation", ["none", "without_c2f", "concat_c2f"])
+def test_masked_modality_input_cannot_influence_predictions(ablation: str) -> None:
+    config = ModelConfig(**{**_config().__dict__, "ablation": ablation})
+    model = OmniFuser(config).eval()
+    force_a, images_a, indices = _model_inputs(config, 0)
+    force_b, images_b, _ = _model_inputs(config, 1)
+    with torch.no_grad():
+        sensor_missing_a = model(force_a, images_a, indices, drop_modality="sensor")
+        sensor_missing_b = model(force_b, images_a, indices, drop_modality="sensor")
+        image_missing_a = model(force_a, images_a, indices, drop_modality="image")
+        image_missing_b = model(force_a, images_b, indices, drop_modality="image")
+        full_a = model(force_a, images_a, indices)
+        full_b = model(force_b, images_a, indices)
+
+    for key in ("force", "class_logits"):
+        assert torch.allclose(sensor_missing_a[key], sensor_missing_b[key], atol=1e-6)
+        assert torch.allclose(image_missing_a[key], image_missing_b[key], atol=1e-6)
+        # with both streams present the force input does matter
+        assert not torch.allclose(full_a[key], full_b[key])
+
+
+def test_paper_ablation_variants_change_the_intended_component() -> None:
+    def build(ablation: str) -> OmniFuser:
+        return OmniFuser(ModelConfig(**{**_config().__dict__, "ablation": ablation}))
+
+    full = build("none")
+    assert len(full.temporal_encoder.layers) == 2 and len(full.fusion_layers) == 2
+
+    assert isinstance(build("without_mrte").temporal_encoder, torch.nn.Identity)
+    assert len(build("without_mrte").fusion_layers) == 2
+    assert len(build("without_rr").fusion_layers) == 1
+    assert len(build("without_rr").refine_sensor) == 0
+    both = build("without_rr_mrte")
+    assert isinstance(both.temporal_encoder, torch.nn.Identity) and len(both.fusion_layers) == 1
+    assert len(build("without_c2f").fusion_layers) == 0
+    concat = build("concat_c2f")
+    assert all(not isinstance(layer, CrossModalFusionLayer) for layer in concat.fusion_layers)
+    assert len(concat.fusion_layers) == 2
+    moving_average = build("moving_average")
+    assert all(
+        block.low_rank_left is None and block.use_moving_average
+        for block in moving_average.temporal_encoder.layers
+    )
+
+
+def test_without_als_uses_fixed_segment_mean_landmarks() -> None:
+    config = ModelConfig(**{**_config().__dict__, "ablation": "without_als"})
+    layer = CrossModalFusionLayer(config)
+    values = torch.randn(2, config.input_len, config.d_model)
+    landmarks, landmark_values = layer._landmarks(values, layer.score_r, layer.value_r)
+
+    segments = values.reshape(2, config.num_landmarks, -1, config.d_model).mean(dim=2)
+    assert torch.allclose(landmarks, segments, atol=1e-6)
+    assert torch.allclose(
+        landmark_values,
+        layer.value_r(values).reshape(2, config.num_landmarks, -1, config.d_model).mean(dim=2),
+        atol=1e-6,
+    )
+    # landmarks stay distinct, so cross-attention is not collapsed to one global mean
+    assert not torch.allclose(landmarks[:, 0], landmarks[:, 1])
+
+
+def test_without_hybrid_gate_uses_fixed_equal_mixture() -> None:
+    config = ModelConfig(**{**_config().__dict__, "ablation": "without_hybrid_gate"})
+    model = OmniFuser(config)
+    force, images, indices = _model_inputs(config, 0)
+    outputs = model(force, images, indices)
+    loss, _ = multitask_loss(
+        outputs, torch.randn(2, config.horizon, 3), torch.randint(0, 3, (2, config.horizon))
+    )
+    loss.backward()
+    layer = model.fusion_layers[0]
+    assert layer.global_gate_r.weight.grad is None
+    assert layer.gate_mix_r.grad is None
+    assert layer.private_self_r.in_proj_weight.grad is not None
+
+
 def test_model_config_rejects_unknown_prediction_head() -> None:
     with pytest.raises(ValueError, match="prediction_head"):
         _config(prediction_head="unknown")

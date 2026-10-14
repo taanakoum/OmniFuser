@@ -21,6 +21,23 @@ from omnifuser.tracking import ExperimentTracker
 
 
 RECORD_IMAGE = re.compile(r"^T(?P<tool>\d+)R\d+B\d+$")
+EVALUATION_MODES = ("full", "sensor_missing", "image_missing")
+EVALUATION_METRIC_PATHS = {
+    "classification_accuracy": ("classification", "accuracy"),
+    "classification_precision_macro": ("classification", "precision_macro"),
+    "classification_recall_macro": ("classification", "recall_macro"),
+    "classification_f1_macro": ("classification", "f1_macro"),
+    "classification_precision_weighted": ("classification", "precision_weighted"),
+    "classification_recall_weighted": ("classification", "recall_weighted"),
+    "classification_f1_weighted": ("classification", "f1_weighted"),
+    "classification_roc_auc_macro": ("classification", "roc_auc_ovr", "macro"),
+    "regression_mae": ("regression", "overall", "mae"),
+    "regression_mse": ("regression", "overall", "mse"),
+    "regression_rmse": ("regression", "overall", "rmse"),
+    "regression_mae_normalized": ("regression", "normalized", "mae"),
+    "regression_mse_normalized": ("regression", "normalized", "mse"),
+    "regression_rmse_normalized": ("regression", "normalized", "rmse"),
+}
 
 
 def discover_tools(data_dir: str | Path) -> list[str]:
@@ -49,6 +66,9 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         "force_mae": ("test", "regression", "overall", "mae"),
         "force_mse": ("test", "regression", "overall", "mse"),
         "force_rmse": ("test", "regression", "overall", "rmse"),
+        "force_mae_normalized": ("test", "regression", "normalized", "mae"),
+        "force_mse_normalized": ("test", "regression", "normalized", "mse"),
+        "force_rmse_normalized": ("test", "regression", "normalized", "rmse"),
     }
     summary: dict[str, Any] = {"folds": len(results), "metrics": {}}
     for name, path in scalar_paths.items():
@@ -112,13 +132,56 @@ def _summarize_paper_horizons(results: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def _aggregate_out_of_fold(
-    results: list[dict[str, Any]], output_dir: Path
+def _summarize_modality_evaluations(
+    results: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    metric_paths = EVALUATION_METRIC_PATHS
+    summary: dict[str, Any] = {}
+    for mode in EVALUATION_MODES:
+        summary[mode] = {}
+        for stage in ("train", "validation", "test"):
+            per_metric: dict[str, list[float | None]] = {
+                name: [] for name in metric_paths
+            }
+            for result in results:
+                try:
+                    evaluation = result["modality_evaluations"][mode][stage]
+                except KeyError:
+                    evaluation = {}
+                for name, path in metric_paths.items():
+                    value: Any = evaluation
+                    try:
+                        for key in path:
+                            value = value[key]
+                    except KeyError:
+                        value = None
+                    per_metric[name].append(
+                        None if value is None else float(value)
+                    )
+            summary[mode][stage] = {}
+            for name, fold_values in per_metric.items():
+                values = [value for value in fold_values if value is not None]
+                summary[mode][stage][name] = {
+                    "mean": float(np.mean(values)) if values else None,
+                    "std": float(np.std(values)) if values else None,
+                    "per_fold": fold_values,
+                }
+    return summary
+
+
+def _aggregate_out_of_fold(
+    results: list[dict[str, Any]], output_dir: Path, mode: str = "full"
+) -> dict[str, Any]:
+    """Pool held-out test predictions of every fold for one evaluation mode."""
+    if mode not in EVALUATION_MODES:
+        raise ValueError(f"unknown evaluation mode: {mode}")
     confusion = np.zeros((len(CLASS_NAMES), len(CLASS_NAMES)), dtype=np.int64)
     regression_abs_error = 0.0
     regression_squared_error = 0.0
     regression_elements = 0
+    normalized_abs_error = 0.0
+    normalized_squared_error = 0.0
+    normalized_elements = 0
     channel_abs_error = np.zeros(3, dtype=np.float64)
     channel_squared_error = np.zeros(3, dtype=np.float64)
     channel_elements = 0
@@ -127,11 +190,18 @@ def _aggregate_out_of_fold(
     roc_fold_auc: dict[str, list[float]] = {name: [] for name in CLASS_NAMES}
 
     for result in results:
-        tool = result["test_tool"]
+        if mode == "full":
+            test_metrics = result["test"]
+            prediction_artifact = result["artifacts"]["test_predictions"]
+            roc_artifact = result["artifacts"]["roc_curves"]
+        else:
+            test_metrics = result["modality_evaluations"][mode]["test"]
+            prediction_artifact = result["artifacts"][f"{mode}_predictions"]
+            roc_artifact = result["artifacts"][f"{mode}_roc_curves"]
         confusion += np.asarray(
-            result["test"]["classification"]["confusion_matrix"], dtype=np.int64
+            test_metrics["classification"]["confusion_matrix"], dtype=np.int64
         )
-        prediction_path = output_dir / result["artifacts"]["test_predictions"]
+        prediction_path = output_dir / prediction_artifact
         with np.load(prediction_path) as predictions:
             error = predictions["force_predictions"] - predictions["force_targets"]
             regression_abs_error += float(np.abs(error).sum())
@@ -140,11 +210,18 @@ def _aggregate_out_of_fold(
             channel_abs_error += np.abs(error).sum(axis=(0, 1))
             channel_squared_error += np.square(error).sum(axis=(0, 1))
             channel_elements += error.shape[0] * error.shape[1]
+            if "normalizer_scale" in result:
+                # Each fold is normalized with its own training-tool statistics.
+                scale = np.asarray(result["normalizer_scale"], dtype=np.float64)
+                normalized = error / scale[None, None, :]
+                normalized_abs_error += float(np.abs(normalized).sum())
+                normalized_squared_error += float(np.square(normalized).sum())
+                normalized_elements += normalized.size
 
-        roc_path = output_dir / result["artifacts"]["roc_curves"]
+        roc_path = output_dir / roc_artifact
         with np.load(roc_path) as curves:
             for name in CLASS_NAMES:
-                auc = result["test"]["classification"]["roc_auc_ovr"]["per_class"][name]
+                auc = test_metrics["classification"]["roc_auc_ovr"]["per_class"][name]
                 if auc is None:
                     continue
                 fpr = curves[f"{name}_fpr"]
@@ -206,6 +283,13 @@ def _aggregate_out_of_fold(
             },
         },
     }
+    if normalized_elements:
+        mse = normalized_squared_error / normalized_elements
+        aggregate["regression"]["normalized"] = {
+            "mae": normalized_abs_error / normalized_elements,
+            "mse": mse,
+            "rmse": float(np.sqrt(mse)),
+        }
     curve_arrays: dict[str, np.ndarray] = {"mean_fpr": roc_grid}
     macro_curves: list[np.ndarray] = []
     for name in CLASS_NAMES:
@@ -226,10 +310,14 @@ def _aggregate_out_of_fold(
         aggregate["classification"]["macro_mean_roc_auc"] = float(
             np.sum((macro_tpr[1:] + macro_tpr[:-1]) * np.diff(roc_grid) * 0.5)
         )
-    np.savez_compressed(output_dir / "cross-validation-mean-roc.npz", **curve_arrays)
-    aggregate["classification"]["mean_roc_curve_file"] = (
+    roc_file = (
         "cross-validation-mean-roc.npz"
+        if mode == "full"
+        else f"cross-validation-mean-roc-{mode}.npz"
     )
+    np.savez_compressed(output_dir / roc_file, **curve_arrays)
+    aggregate["classification"]["mean_roc_curve_file"] = roc_file
+    aggregate["evaluation_mode"] = mode
     return aggregate
 
 
@@ -261,6 +349,13 @@ def _load_finished_fold(
                 return None
         if result["config"] != expected_config:
             return None
+        # Folds written before missing-modality evaluation existed must be retrained.
+        modality_evaluations = result["modality_evaluations"]
+        for mode in EVALUATION_MODES:
+            if set(modality_evaluations[mode]) != {"train", "validation", "test"}:
+                return None
+            if mode != "full" and f"{mode}_predictions" not in artifacts:
+                return None
         for dotted_key, expected in expected_settings.items():
             value: Any = result
             for key in dotted_key.split("."):
@@ -357,6 +452,8 @@ def run_cross_validation(
                 "trim_pass": trim_pass,
             },
             "model": expected_config,
+            "ablation": expected_config["ablation"],
+            "evaluation_modes": ["full", "sensor_missing", "image_missing"],
             "runtime": {
                 "python": platform.python_version(),
                 "torch": str(torch.__version__),
@@ -429,7 +526,7 @@ def run_cross_validation(
                 fold=test_tool,
                 epoch=finished.get("selected_epoch"),
                 metrics=finished["test"],
-                context={"reused_completed_fold": True},
+                context={"reused_completed_fold": True, "evaluation_mode": "full"},
             )
             results.append(finished)
             continue
@@ -486,11 +583,18 @@ def run_cross_validation(
         ),
         "source_signature": source_signature,
         "config": expected_config,
+        "ablation": expected_config["ablation"],
         "tools": tools,
         "folds": results,
         "cv_mean_std": _summarize_folds(results),
         "paper_horizons_mean_std": _summarize_paper_horizons(results),
+        "modality_evaluations": _summarize_modality_evaluations(results),
         "out_of_fold": _aggregate_out_of_fold(results, output_path),
+        "out_of_fold_by_mode": {
+            mode: _aggregate_out_of_fold(results, output_path, mode)
+            for mode in EVALUATION_MODES
+            if mode != "full"
+        },
     }
     with (output_path / "cross-validation-results.json").open(
         "w", encoding="utf-8"
@@ -501,7 +605,9 @@ def run_cross_validation(
         metrics={
             "cv_mean_std": summary["cv_mean_std"],
             "paper_horizons_mean_std": summary["paper_horizons_mean_std"],
+            "modality_evaluations": summary["modality_evaluations"],
             "out_of_fold": summary["out_of_fold"],
+            "out_of_fold_by_mode": summary["out_of_fold_by_mode"],
         },
         context={
             "folds": len(results),

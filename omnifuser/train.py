@@ -95,6 +95,7 @@ def _run_epoch(
     *,
     collect_predictions: bool = False,
     accumulation_steps: int = 1,
+    drop_modality: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray] | None]:
     if accumulation_steps < 1:
         raise ValueError("accumulation_steps must be positive")
@@ -143,6 +144,7 @@ def _run_epoch(
                 tensors["cycle"],
                 tensors["batch"],
                 tensors["relative"],
+                drop_modality=drop_modality,
             )
             loss, components = multitask_loss(
                 outputs, tensors["force_target"], tensors["class_target"]
@@ -460,6 +462,7 @@ def train_fold(
                     "learning_rate": learning_rate,
                 },
                 "model": config_dict,
+                "evaluation_modes": ["full", "sensor_missing", "image_missing"],
                 "runtime": {
                     "python": platform.python_version(),
                     "torch": str(torch.__version__),
@@ -629,8 +632,93 @@ def train_fold(
             "test_windows": len(test_data),
             "selected_epoch": selected_epoch,
             "model_selection": "best_validation_loss" if select_best else "last_epoch",
+            "evaluation_mode": "full",
+            "selected_checkpoint_evaluation": True,
         },
     )
+    modality_evaluations: dict[str, dict[str, Any]] = {
+        "full": {"train": {}, "validation": {}, "test": test_metrics},
+        "sensor_missing": {},
+        "image_missing": {},
+    }
+    for stage, loader in (
+        ("train", train_loader),
+        ("validation", validation_loader),
+    ):
+        for mode, dropped in (
+            ("full", None),
+            ("sensor_missing", "sensor"),
+            ("image_missing", "image"),
+        ):
+            modality_metrics, _ = _run_epoch(
+                model,
+                loader,
+                None,
+                device,
+                normalizer,
+                drop_modality=dropped,
+            )
+            modality_evaluations[mode][stage] = modality_metrics
+            tracker.log(
+                split=stage,
+                fold=test_tool,
+                epoch=selected_epoch,
+                metrics=modality_metrics,
+                context={
+                    "evaluation_mode": mode,
+                    "selected_checkpoint_evaluation": True,
+                    "windows": len(loader.dataset),
+                },
+            )
+
+    modality_artifacts: dict[str, str] = {}
+    for mode, dropped in (
+        ("sensor_missing", "sensor"),
+        ("image_missing", "image"),
+    ):
+        modality_metrics, modality_predictions = _run_epoch(
+            model,
+            test_loader,
+            None,
+            device,
+            normalizer,
+            collect_predictions=True,
+            drop_modality=dropped,
+        )
+        if modality_predictions is None:
+            raise RuntimeError(f"{mode} test evaluation did not return predictions")
+        modality_evaluations[mode]["test"] = modality_metrics
+        tracker.log(
+            split="test",
+            fold=test_tool,
+            epoch=selected_epoch,
+            metrics=modality_metrics,
+            context={
+                "evaluation_mode": mode,
+                "selected_checkpoint_evaluation": True,
+                "test_windows": len(test_data),
+            },
+        )
+        _, mode_roc_curves = classification_report(
+            modality_predictions["class_probabilities"],
+            modality_predictions["class_targets"],
+        )
+        prediction_name = f"{stem}-predictions-{mode}.npz"
+        roc_name = f"{stem}-roc-{mode}.npz"
+        np.savez_compressed(output_path / prediction_name, **modality_predictions)
+        np.savez_compressed(
+            output_path / roc_name,
+            **{
+                f"{name}_{coordinate}": values
+                for name, curve in mode_roc_curves.items()
+                for coordinate, values in zip(
+                    ("fpr", "tpr", "thresholds"), curve
+                )
+            },
+        )
+        modality_artifacts[f"{mode}_predictions"] = prediction_name
+        modality_artifacts[f"{mode}_roc_curves"] = roc_name
+
     _, roc_curves = classification_report(
         test_predictions["class_probabilities"], test_predictions["class_targets"]
     )
@@ -684,13 +772,24 @@ def train_fold(
             "test": len(test_data),
         },
         "config": asdict(config),
+        "effective_architecture": {
+            "temporal_extractor": (
+                "mrte"
+                if hasattr(model.temporal_encoder, "layers")
+                else "identity"
+            ),
+            "rtd_layers": len(getattr(model.temporal_encoder, "layers", ())),
+            "c2f_rounds": len(model.fusion_layers),
+        },
         "history": history,
         "test": test_metrics,
+        "modality_evaluations": modality_evaluations,
         "tracking": {"directory": "tracking", "run_id": tracker.run_id},
         "artifacts": {
             "checkpoint": f"fold-{test_tool}.pt",
             "test_predictions": f"fold-{test_tool}-predictions.npz",
             "roc_curves": f"fold-{test_tool}-roc.npz",
+            **modality_artifacts,
         },
     }
     with (output_path / f"{stem}.json").open("w", encoding="utf-8") as file:
