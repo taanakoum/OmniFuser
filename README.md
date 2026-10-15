@@ -55,7 +55,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 119 tests
+python -m pytest -o addopts= -q tests                    # 124 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -120,7 +120,7 @@ data choices that `EDA.md` justifies.
 | Photo `--image-lag` | 0 (same pass, paper) | 1 (previous pass) | With lag 0, the photo's label gives away 92-99 % of targets (`EDA.md` §7) |
 | Horizon / input | 96 / 96 | 96 / 96 | Paper horizons go up to 96 |
 | Training stride | input + horizon (192) | 24 | More training windows at 1 s steps |
-| Duplicates `--dedup-identical-forces` | True (378 passes) | True | 134 records are exact copies, 24 groups with conflicting labels (`EDA.md` §3). Compare with `--study deduplication`, which scores both on the same deduplicated test data (`--eval-dedup-identical-forces`). |
+| Duplicates `--dedup-identical-forces` | True (378 passes); `train_lightning.py` requires it | True (step 3b: False) | 134 records are exact copies, 24 groups with conflicting labels (`EDA.md` §3). Compare with `--study deduplication`, which scores both on the same deduplicated test data (`--eval-dedup-identical-forces`). |
 | Epochs | 5 | 30 | The paper gives no epoch count |
 | Optimizer | Adam, lr 1e-4, batch 32, dropout 0.1 | same | Paper values |
 | Architecture | d=32, L=4, s_l=3, r=8, GAT 4×4, k=4, n=2 | same | Paper values |

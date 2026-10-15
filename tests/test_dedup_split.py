@@ -65,3 +65,38 @@ def test_eval_dedup_argument_defaults_to_following_training(arguments: list[str]
 def test_inspect_has_no_evaluation_split() -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(["inspect", "--eval-dedup-identical-forces", "True"])
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["--dedup-identical-forces", "True"], (True, None)),
+        (["--dedup-identical-forces", "False", "--eval-dedup-identical-forces", "True"], (False, True)),
+        (["--keep-identical-forces"], (False, None)),
+        (["--dedup-identical-forces"], (True, None)),
+        ([], None),
+    ],
+)
+def test_train_lightning_requires_an_explicit_dedup_setting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    arguments: list[str], expected: tuple[bool, bool | None] | None,
+) -> None:
+    from scripts import train_lightning
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        train_lightning, "run_cross_validation",
+        lambda **kwargs: calls.append(kwargs) or {"cv_mean_std": {}, "out_of_fold": {}},
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["train_lightning.py", "--data-dir", "data", "--output-dir", "out", *arguments]
+    )
+    if expected is None:
+        with pytest.raises(SystemExit) as stopped:
+            train_lightning.main()
+        assert stopped.value.code == 2
+        assert "--dedup-identical-forces True|False" in capsys.readouterr().err
+        assert not calls
+    else:
+        train_lightning.main()
+        assert (calls[0]["dedup_identical_forces"], calls[0]["eval_dedup_identical_forces"]) == expected

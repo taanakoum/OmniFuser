@@ -39,7 +39,7 @@ reproduce the paper's scores.
 
 | Script | Purpose |
 |---|---|
-| `train_lightning.py` | Full 10-fold cross-validation (`run_cross_validation`). Defaults: CUDA, direct head, horizon 96. It is a plain PyTorch job that runs in a Lightning AI Studio; it does not use the Lightning `Trainer`. |
+| `train_lightning.py` | Full 10-fold cross-validation (`run_cross_validation`). Defaults: CUDA, direct head, horizon 96. `--dedup-identical-forces True` or `False` is required (no default), so every full run states its duplicate handling. It is a plain PyTorch job that runs in a Lightning AI Studio; it does not use the Lightning `Trainer`. |
 | `run_experiment_suite.py` | The paper studies (ablations, sensitivity, missing-modality, or all three) and the `deduplication` comparison. Each variant is a resumable 10-fold run. Writes `suite.json` and `suite-summary.csv` (§9). |
 | `train_local.py` | One-fold smoke test. Defaults: CPU, batch 1, horizon 96, windows capped at 2/1 unless `--full`. |
 | `eda.py` | The exploratory data analysis behind `EDA.md`. Writes tables, a JSON summary, and 12 figures. |
@@ -47,7 +47,7 @@ reproduce the paper's scores.
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `task_diagnostics.py` | Descriptive trivial-baseline difficulty for chosen pool factors and horizons. |
 
-### Tests `tests/`: 119 tests
+### Tests `tests/`: 124 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
@@ -61,7 +61,7 @@ reproduce the paper's scores.
 | `test_cross_validation.py` | 4 | Pooled out-of-fold metrics and mean ROC; missing-AUC folds; weighted and paper-horizon summaries; per-mode summaries. |
 | `test_eda.py` | 4 | Trim flags; label dynamics; autocorrelation; full EDA run with every table and figure on a synthetic dataset. |
 | `test_evaluation.py` | 4 | Classification report and ROC; absent-class AUC; cumulative and baseline metrics; original-unit regression. |
-| `test_dedup_split.py` | 5 | Training with duplicates but evaluating deduplicated gives exactly the same validation/test windows and targets as a fully deduplicated run, while training data differs. Keeping duplicates for evaluation enlarges the test set. `--eval-dedup-identical-forces` defaults to following training, and `inspect` rejects it. Injecting a test split that ignores the evaluation setting makes this test fail. |
+| `test_dedup_split.py` | 10 | Training with duplicates but evaluating deduplicated gives exactly the same validation/test windows and targets as a fully deduplicated run, while training data differs. Keeping duplicates for evaluation enlarges the test set. `--eval-dedup-identical-forces` defaults to following training, and `inspect` rejects it. `train_lightning.py` stops with a usage error when `--dedup-identical-forces` is missing and accepts every spelling (`True`, `False`, a bare flag, `--keep-identical-forces`). Injecting a test split that ignores the evaluation setting makes this test fail. |
 | `test_compare_with_paper.py` | 1 | The paper comparison table. |
 | `test_pipeline_end_to_end.py` | 1 | Synthetic 10-tool cross-validation through the real loader. It checks all split/mode metrics, per-mode pooled results, every artifact, tracking rows, the training-only normalizer, the evaluation stride, and completed-fold reuse. |
 
@@ -506,7 +506,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 119 tests. Three deliberately injected defects each make a
+`pytest` passes all 124 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 
@@ -528,6 +528,7 @@ Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training
 | Push state | Branch in sync with GitHub; working tree clean |
 | Fresh clone | A clean `git clone` (code from git only) passes all 119 tests, Ruff, and Pyright |
 | Default branch | `main` was fast-forwarded to the training branch (commit `43bf03c`; no merge commit, no force push). A fresh `git clone https://github.com/taanakoum/OmniFuser.git` checks out `main` and passes all 119 tests. The runbook clones `main`. |
+| Required duplicate setting (2026-10-15) | `train_lightning.py` has no default for `--dedup-identical-forces`: without it the script stops before loading data. `$PROTOCOL` no longer contains it, and every `train_lightning.py` command in the runbook states it. Step 3 runs 3a (`True`/`True`, `main/full-model`) and 3b (`False`/`False`, `main/full-model-no-dedup`). All 13 runbook blocks that call `train_lightning.py` or `run_experiment_suite.py` pass `bash -n` and the real argument parsers with training stubbed. 3a and 3b also ran all 10 folds on the real data (CPU, capped windows), followed by `compare_with_paper.py` (378/378 vs 512/512 passes). A rerun of 3a reused all 10 folds in 4 s, and 3b's setting pointed at 3a's folder is refused. 124 tests, Ruff and Pyright pass. |
 | Runbook steps 0-1 on real data (CPU, EfficientNet) | `inspect` (378 passes, 10 tools, 147/118/113 per class, 0 duplicates), `model_summary.py --check` (4,183,600, match), one-fold smoke writing all 9 artifacts |
 | Every study variant | All 33 (31 in `--study all` plus 2 deduplication arms) build and train a step with finite loss |
 | Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |

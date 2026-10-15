@@ -29,12 +29,17 @@ def parse_bool(value: str) -> bool:
     raise argparse.ArgumentTypeError(f"expected True or False, got {value!r}")
 
 
-def add_dedup_argument(parser: argparse.ArgumentParser) -> None:
+def add_dedup_argument(
+    parser: argparse.ArgumentParser, *, required: bool = False
+) -> None:
     """``--dedup-identical-forces {True,False}``; a bare flag means True.
 
     The older spellings stay as aliases: ``--deduplicate-identical-forces``
     (with an optional value), and ``--keep-identical-forces`` /
     ``--no-deduplicate-identical-forces`` (both mean False).
+
+    With ``required=True`` the default is None and ``require_dedup_argument``
+    must be called after parsing, so every spelling satisfies the requirement.
     """
     parser.add_argument(
         "--dedup-identical-forces",
@@ -43,11 +48,12 @@ def add_dedup_argument(parser: argparse.ArgumentParser) -> None:
         type=parse_bool,
         nargs="?",
         const=True,
-        default=True,
+        default=None if required else True,
         metavar="{True,False}",
         help=(
             "merge bit-identical force recordings within each tool/run, keeping the "
-            "most-worn annotation (True, default) or keep every record (False)"
+            "most-worn annotation (True) or keep every record (False); "
+            + ("required" if required else "default: True")
         ),
     )
     parser.add_argument(
@@ -57,6 +63,17 @@ def add_dedup_argument(parser: argparse.ArgumentParser) -> None:
         action="store_false",
         help="same as --dedup-identical-forces False",
     )
+
+
+def require_dedup_argument(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Stop with a usage error when a required duplicate setting was not given."""
+    if args.dedup_identical_forces is None:
+        parser.error(
+            "the following argument is required: --dedup-identical-forces True|False "
+            "(True merges the 134 identical copies: 378 passes; False keeps all 512)"
+        )
 
 
 def add_eval_dedup_argument(parser: argparse.ArgumentParser) -> None:

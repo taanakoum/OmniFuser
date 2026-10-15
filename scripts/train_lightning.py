@@ -9,6 +9,7 @@ from omnifuser.cli import (
     add_eval_dedup_argument,
     add_protocol_arguments,
     protocol_kwargs,
+    require_dedup_argument,
 )
 from omnifuser.cross_validation import run_cross_validation
 
@@ -35,7 +36,8 @@ def main() -> None:
     parser.add_argument(
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
-    add_dedup_argument(parser)
+    # No default: every full run states whether duplicates are merged.
+    add_dedup_argument(parser, required=True)
     add_eval_dedup_argument(parser)
     parser.add_argument(
         "--image-encoder",
@@ -62,6 +64,7 @@ def main() -> None:
     )
     add_protocol_arguments(parser)
     args = parser.parse_args()
+    require_dedup_argument(parser, args)
 
     summary = run_cross_validation(
         data_dir=args.data_dir,

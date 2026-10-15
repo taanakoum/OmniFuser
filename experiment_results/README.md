@@ -13,7 +13,8 @@ experiment_results/
   report/                       report tables and figures (snippets in ../REPORT_PLAN.md)
   validation/                   smoke tests (capped windows; not results)
   pilot/                        uncapped one-fold timing runs
-  main/full-model/              main 10-fold full-model run
+  main/full-model/              step 3a: main 10-fold run, duplicates merged
+  main/full-model-no-dedup/     step 3b: the same with duplicates kept (train and test)
   heads/<head>/                 optional prediction-head comparison
   ablations/<run-id>/           paper Fig. 13 component ablations
   missing-modality/<run-id>/    modality-dropout robustness study
