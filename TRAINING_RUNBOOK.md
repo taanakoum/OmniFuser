@@ -69,17 +69,39 @@ needs no extra command.
 
 ## 2. Prepare on your laptop
 
-The Studio gets the code from GitHub, so **push your current local work
-first**. Local commits that are not pushed will be missing in the Studio. In
-your local repository (PowerShell or Git Bash):
+The Studio clones the **`main`** branch from GitHub (§4), so your work must be
+committed on `main` and pushed. Anything only on your laptop, or only on
+another branch, is missing in the Studio. In your local repository
+(PowerShell or Git Bash):
 
 ```bash
+git switch main                  # work on main, the branch the Studio clones
 git status                       # what has changed
 git add -A                       # stage everything that is not git-ignored
 git commit -m "Prepare for Lightning AI training"
-git push                         # upload to GitHub
-git branch --show-current        # the branch you pushed; §4 clones main
+git push                         # upload main to GitHub
+git status -sb                   # first line must read: ## main...origin/main
+git log -1 --oneline origin/main # the exact commit the Studio will clone
 ```
+
+- If `git commit` reports `nothing to commit`, everything is already
+  committed; continue with `git push`.
+- `## main...origin/main` with nothing after it means your `main` and
+  GitHub's `main` are identical. `[ahead 1]` means a commit is not pushed
+  yet, so run `git push` again.
+- **If you made changes on another branch**, bring them into `main` first:
+
+  ```bash
+  git switch main
+  git pull                          # get GitHub's latest main
+  git merge --ff-only <your-branch> # move main forward to your branch
+  git push
+  ```
+
+  `--ff-only` only moves `main` forward along your branch's history. If
+  `main` has commits your branch lacks, it refuses instead of creating a
+  merge; then run `git merge <your-branch>` and check the result before
+  pushing.
 
 `Nonastreda_Data/` and `experiment_results/` are git-ignored, so the data
 does not go through GitHub. Pack it into one archive for upload. In
@@ -128,7 +150,13 @@ git log -1 --oneline        # confirm it is the commit you pushed in §2
 - If the repository is private, GitHub asks for a username and a password.
   Use a **personal access token** as the password (GitHub → Settings →
   Developer settings → Personal access tokens).
-- To pick up later changes, run `git pull` inside `OmniFuser/`.
+- To pick up changes pushed to `main` later, run `git pull` inside
+  `OmniFuser/`, then check `git log -1 --oneline` against your laptop's
+  `git log -1 --oneline origin/main`.
+- **Do not pull code changes in the middle of a study.** A resume checks the
+  settings and the data, not the code. A run that continues after a pull
+  would silently mix two code versions in one result folder. Pull only
+  between studies, or start new output folders after a pull.
 
 ## 5. Upload the data
 

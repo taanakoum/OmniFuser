@@ -527,6 +527,7 @@ Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training
 |---|---|
 | Push state | Branch in sync with GitHub; working tree clean |
 | Fresh clone | A clean `git clone` (code from git only) passes all 119 tests, Ruff, and Pyright |
+| Default branch | `main` was fast-forwarded to the training branch (commit `43bf03c`; no merge commit, no force push). A fresh `git clone https://github.com/taanakoum/OmniFuser.git` checks out `main` and passes all 119 tests. The runbook clones `main`. |
 | Runbook steps 0-1 on real data (CPU, EfficientNet) | `inspect` (378 passes, 10 tools, 147/118/113 per class, 0 duplicates), `model_summary.py --check` (4,183,600, match), one-fold smoke writing all 9 artifacts |
 | Every study variant | All 33 (31 in `--study all` plus 2 deduplication arms) build and train a step with finite loss |
 | Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |
