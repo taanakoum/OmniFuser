@@ -313,5 +313,5 @@ print("hardware:", json.load(open(f"{RUN}/tracking/run.json"))["metadata"]["runt
    `IMPLEMENTATION_AUDIT.md` and `PAPER_IMPLEMENTATION_ALIGNMENT.md`.
 4. Write the discussion from the per-fold spread, the baseline gaps and the
    ablation significance results, applying the rules in §4.
-5. Finish with the reproducibility appendix: commit hash, the `$PROTOCOL`
-   line, suite run IDs, and `run.json` excerpts.
+5. Finish with the reproducibility appendix: commit hash, the `PROTOCOL`
+   arguments (runbook §9), suite run IDs, and `run.json` excerpts.

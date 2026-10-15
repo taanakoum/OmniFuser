@@ -140,8 +140,10 @@ tar -czf Nonastreda_Data.tar.gz Nonastreda_Data
 cd /teamspace/studios/this_studio
 git clone https://github.com/taanakoum/OmniFuser.git OmniFuser
 cd OmniFuser
-git log -1 --oneline        # confirm it is the commit you pushed in §2
+git log -1 --oneline
 ```
+
+The last line must show the commit you pushed in §2.
 
 - `git clone <url> OmniFuser` downloads the repository into a new folder
   `OmniFuser`, on its default branch `main`, which holds the complete
@@ -168,9 +170,12 @@ git log -1 --oneline        # confirm it is the commit you pushed in §2
    ```bash
    cd /teamspace/studios/this_studio/OmniFuser
    tar -xzf Nonastreda_Data.tar.gz && rm Nonastreda_Data.tar.gz
-   ls Nonastreda_Data          # forces_xyz_raw.mat  labels.csv  labels_reg.csv  tool
-   ls Nonastreda_Data/tool | wc -l     # 512
+   ls Nonastreda_Data
+   ls Nonastreda_Data/tool | wc -l
    ```
+
+   The first `ls` must list `forces_xyz_raw.mat  labels.csv  labels_reg.csv
+   tool`, and the count must be `512`.
 
    `tar -xzf` extracts the archive (`-x` extract, `-z` decompress, `-f` the
    file), and `rm` then deletes it to save space. If `tar` is unavailable,
@@ -202,20 +207,33 @@ is new enough (torch ≥ 2.2).
 
    ```bash
    cd /teamspace/studios/this_studio/OmniFuser
-   nvidia-smi                  # the GPU name, its memory, and running processes
+   nvidia-smi
    python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no CUDA')"
    ```
 
-   The second command must print `True` and the GPU name. If it prints
+   `nvidia-smi` shows the GPU name, its memory and running processes. The
+   second command must print `True` and the GPU name. If it prints
    `False`, the installed PyTorch has no CUDA support: fix that before
    training.
 
 ## 8. Terminal basics used below
 
+**Your shell.** The Studio terminal (the `⚡` prompt) may run **zsh** rather
+than bash. Every command in this runbook works in both. Two consequences:
+
+- The protocol is stored as an array and inserted with `"${PROTOCOL[@]}"`
+  (§9). A plain text variable inserted as `$PROTOCOL` is **not** split into
+  words by zsh, so the program receives the whole protocol as one argument
+  and stops with `unrecognized arguments: --data-dir Nonastreda_Data ...`.
+- Commands contain no `#` comments, because zsh only accepts them when the
+  `interactivecomments` option is set.
+
+To check which shell you have: `echo $0` prints `zsh` or `bash`.
+
 | Syntax | Meaning |
 |---|---|
 | `\` at the end of a line | The command continues on the next line. Nothing may follow the `\`, not even a space. |
-| `NAME="..."` then `$NAME` | Store text in a shell variable, then insert it into later commands. Variables last for one terminal session; redefine them in every new terminal. |
+| `NAME=(a b c)` then `"${NAME[@]}"` | Store a list of words in a shell array, then insert all of them, as separate arguments, into later commands. Arrays last for one terminal session; redefine them in every new terminal. |
 | `cmd 2>&1 \| tee file.log` | Show the output and also save it to `file.log`. `2>&1` includes error messages. |
 | `nohup cmd > file.log 2>&1 &` | Run in the background, immune to closing the terminal or browser. Output goes only to the file. |
 | `tail -f file.log` | Follow a log live. Ctrl+C stops following; it does not stop the run. |
@@ -231,18 +249,34 @@ is new enough (torch ≥ 2.2).
 
 ```bash
 cd /teamspace/studios/this_studio/OmniFuser
-PROTOCOL="--data-dir Nonastreda_Data --device cuda \
-  --epochs 30 --batch-size 32 --learning-rate 1e-4 \
-  --input-len 96 --horizon 96 --stride 24 \
-  --pool 1000 --image-lag 1 --prediction-head direct \
-  --image-encoder efficientnet_b0 --seed 42 --num-workers 4"
+PROTOCOL=(
+  --data-dir Nonastreda_Data --device cuda
+  --epochs 30 --batch-size 32 --learning-rate 1e-4
+  --input-len 96 --horizon 96 --stride 24
+  --pool 1000 --image-lag 1 --prediction-head direct
+  --image-encoder efficientnet_b0 --seed 42 --num-workers 4
+)
 mkdir -p experiment_results/logs
+printf '%s ' "${PROTOCOL[@]}"; echo
 ```
 
-Every training command below starts with `$PROTOCOL`, so all experiments
-share the same data, windows and optimizer. When a command repeats a flag
-after `$PROTOCOL`, the **later value wins**; that is how individual steps
-override it (for example `--epochs 1`).
+`PROTOCOL=( ... )` stores the arguments as a shell **array**: one entry per
+word, with no `\` needed inside the parentheses. The `printf` line prints
+them back on one line; check that it starts with `--data-dir Nonastreda_Data`
+and ends with `--num-workers 4`.
+
+Every training command below starts with `"${PROTOCOL[@]}"`, which inserts
+every entry as a separate argument in both bash and zsh. Type it exactly so,
+with the quotes, the braces and `[@]`:
+
+- plain `$PROTOCOL` passes only `--data-dir` in bash (error:
+  `argument --data-dir: expected one argument`);
+- a protocol defined as text, `PROTOCOL="..."`, arrives as one argument in
+  zsh (error: `unrecognized arguments: --data-dir Nonastreda_Data ...`).
+
+All experiments therefore share the same data, windows and optimizer. When a
+command repeats a flag after `"${PROTOCOL[@]}"`, the **later value wins**;
+that is how individual steps override it (for example `--epochs 1`).
 
 | Argument | Value | Meaning |
 |---|---|---|
@@ -262,7 +296,7 @@ override it (for example `--epochs 1`).
 | `--num-workers` | 4 | Background processes preparing batches. Use at most the `nproc` count; 0 loads in the main process. |
 
 The architecture defaults equal the paper's values, so they are not in
-`$PROTOCOL`: \(d=32\), 4 MRTE layers with stride 3 and rank 8, 4 GAT layers ×
+`PROTOCOL`: \(d=32\), 4 MRTE layers with stride 3 and rank 8, 4 GAT layers ×
 4 heads, 4 landmarks, 2 C2F rounds, and dropout 0.1.
 
 > **Resuming requires identical settings.** A run resumes only if every flag
@@ -295,7 +329,7 @@ This checks the real data path, CUDA training, all three evaluation modes,
 tracking, and artifact writing. Its metrics are not results.
 
 ```bash
-omnifuser train $PROTOCOL --epochs 1 --test-tool T10 \
+omnifuser train "${PROTOCOL[@]}" --epochs 1 --test-tool T10 \
   --output-dir experiment_results/validation/gpu-smoke \
   --max-train-windows 64 --max-eval-windows 32
 ```
@@ -319,7 +353,7 @@ The folder should contain:
 ### Step 2: uncapped one-fold pilot (measures cost)
 
 ```bash
-omnifuser train $PROTOCOL --epochs 3 --test-tool T10 \
+omnifuser train "${PROTOCOL[@]}" --epochs 3 --test-tool T10 \
   --output-dir experiment_results/pilot/T10 \
   2>&1 | tee experiment_results/logs/pilot-T10.log
 ```
@@ -335,7 +369,7 @@ One 10-fold run costs about `epoch_seconds × 30 × 10`, plus about one epoch
 per fold for the final evaluations. Multiply by the run counts in the
 overview to estimate a study.
 
-**Duplicate handling is not in `$PROTOCOL`.** You choose it in each command
+**Duplicate handling is not in `PROTOCOL`.** You choose it in each command
 instead:
 
 - `scripts/train_lightning.py` (step 3, the single runs in §13 and §14) **requires**
@@ -368,7 +402,7 @@ That gives the same effective batch of 32, using half the memory per step.
 > Step 3a as a background run:
 >
 > ```bash
-> nohup python scripts/train_lightning.py $PROTOCOL \
+> nohup python scripts/train_lightning.py "${PROTOCOL[@]}" \
 >   --dedup-identical-forces True --eval-dedup-identical-forces True \
 >   --output-dir experiment_results/main/full-model \
 >   > experiment_results/logs/main-full-model.log 2>&1 &
@@ -387,7 +421,7 @@ memory.
 ### Step 3a: duplicates merged (the protocol, main result)
 
 ```bash
-python scripts/train_lightning.py $PROTOCOL \
+python scripts/train_lightning.py "${PROTOCOL[@]}" \
   --dedup-identical-forces True --eval-dedup-identical-forces True \
   --output-dir experiment_results/main/full-model \
   2>&1 | tee experiment_results/logs/main-full-model.log
@@ -402,7 +436,7 @@ steps 4-6, and `REPORT_PLAN.md` refer to.
 ### Step 3b: duplicates kept (training and test)
 
 ```bash
-python scripts/train_lightning.py $PROTOCOL \
+python scripts/train_lightning.py "${PROTOCOL[@]}" \
   --dedup-identical-forces False --eval-dedup-identical-forces False \
   --output-dir experiment_results/main/full-model-no-dedup \
   2>&1 | tee experiment_results/logs/main-full-model-no-dedup.log
@@ -466,14 +500,14 @@ own arguments:
 
 All training flags from §9 and §16 apply to every variant. The suite's own
 defaults already equal the protocol (`--pool 1000 --image-lag 1`, 30 epochs,
-stride 24, CUDA, `--dedup-identical-forces True`), so `$PROTOCOL` is passed
+stride 24, CUDA, `--dedup-identical-forces True`), so the protocol is passed
 only for uniformity. Every variant is therefore comparable with step 3a.
 
 ### Step 4: component ablations (paper Fig. 13), 9 runs
 
 ```bash
 python scripts/run_experiment_suite.py --study ablations --run-id paper-v1 \
-  --output-root experiment_results $PROTOCOL \
+  --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/ablations-paper-v1.log
 ```
 
@@ -498,7 +532,7 @@ column of `suite-summary.csv`: z-scored MSE averaged over all 96 leads.
 To run one ablation alone:
 
 ```bash
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True \
+python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
   --ablation without_als \
   --output-dir experiment_results/ablations/single/without-als \
   2>&1 | tee experiment_results/logs/ablation-single-without-als.log
@@ -518,7 +552,7 @@ masked.
 
 ```bash
 python scripts/run_experiment_suite.py --study missing-modality --run-id paper-v1 \
-  --output-root experiment_results $PROTOCOL \
+  --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/missing-modality-paper-v1.log
 ```
 
@@ -526,7 +560,7 @@ To sweep several rates, use a new `--run-id`:
 
 ```bash
 python scripts/run_experiment_suite.py --study missing-modality --run-id rates-v1 \
-  --modality-dropout-rates 0.1 0.2 0.3 --output-root experiment_results $PROTOCOL \
+  --modality-dropout-rates 0.1 0.2 0.3 --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/missing-modality-rates-v1.log
 ```
 
@@ -539,7 +573,7 @@ persistence baselines.
 
 ```bash
 python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 \
-  --output-root experiment_results $PROTOCOL \
+  --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/sensitivity-paper-v1.log
 ```
 
@@ -565,7 +599,7 @@ runs instead of 33:
 
 ```bash
 nohup python scripts/run_experiment_suite.py --study all --run-id paper-v1 \
-  --output-root experiment_results $PROTOCOL \
+  --output-root experiment_results "${PROTOCOL[@]}" \
   > experiment_results/logs/all-paper-v1.log 2>&1 &
 tail -f experiment_results/logs/all-paper-v1.log
 ```
@@ -611,7 +645,7 @@ and scores both on the **same deduplicated validation and test windows**:
 
 ```bash
 python scripts/run_experiment_suite.py --study deduplication --run-id dedup-v1 \
-  --output-root experiment_results $PROTOCOL \
+  --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/deduplication-dedup-v1.log
 ```
 
@@ -639,7 +673,7 @@ To run the duplicate-kept training scored on the deduplicated test windows
 outside the suite (its partner with `True` is step 3a):
 
 ```bash
-python scripts/train_lightning.py $PROTOCOL \
+python scripts/train_lightning.py "${PROTOCOL[@]}" \
   --dedup-identical-forces False --eval-dedup-identical-forces True \
   --output-dir experiment_results/deduplication/single/dedup-false-eval-true \
   2>&1 | tee experiment_results/logs/dedup-false-eval-true.log
@@ -681,7 +715,7 @@ What to keep in mind when you read the results:
 
 ```bash
 for head in paper_literal lead_conditioned direct; do
-  python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
     --prediction-head $head \
     --output-dir experiment_results/heads/$head \
     2>&1 | tee experiment_results/logs/head-$head.log
@@ -697,16 +731,16 @@ Four defaults depart from the printed paper (`PAPER_IMPLEMENTATION_ALIGNMENT.md`
 explains each). These runs measure what each departure changes:
 
 ```bash
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True --image-lag 0 \
+python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --image-lag 0 \
   --output-dir experiment_results/paper-literal/same-pass-image \
   2>&1 | tee experiment_results/logs/paper-literal-same-pass-image.log
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True --prediction-head paper_literal \
+python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --prediction-head paper_literal \
   --output-dir experiment_results/paper-literal/repeated-head \
   2>&1 | tee experiment_results/logs/paper-literal-repeated-head.log
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True --decomp-mode literal \
+python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --decomp-mode literal \
   --output-dir experiment_results/paper-literal/eq3-literal \
   2>&1 | tee experiment_results/logs/paper-literal-eq3-literal.log
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces True --als-mode k_sum \
+python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --als-mode k_sum \
   --output-dir experiment_results/paper-literal/eq10-unnormalized \
   2>&1 | tee experiment_results/logs/paper-literal-eq10-unnormalized.log
 ```
@@ -792,6 +826,9 @@ label already equals most future labels.
 
 | You see | Cause | Fix |
 |---|---|---|
+| `unrecognized arguments: --data-dir Nonastreda_Data --device cuda ...` | zsh received the protocol as one argument: it was defined as text (`PROTOCOL="..."`) or inserted as `$PROTOCOL` | Define it with the §9 block (`PROTOCOL=( ... )`) and insert it as `"${PROTOCOL[@]}"` |
+| `argument --data-dir: expected one argument` | bash inserted only the array's first entry: `$PROTOCOL` instead of `"${PROTOCOL[@]}"` | Write `"${PROTOCOL[@]}"` |
+| `train_lightning.py`: `the following arguments are required: --data-dir`. `omnifuser train`: no error, but it runs with the library defaults: CPU, 1 ms steps (`pool=1`), same-pass photos | `PROTOCOL` is empty: a new terminal, or the §9 block was not run. `omnifuser train` has defaults for every option, so it starts anyway. | Stop the run with Ctrl+C, run the §9 block in this terminal (its `printf` line must print the arguments), then rerun the command |
 | `experiment output directory belongs to a different configuration` | You reran into an existing output folder with different settings: any flag, including `--num-workers` | Use the original command exactly, or a new `--output-dir` |
 | `cannot resume ...; study settings differ from suite.json` | A suite was rerun with the same `--run-id` but different settings | The original command, or a new `--run-id` |
 | `CUDA was requested but is not available` | The Studio is on a CPU machine, or PyTorch lacks CUDA | Switch to a GPU (§7); the §7 check must print `True` |
