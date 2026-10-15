@@ -22,6 +22,7 @@ from omnifuser.data import (
     PASS_TRIM_WINDOW_SAMPLES,
     ForceNormalizer,
     ImageBank,
+    ToolTimeline,
     WindowDataset,
     collate_windows,
     leave_one_tool_out_folds,
@@ -327,6 +328,7 @@ def train_fold(
     decimation: int = 1,
     label_column: str = "image_label",
     dedup_identical_forces: bool = True,
+    eval_dedup_identical_forces: bool | None = None,
     trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
@@ -364,16 +366,29 @@ def train_fold(
     if device.type == "cpu":
         torch.set_num_threads(max(1, min(torch.get_num_threads(), 4)))
 
-    records = load_nonastreda(
-        data_dir,
-        label_column=label_column,
-        decimation=decimation,
-        dedup_identical_forces=dedup_identical_forces,
-        trim_pass=trim_pass,
-        pool=pool,
-    )
-    timelines = make_tool_timelines(records, image_lag=image_lag)
-    del records
+    # Training and evaluation may handle duplicate recordings differently, so a
+    # comparison of the two settings can be scored on identical test windows.
+    if eval_dedup_identical_forces is None:
+        eval_dedup_identical_forces = dedup_identical_forces
+
+    def load_timelines(dedup: bool) -> tuple[list[ToolTimeline], int]:
+        records = load_nonastreda(
+            data_dir,
+            label_column=label_column,
+            decimation=decimation,
+            dedup_identical_forces=dedup,
+            trim_pass=trim_pass,
+            pool=pool,
+        )
+        return make_tool_timelines(records, image_lag=image_lag), len(records)
+
+    timelines, retained_records = load_timelines(dedup_identical_forces)
+    if eval_dedup_identical_forces == dedup_identical_forces:
+        eval_timelines, evaluation_retained_records = timelines, retained_records
+    else:
+        eval_timelines, evaluation_retained_records = load_timelines(
+            eval_dedup_identical_forces
+        )
     source_signature = nonastreda_source_signature(data_dir)
     train_stride = stride if stride is not None else input_len + horizon
     eval_stride = max(train_stride, horizon)
@@ -382,9 +397,10 @@ def train_fold(
         raise ValueError(f"unknown test tool {test_tool!r}; choose one of {sorted(folds)}")
     fold = folds[test_tool]
     timeline_by_tool = {timeline.tool: timeline for timeline in timelines}
+    eval_timeline_by_tool = {timeline.tool: timeline for timeline in eval_timelines}
     train_timelines = [timeline_by_tool[tool] for tool in fold.train_tools]
-    validation_timelines = [timeline_by_tool[tool] for tool in fold.validation_tools]
-    test_timelines = [timeline_by_tool[tool] for tool in fold.test_tools]
+    validation_timelines = [eval_timeline_by_tool[tool] for tool in fold.validation_tools]
+    test_timelines = [eval_timeline_by_tool[tool] for tool in fold.test_tools]
     normalizer = ForceNormalizer.fit(train_timelines)
     train_data = WindowDataset(train_timelines, normalizer, input_len, horizon, train_stride)
     validation_data = WindowDataset(
@@ -404,7 +420,7 @@ def train_fold(
         **(config_overrides or {}),
     )
     image_bank = ImageBank.from_timelines(
-        timelines, config.image_height, config.image_width
+        [*timelines, *eval_timelines], config.image_height, config.image_width
     )
     collate = partial(
         collate_windows,
@@ -447,6 +463,7 @@ def train_fold(
             "pool": pool,
             "image_lag": image_lag,
             "dedup_identical_forces": dedup_identical_forces,
+            "eval_dedup_identical_forces": eval_dedup_identical_forces,
             "trim_pass": trim_pass,
         },
         "windowing": {
@@ -532,6 +549,8 @@ def train_fold(
         metrics={
             "normalizer_mean": normalizer.mean.tolist(),
             "normalizer_scale": normalizer.scale.tolist(),
+            "retained_records": retained_records,
+            "evaluation_retained_records": evaluation_retained_records,
             "window_counts": {
                 "train": len(train_data),
                 "validation": len(validation_data),
@@ -743,6 +762,9 @@ def train_fold(
         "prediction_head": config.prediction_head,
         "label_column": label_column,
         "dedup_identical_forces": dedup_identical_forces,
+        "eval_dedup_identical_forces": eval_dedup_identical_forces,
+        "retained_records": retained_records,
+        "evaluation_retained_records": evaluation_retained_records,
         "trim_pass": trim_pass,
         "pass_trimming": "span" if trim_pass else "none",
         "pass_trimming_parameters": (

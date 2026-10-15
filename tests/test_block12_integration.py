@@ -135,3 +135,32 @@ def test_full_compact_model_produces_forecast_and_class_logits(head: str) -> Non
     assert outputs["class_logits"].shape == (2, 5, 3)
     assert torch.isfinite(outputs["force"]).all()
     assert torch.isfinite(outputs["class_logits"]).all()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ([], True),
+        (["--dedup-identical-forces"], True),
+        (["--dedup-identical-forces", "True"], True),
+        (["--dedup-identical-forces", "False"], False),
+        (["--dedup-identical-forces", "no"], False),
+        (["--deduplicate-identical-forces", "false"], False),
+        (["--keep-identical-forces"], False),
+        (["--no-deduplicate-identical-forces"], False),
+    ],
+)
+def test_dedup_argument_accepts_explicit_true_false_and_old_spellings(
+    arguments: list[str], expected: bool
+) -> None:
+    import scripts.run_experiment_suite as suite
+
+    parser = build_parser()
+    assert parser.parse_args(["train", *arguments]).dedup_identical_forces is expected
+    assert parser.parse_args(["inspect", *arguments]).dedup_identical_forces is expected
+    assert suite.build_parser().parse_args(arguments).dedup_identical_forces is expected
+
+
+def test_dedup_argument_rejects_ambiguous_values() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["train", "--dedup-identical-forces", "maybe"])

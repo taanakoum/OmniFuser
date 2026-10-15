@@ -39,27 +39,28 @@ reproduce the paper's scores.
 | Script | Purpose |
 |---|---|
 | `train_lightning.py` | Full 10-fold cross-validation (`run_cross_validation`). Defaults: CUDA, direct head, horizon 96. It is a plain PyTorch job that runs in a Lightning AI Studio; it does not use the Lightning `Trainer`. |
-| `run_experiment_suite.py` | The paper studies (ablations, sensitivity, missing-modality, or all three), each variant a resumable 10-fold run. Writes `suite.json` and `suite-summary.csv` (§9). |
+| `run_experiment_suite.py` | The paper studies (ablations, sensitivity, missing-modality, or all three) and the `deduplication` comparison. Each variant is a resumable 10-fold run. Writes `suite.json` and `suite-summary.csv` (§9). |
 | `train_local.py` | One-fold smoke test. Defaults: CPU, batch 1, horizon 96, windows capped at 2/1 unless `--full`. |
 | `eda.py` | The exploratory data analysis behind `EDA.md`. Writes tables, a JSON summary, and 12 figures. |
 | `compare_with_paper.py` | Prints cumulative per-horizon metrics next to Tables IV-V and the persistence baselines. |
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `task_diagnostics.py` | Descriptive trivial-baseline difficulty for chosen pool factors and horizons. |
 
-### Tests `tests/`: 104 tests
+### Tests `tests/`: 119 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
 | `test_model.py` | 30 | Embeddings and positions; GAT normalization; image position placement; orthogonal private residual; landmark pooling (defaults and `k_colnorm` scale bound); `exact_split` reconstruction; heads; every ablation (forward/backward plus the intended structural change); masked-modality independence; paper-reading defaults; image-encoder name validation. |
 | `test_alignment_patch.py` | 17 | Pooling, image lag, shown-label exposure, the image cache, ALS modes, modality masking statistics, BatchNorm freezing, gradients for every option, and an end-to-end fold with interruption and resume. |
-| `test_block12_integration.py` | 14 | Architecture flags reach `ModelConfig`; invalid dimensions fail early; the full compact model runs with all three heads. |
+| `test_block12_integration.py` | 23 | Architecture flags reach `ModelConfig`; invalid dimensions fail early; the full compact model runs with all three heads. `--dedup-identical-forces` parses True/False, the bare flag and every alias for `train`, `inspect` and the suite, and rejects ambiguous values. |
 | `test_data.py` | 13 | Window shapes; exact input/target alignment; windows never mix tools; class change at a pass boundary; lag-1 photo with current-pass label; fold partitions; pooled normalizer statistics; collation; duplicate merging; span trimming and its documented limit. |
-| `test_experiment_suite.py` | 7 | Ablation list; the 8 sensitivity axes and their field mapping; skipping baseline-valued points; dropout arms; manifest, summary CSV, resume and failure handling (mocked trainer); refusal of changed settings. |
+| `test_experiment_suite.py` | 8 | Ablation list; the 8 sensitivity axes and their field mapping; skipping baseline-valued points; dropout arms; manifest, summary CSV, resume and failure handling (mocked trainer); refusal of changed settings. The deduplication study runs both settings with everything else shared, keeps the flag out of `ModelConfig`, and fills the summary columns. |
 | `test_tracking.py` | 5 | JSONL/CSV logging; corrupt manifest; refusal of mixed settings; resume on different hardware; legacy CSV migration. |
 | `test_alignment_fixes.py` | 4 | Sample-weighted partial gradient accumulation; diagnostic normalizer; strict completed-fold reuse (including retraining folds without missing-modality results); dataset signatures. |
 | `test_cross_validation.py` | 4 | Pooled out-of-fold metrics and mean ROC; missing-AUC folds; weighted and paper-horizon summaries; per-mode summaries. |
 | `test_eda.py` | 4 | Trim flags; label dynamics; autocorrelation; full EDA run with every table and figure on a synthetic dataset. |
 | `test_evaluation.py` | 4 | Classification report and ROC; absent-class AUC; cumulative and baseline metrics; original-unit regression. |
+| `test_dedup_split.py` | 5 | Training with duplicates but evaluating deduplicated gives exactly the same validation/test windows and targets as a fully deduplicated run, while training data differs. Keeping duplicates for evaluation enlarges the test set. `--eval-dedup-identical-forces` defaults to following training, and `inspect` rejects it. Injecting a test split that ignores the evaluation setting makes this test fail. |
 | `test_compare_with_paper.py` | 1 | The paper comparison table. |
 | `test_pipeline_end_to_end.py` | 1 | Synthetic 10-tool cross-validation through the real loader. It checks all split/mode metrics, per-mode pooled results, every artifact, tracking rows, the training-only normalizer, the evaluation stride, and completed-fold reuse. |
 
@@ -113,13 +114,25 @@ reproduce the paper's scores.
    - With `image_label`, the MAT and CSV labels must agree.
    - Classes: `sharp=0`, `used=1`, `dulled=2`. With
      `--label-column tool_label`, labels 1/2/3 map to 0/1/2.
-2. **Merge duplicates** (default `--dedup-identical-forces`).
+2. **Merge duplicates** (`--dedup-identical-forces {True,False}`, default True).
    - Bit-identical force arrays within the same tool and run form a group.
    - The member with the greatest `flank_wear` is kept; ties go to the lower
      block.
    - On the real data this turns 512 rows into 378 passes (132 groups, 134
      removed).
-   - `--keep-identical-forces` disables merging.
+   - `--dedup-identical-forces False` keeps all 512 records. A bare flag means
+     True. The older spellings are aliases: `--deduplicate-identical-forces`,
+     and `--keep-identical-forces` / `--no-deduplicate-identical-forces`
+     (both False).
+   - `--eval-dedup-identical-forces {True,False}` (training entry points only)
+     sets duplicate handling for the validation and test data separately;
+     omitted, it follows `--dedup-identical-forces`. `train_fold` then loads
+     the data once per setting: training timelines from the training records,
+     validation/test timelines from the evaluation records. The normalizer
+     is still fitted on the training tools only.
+   - One helper, `cli.add_dedup_argument`, defines the option for every entry
+     point that loads data. Its parser, `cli.parse_bool`, accepts
+     True/False, yes/no, 1/0 and on/off, case-insensitive.
 3. **Trim pass edges** (default `--trim-pass`, `_nonastreda_span_bounds`).
    - The envelope is \(\sqrt{\text{moving-mean}_{20}(\lVert F\rVert^2)}\).
    - The reference level is the median envelope over the first
@@ -376,7 +389,7 @@ photos, against the paper's ~\(10^{11}\).
 
    | File | Contents |
    |---|---|
-   | `fold-Tn.json` | Settings, history, test metrics, `modality_evaluations`, effective architecture, artifact names |
+   | `fold-Tn.json` | Settings (including `dedup_identical_forces`, `eval_dedup_identical_forces`, `retained_records` and `evaluation_retained_records`), history, test metrics, `modality_evaluations`, effective architecture, artifact names |
    | `fold-Tn.pt` | Weights, config, normalizer, result |
    | `fold-Tn-predictions[-<mode>].npz` | Test predictions |
    | `fold-Tn-roc[-<mode>].npz` | ROC curves |
@@ -418,7 +431,7 @@ forecast step.
 
 - every artifact exists inside the output directory;
 - the config is identical;
-- the data signature, fold membership, preprocessing, strides, window caps,
+- the data signature, fold membership, preprocessing (including both duplicate settings), strides, window caps,
   learning rate, accumulation, workers, seed, device, epochs, and batch size
   match;
 - it contains all three input modes on all three splits.
@@ -466,6 +479,7 @@ aggregate.
 | `sensitivity` | 22 | Baseline plus every off-baseline value of k, d, GAT heads, r → `rtd_rank`, GAT layers, s_l, L → `num_rtd_layers`, n → `num_fusion_layers` |
 | `missing-modality` | 1 + number of rates | A no-dropout reference plus one arm per `--modality-dropout-rates` value (default 0.2) |
 | `all` | 31 | The ablation full model serves as the shared reference |
+| `deduplication` | 2 | Training with `--dedup-identical-forces` True and False, all else shared. Both arms are evaluated on the same deduplicated windows unless `--eval-dedup-identical-forces` is given. Not part of `all`. The summary adds the two settings, `retained_passes`, `evaluation_passes` and window-count columns. |
 
 - **Defaults.** Unlike the other entry points, the suite defaults to the
   protocol: `--pool 1000 --image-lag 1`, 30 epochs, horizon 96, stride 24,
@@ -491,7 +505,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 104 tests. Three deliberately injected defects each make a
+`pytest` passes all 119 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 
@@ -500,6 +514,7 @@ Real data, CPU, compact encoder, capped windows:
 | Path | What ran |
 |---|---|
 | `omnifuser inspect` | 378 passes, 10 tools, 147/118/113 per class, no remaining duplicates |
+| `--dedup-identical-forces True/False` (2026-10-15) | `inspect` (378 vs 512 passes, 1,462 vs 2,012 windows), `train_local.py`, `task_diagnostics.py`, and the 2-variant × 10-fold `--study deduplication` suite. Then the training/evaluation split: the suite with deduplicated evaluation for both arms, and `train_lightning.py` with `--dedup-identical-forces False --eval-dedup-identical-forces True`, including a resume rerun. All completed. |
 | `omnifuser train` | One fold for each of the 9 ablations and each of 17 flag sets: the four printed-paper arms, `--exact-split`, the residual private path, the time ALS, pre-attention, shared C2F, modality dropout, accumulation, tool labels, no trim and no dedup, last-epoch selection, all architecture overrides, and pretrained EfficientNet with frozen BatchNorm. Each wrote all 9 artifacts. |
 | `train_lightning.py` | All 10 folds. Rerunning reused every fold in 4 s. |
 | `run_experiment_suite.py --study missing-modality` | Both variants completed, with the summary CSV. |

@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from omnifuser.cli import add_dedup_argument
 from omnifuser.data import Record, load_nonastreda, make_tool_timelines, pool_records
 
 
@@ -111,6 +112,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--trim-pass", action=argparse.BooleanOptionalAction, default=True
     )
+    add_dedup_argument(parser)
     parser.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     if args.fs <= 0 or any(value < 1 for value in args.pools + args.horizons):
@@ -118,7 +120,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.input_len < 1 or args.max_windows_per_tool < 1:
         parser.error("input length and max windows per tool must be positive")
 
-    records = load_nonastreda(args.data_dir, trim_pass=args.trim_pass)
+    records = load_nonastreda(
+        args.data_dir,
+        trim_pass=args.trim_pass,
+        dedup_identical_forces=args.dedup_identical_forces,
+    )
     rows: list[dict[str, float | int]] = []
     print(
         f"{'pool':>5} {'step':>8} {'P':>4} {'lag':>3} "

@@ -19,6 +19,66 @@ from omnifuser.data import (
 from omnifuser.train import train_fold
 
 
+def parse_bool(value: str) -> bool:
+    """Parse an explicit command-line boolean such as True/False, yes/no, or 1/0."""
+    normalized = value.strip().lower()
+    if normalized in {"true", "t", "yes", "y", "1", "on"}:
+        return True
+    if normalized in {"false", "f", "no", "n", "0", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected True or False, got {value!r}")
+
+
+def add_dedup_argument(parser: argparse.ArgumentParser) -> None:
+    """``--dedup-identical-forces {True,False}``; a bare flag means True.
+
+    The older spellings stay as aliases: ``--deduplicate-identical-forces``
+    (with an optional value), and ``--keep-identical-forces`` /
+    ``--no-deduplicate-identical-forces`` (both mean False).
+    """
+    parser.add_argument(
+        "--dedup-identical-forces",
+        "--deduplicate-identical-forces",
+        dest="dedup_identical_forces",
+        type=parse_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        metavar="{True,False}",
+        help=(
+            "merge bit-identical force recordings within each tool/run, keeping the "
+            "most-worn annotation (True, default) or keep every record (False)"
+        ),
+    )
+    parser.add_argument(
+        "--keep-identical-forces",
+        "--no-deduplicate-identical-forces",
+        dest="dedup_identical_forces",
+        action="store_false",
+        help="same as --dedup-identical-forces False",
+    )
+
+
+def add_eval_dedup_argument(parser: argparse.ArgumentParser) -> None:
+    """``--eval-dedup-identical-forces {True,False}`` for the validation/test data.
+
+    Omitted, it follows ``--dedup-identical-forces``. Setting it to True scores a
+    ``--dedup-identical-forces False`` run on the same deduplicated windows as a
+    default run, so the two can be compared on identical test data.
+    """
+    parser.add_argument(
+        "--eval-dedup-identical-forces",
+        dest="eval_dedup_identical_forces",
+        type=parse_bool,
+        default=None,
+        metavar="{True,False}",
+        help=(
+            "duplicate handling for validation and test windows "
+            "(default: same as --dedup-identical-forces)"
+        ),
+    )
+
+
 def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ablation",
@@ -329,20 +389,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="trim only pass lead-in/run-out with the Nonastreda span rule (default)",
     )
-    duplicate_group = inspect_parser.add_mutually_exclusive_group()
-    duplicate_group.add_argument(
-        "--dedup-identical-forces",
-        dest="dedup_identical_forces",
-        action="store_true",
-        help="merge exact force duplicates within each tool/run using the most-worn annotation (default)",
-    )
-    duplicate_group.add_argument(
-        "--keep-identical-forces",
-        dest="dedup_identical_forces",
-        action="store_false",
-        help="retain both records even when their force arrays are identical",
-    )
-    inspect_parser.set_defaults(dedup_identical_forces=True)
+    add_dedup_argument(inspect_parser)
     inspect_parser.set_defaults(handler=_inspect)
 
     train_parser = subparsers.add_parser("train", help="train and evaluate one tool-held-out fold")
@@ -369,20 +416,8 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument(
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
-    duplicate_group = train_parser.add_mutually_exclusive_group()
-    duplicate_group.add_argument(
-        "--dedup-identical-forces",
-        dest="dedup_identical_forces",
-        action="store_true",
-        help="merge exact force duplicates within each tool/run using the most-worn annotation (default)",
-    )
-    duplicate_group.add_argument(
-        "--keep-identical-forces",
-        dest="dedup_identical_forces",
-        action="store_false",
-        help="retain both records even when their force arrays are identical",
-    )
-    train_parser.set_defaults(dedup_identical_forces=True)
+    add_dedup_argument(train_parser)
+    add_eval_dedup_argument(train_parser)
     train_parser.add_argument(
         "--image-encoder",
         choices=("efficientnet_b0", "compact"),
@@ -418,6 +453,7 @@ def _train(args: argparse.Namespace) -> None:
         decimation=args.decimation,
         label_column=args.label_column,
         dedup_identical_forces=args.dedup_identical_forces,
+        eval_dedup_identical_forces=args.eval_dedup_identical_forces,
         trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         d_model=args.d_model,

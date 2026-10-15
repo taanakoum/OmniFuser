@@ -165,7 +165,7 @@ def load_nonastreda(
     *,
     label_column: str = "image_label",
     decimation: int = 1,
-    dedup_identical_forces: bool = True, ## Change to Arg to Choose either True or False and compare !!!
+    dedup_identical_forces: bool = True,
     trim_pass: bool = True,
     pool: int = 1,
 ) -> list[Record]:

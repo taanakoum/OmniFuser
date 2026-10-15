@@ -29,6 +29,7 @@ Nonastreda, so the paper's numbers are reference points, not targets.
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
 | (opt) | Printed-paper readings of the four deviations | 4 | `experiment_results/paper-literal/<arm>/` |
+| (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
 
 A **10-fold CV run** trains 10 models. Each one holds out a different tool for
 testing, uses the next tool for validation, and trains on the other 8
@@ -241,7 +242,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 104 tests. `-o addopts=` clears the default options and `-q` keeps the output short. | `104 passed` |
+| `pytest ... tests` | Runs the 119 tests. `-o addopts=` clears the default options and `-q` keeps the output short. | `119 passed` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `model_summary.py --check` | Builds the default model, prints per-block parameter counts and shapes, and checks the total | `4,183,600 ... (match)` |
@@ -341,7 +342,7 @@ own arguments:
 
 | Argument | Meaning |
 |---|---|
-| `--study` | `ablations`, `sensitivity`, `missing-modality`, or `all` |
+| `--study` | `ablations`, `sensitivity`, `missing-modality`, `all` (the three paper studies), or `deduplication` (§14) |
 | `--run-id` | Folder name for this suite, e.g. `paper-v1`. Reuse it to resume; use a new one for a new suite. Without it, a UTC timestamp is used. |
 | `--output-root` | Parent folder. The suite writes to `<output-root>/<study>/<run-id>/`. |
 | `--modality-dropout-rates` | Training dropout rates for the missing-modality study (default `0.2`) |
@@ -449,6 +450,87 @@ tail -f experiment_results/logs/all-paper-v1.log
 ```
 
 ## 14. Optional runs
+
+### Duplicate handling: merged versus kept
+
+Nonastreda has 134 force recordings that are bit-identical copies of another
+pass in the same run, mostly block B4 repeating B3 (`EDA.md` §3). In 24 of
+these groups the copies carry different wear labels. Two independent options
+control them:
+
+| Option | Applies to | Values |
+|---|---|---|
+| `--dedup-identical-forces {True,False}` | The **training** data, and by default everything else | `True` (default): one pass per group, 378 passes. `False`: all 512. |
+| `--eval-dedup-identical-forces {True,False}` | The **validation and test** data | Omitted: same as `--dedup-identical-forces`. Set it to fix the evaluation data independently. |
+
+The comparison study trains both settings with everything else identical,
+and scores both on the **same deduplicated validation and test windows**:
+
+```bash
+python scripts/run_experiment_suite.py --study deduplication --run-id dedup-v1 \
+  --output-root experiment_results $PROTOCOL \
+  2>&1 | tee experiment_results/logs/deduplication-dedup-v1.log
+```
+
+| Variant | Training data | Validation and test data |
+|---|---|---|
+| `dedup-true` | 378 passes | 378 passes |
+| `dedup-false` | 512 passes | 378 passes |
+
+Because the test windows are identical, any metric difference comes from the
+training data alone. To score both arms on non-deduplicated data instead, add
+`--eval-dedup-identical-forces False` to the suite command.
+
+`suite-summary.csv` gets one row per setting. Besides the usual metrics it
+has these columns:
+
+| Column | Contents |
+|---|---|
+| `dedup_identical_forces`, `eval_dedup_identical_forces` | The training and evaluation settings |
+| `retained_passes`, `evaluation_passes` | Passes in the training data and in the evaluation data |
+| `train_windows.mean`, `test_windows.mean` | Window counts per fold. `test_windows.mean` is equal for both arms when evaluation is deduplicated. |
+
+To run one setting outside the suite:
+
+```bash
+# train with duplicates, test on the deduplicated windows
+python scripts/train_lightning.py $PROTOCOL \
+  --dedup-identical-forces False --eval-dedup-identical-forces True \
+  --output-dir experiment_results/deduplication/single/dedup-false-eval-true
+
+# the whole protocol without deduplication (training and test)
+python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces False \
+  --output-dir experiment_results/deduplication/single/dedup-false-eval-false
+```
+
+`compare_with_paper.py` prints both settings and both pass counts in its
+header line, e.g. `dedup train/eval=False/True, passes train/eval=512/378`.
+
+To see the data effect without training:
+
+```bash
+omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24 --dedup-identical-forces False
+```
+
+This prints 512 passes, 2,012 windows and 134 remaining duplicates, against
+378, 1,462 and 0 with `True`.
+
+What to keep in mind when you read the results:
+
+- **Use deduplicated evaluation for the comparison.** If both training and
+  test keep the duplicates (`--dedup-identical-forces False` alone), each
+  test tool also contains its copied passes. The two settings are then scored
+  on different windows, and the copies make the test easier: at 1 s steps a
+  pass lasts about 97 steps, so a 96-step input window that ends in B3
+  contains nearly all of B3, which is exactly the signal B4 repeats.
+- **Duplicates in training are a weighting change.** With
+  `--dedup-identical-forces False`, the copied passes appear twice in
+  training, so those passes count double and the model sees more windows per
+  epoch.
+- **Conflicting labels.** In 24 groups the same force signal carries two
+  different labels. In training that is label noise. With deduplicated
+  evaluation the most-worn label is the one scored, as in the default
+  protocol.
 
 ### Prediction-head comparison (not a paper experiment)
 
@@ -558,6 +640,8 @@ after the table.
 | `--image-lag {0,1}` | 0 | 0: the pass's own photo (paper). 1: the previous pass's photo (protocol). |
 | `--trim-pass` / `--no-trim-pass` | on | Remove each pass's entry and exit transients (`EDA.md` §5) |
 | `--label-column {image_label,tool_label}` | `image_label` | Which label file column is the class target |
+| `--dedup-identical-forces {True,False}` | True | Merge bit-identical force recordings within a tool/run, keeping the most-worn annotation (True: 378 passes), or keep all 512 (False). A bare flag means True. Aliases: `--deduplicate-identical-forces [VALUE]`; `--keep-identical-forces` and `--no-deduplicate-identical-forces` both mean False. |
+| `--eval-dedup-identical-forces {True,False}` | same as training | Duplicate handling for the validation and test data only. Set `True` to score a `--dedup-identical-forces False` model on the same deduplicated windows as a default run (§14). Training entry points only; `inspect` and `task_diagnostics.py` do not train. |
 | `--image-encoder {efficientnet_b0,compact}` | `efficientnet_b0` | Photo backbone; `compact` is a small CNN for CPU tests |
 | `--d-model N` | 32 | Model width \(d\) |
 | `--prediction-head {direct,paper_literal,lead_conditioned}` | `direct` | Per-lead weights / one output repeated over all leads (printed Eq. 21) / learned lead embedding |
@@ -592,10 +676,10 @@ Differences per entry point:
 
 | Entry point | Differences from the library defaults |
 |---|---|
-| `omnifuser train` | Adds `--test-tool` (default `T10`) and `--output-dir` (default `experiment_results/train`). Duplicate handling: `--dedup-identical-forces` (default) or `--keep-identical-forces`. |
-| `scripts/train_lightning.py` | `--data-dir` and `--output-dir` are **required**; `--device` defaults to `cuda`. Duplicate handling: `--deduplicate-identical-forces` (default) or `--no-deduplicate-identical-forces`. |
+| `omnifuser train` | Adds `--test-tool` (default `T10`) and `--output-dir` (default `experiment_results/train`). Duplicate handling: `--dedup-identical-forces {True,False}` as in the table above. |
+| `scripts/train_lightning.py` | `--data-dir` and `--output-dir` are **required**; `--device` defaults to `cuda`. Duplicate handling: `--dedup-identical-forces {True,False}` as in the table above. |
 | `scripts/train_local.py` | Defaults: `--epochs 1`, `--batch-size 1`, `--device cpu`, output `experiment_results/validation/local-smoke`. Windows are capped at 2/1 unless `--full`. It does not expose `--learning-rate`, `--input-len`, `--decimation`, `--label-column`, `--d-model` or `--seed` (library defaults apply). |
-| `scripts/run_experiment_suite.py` | Defaults to the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 1 --device cuda`. It also takes `--study`, `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). Duplicate flags are as in `train_lightning.py`. |
+| `scripts/run_experiment_suite.py` | Defaults to the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 1 --device cuda`. It also takes `--study`, `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). The study `deduplication` compares both duplicate settings (§14). |
 
 Invalid combinations stop before training with a clear error. Examples: a
 head count that does not divide the width, dropout ≥ 1, or `--pretrained`
@@ -605,11 +689,11 @@ with `compact`.
 
 | Command | Arguments |
 |---|---|
-| `omnifuser inspect` | `--data-dir`, `--label-column`, `--decimation`, `--pool`, `--input-len` (96), `--horizon` (96), `--stride` (input + horizon), `--trim-pass`/`--no-trim-pass`, `--dedup-identical-forces`/`--keep-identical-forces`. It prints passes, classes, lengths, trimming, duplicates and window counts as JSON. |
+| `omnifuser inspect` | `--data-dir`, `--label-column`, `--decimation`, `--pool`, `--input-len` (96), `--horizon` (96), `--stride` (input + horizon), `--trim-pass`/`--no-trim-pass`, `--dedup-identical-forces {True,False}`. It prints passes, classes, lengths, trimming, duplicates and window counts as JSON. |
 | `scripts/eda.py` | `--data-dir`, `--out` (default `experiment_results/eda`), `--fs` sampling rate in Hz (1000), `--pool` (1000), `--input-len` (96), `--horizon` (96), `--stride` (24), `--difficulty-pools` (1 10 100 300 1000), `--windows-per-tool` (5000, a cap for the difficulty table), `--no-figures` |
 | `scripts/compare_with_paper.py RUN_DIR` | `--by {mean_over_folds,pooled_by_windows}`, `--average {macro,weighted}`, `--json FILE` |
 | `scripts/model_summary.py` | `--image-encoder`, `--input-len` (96), `--horizon` (96), `--d-model` (32), `--rounds` (2), `--prediction-head` (`direct`), `--share-c2f`, `--batch-size` (2, for the shape probe), `--check` (verify the parameter total) |
-| `scripts/task_diagnostics.py` | `--data-dir`, `--pools` (1 10 100 1000), `--horizons` (12 24 96), `--input-len` (96), `--fs` (1000), `--max-windows-per-tool` (20000), `--trim-pass`/`--no-trim-pass`, `--out FILE`. It prints trivial-baseline difficulty per pool and horizon (descriptive only). |
+| `scripts/task_diagnostics.py` | `--data-dir`, `--pools` (1 10 100 1000), `--horizons` (12 24 96), `--input-len` (96), `--fs` (1000), `--max-windows-per-tool` (20000), `--trim-pass`/`--no-trim-pass`, `--dedup-identical-forces {True,False}`, `--out FILE`. It prints trivial-baseline difficulty per pool and horizon (descriptive only). |
 | `python -m pytest -o addopts= -q tests` | Runs all tests. Add `-k <name>` to run matching tests only. |
 
 Every command prints its own help with `--help`, for example

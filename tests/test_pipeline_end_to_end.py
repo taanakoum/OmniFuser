@@ -81,6 +81,9 @@ def test_cross_validation_tracks_all_modes_and_reuses_completed_folds(tmp_path: 
         assert result["test_tool"] not in result["train_tools"]
         assert result["validation_tool"] not in result["train_tools"]
         assert result["stride"] == 6 and result["evaluation_stride"] == 12
+        # 10 tools x 2 runs x 4 blocks = 80 rows; every B4 copies its B3, so 60 remain
+        assert result["dedup_identical_forces"] is True and result["retained_records"] == 60
+        assert result["eval_dedup_identical_forces"] is True and result["evaluation_retained_records"] == 60
         assert result["effective_architecture"]["c2f_rounds"] == 2
         for artifact in result["artifacts"].values():
             assert (output / artifact).is_file()

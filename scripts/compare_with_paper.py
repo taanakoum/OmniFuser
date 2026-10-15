@@ -123,7 +123,11 @@ def main() -> None:
     print(
         f"{len(folds)} fold(s); image_lag={first.get('image_lag')}, "
         f"pool={first.get('pool')}, label={first.get('label_column')}, "
-        f"stride={first.get('stride')}, horizon={first.get('config', {}).get('horizon')}"
+        f"stride={first.get('stride')}, horizon={first.get('config', {}).get('horizon')}, "
+        f"dedup train/eval={first.get('dedup_identical_forces')}/"
+        f"{first.get('eval_dedup_identical_forces', first.get('dedup_identical_forces'))}, "
+        f"passes train/eval={first.get('retained_records')}/"
+        f"{first.get('evaluation_retained_records', first.get('retained_records'))}"
     )
     table = aggregate(folds)
     print(render(table, args.by, args.average))

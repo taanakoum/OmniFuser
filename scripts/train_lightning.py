@@ -4,7 +4,12 @@ import argparse
 import json
 from pathlib import Path
 
-from omnifuser.cli import add_protocol_arguments, protocol_kwargs
+from omnifuser.cli import (
+    add_dedup_argument,
+    add_eval_dedup_argument,
+    add_protocol_arguments,
+    protocol_kwargs,
+)
 from omnifuser.cross_validation import run_cross_validation
 
 
@@ -30,11 +35,8 @@ def main() -> None:
     parser.add_argument(
         "--label-column", choices=("image_label", "tool_label"), default="image_label"
     )
-    parser.add_argument(
-        "--deduplicate-identical-forces",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
+    add_dedup_argument(parser)
+    add_eval_dedup_argument(parser)
     parser.add_argument(
         "--image-encoder",
         choices=("efficientnet_b0", "compact"),
@@ -72,7 +74,8 @@ def main() -> None:
         stride=args.stride,
         decimation=args.decimation,
         label_column=args.label_column,
-        dedup_identical_forces=args.deduplicate_identical_forces,
+        dedup_identical_forces=args.dedup_identical_forces,
+        eval_dedup_identical_forces=args.eval_dedup_identical_forces,
         trim_pass=args.trim_pass,
         image_encoder=args.image_encoder,
         d_model=args.d_model,

@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from omnifuser.cli import add_protocol_arguments, protocol_kwargs
+from omnifuser.cli import (
+    add_dedup_argument,
+    add_eval_dedup_argument,
+    add_protocol_arguments,
+    protocol_kwargs,
+)
 from omnifuser.config import ModelConfig
 from omnifuser.cross_validation import EVALUATION_MODES, run_cross_validation
 
@@ -104,10 +109,30 @@ def _missing_modality_runs(
     return runs
 
 
+def _deduplication_runs(eval_dedup: bool = True) -> list[dict[str, Any]]:
+    """Identical runs except whether duplicate recordings are merged for training.
+
+    Both arms are evaluated with the same duplicate handling (deduplicated by
+    default), so they are scored on identical validation and test windows.
+    """
+    return [
+        {
+            "name": f"dedup-{str(value).lower()}",
+            "group": "duplicate-handling",
+            "data_overrides": {
+                "dedup_identical_forces": value,
+                "eval_dedup_identical_forces": eval_dedup,
+            },
+        }
+        for value in (True, False)
+    ]
+
+
 def _experiment_runs(
     study: str,
     baseline: dict[str, Any] | None = None,
     dropout_rates: tuple[float, ...] = DEFAULT_MODALITY_DROPOUT_RATES,
+    eval_dedup: bool = True,
 ) -> list[dict[str, Any]]:
     if study == "ablations":
         return _ablation_runs()
@@ -115,6 +140,8 @@ def _experiment_runs(
         return _sensitivity_runs(baseline)
     if study == "missing-modality":
         return _missing_modality_runs(dropout_rates)
+    if study == "deduplication":
+        return _deduplication_runs(eval_dedup)
     # In the combined study the ablation full model is the shared reference arm.
     return (
         _ablation_runs()
@@ -132,7 +159,11 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
 
 def _write_suite_summary(study_root: Path, manifest: dict[str, Any]) -> Path:
     """One row per variant with fold mean/std test metrics for every input mode."""
-    fieldnames = ["group", "variant", "status", "changed_settings"]
+    fieldnames = [
+        "group", "variant", "status", "changed_settings", "dedup_identical_forces",
+        "eval_dedup_identical_forces", "retained_passes", "evaluation_passes",
+        "train_windows.mean", "test_windows.mean",
+    ]
     for mode in EVALUATION_MODES:
         for metric in SUMMARY_METRICS:
             fieldnames += [f"{mode}.{metric}.mean", f"{mode}.{metric}.std"]
@@ -144,11 +175,22 @@ def _write_suite_summary(study_root: Path, manifest: dict[str, Any]) -> Path:
             "variant": variant,
             "status": record.get("status"),
             "changed_settings": json.dumps(record.get("changed_settings", {}), sort_keys=True),
+            "dedup_identical_forces": record.get("dedup_identical_forces"),
+            "eval_dedup_identical_forces": record.get("eval_dedup_identical_forces"),
         }
         result_file = record.get("result_file")
         if result_file and (study_root / result_file).is_file():
             with (study_root / result_file).open(encoding="utf-8") as file:
-                evaluations = json.load(file).get("modality_evaluations", {})
+                results = json.load(file)
+            evaluations = results.get("modality_evaluations", {})
+            folds = results.get("folds", [])
+            if folds:
+                row["retained_passes"] = folds[0].get("retained_records")
+                row["evaluation_passes"] = folds[0].get("evaluation_retained_records")
+                for split in ("train", "test"):
+                    counts = [fold.get("window_counts", {}).get(split) for fold in folds]
+                    counts = [count for count in counts if count is not None]
+                    row[f"{split}_windows.mean"] = sum(counts) / len(counts) if counts else None
             for mode in EVALUATION_MODES:
                 test = evaluations.get(mode, {}).get("test", {})
                 for metric in SUMMARY_METRICS:
@@ -173,7 +215,12 @@ def build_parser() -> argparse.ArgumentParser:
             "as isolated 10-fold experiment directories."
         )
     )
-    parser.add_argument("--study", choices=("ablations", "sensitivity", "missing-modality", "all"), default="ablations")
+    parser.add_argument(
+        "--study",
+        choices=("ablations", "sensitivity", "missing-modality", "deduplication", "all"),
+        default="ablations",
+        help="'all' runs the three paper studies; 'deduplication' compares --dedup-identical-forces True and False",
+    )
     parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
     parser.add_argument("--output-root", type=Path, default=Path("experiment_results"))
     parser.add_argument(
@@ -202,11 +249,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("image_label", "tool_label"),
         default="image_label",
     )
-    parser.add_argument(
-        "--deduplicate-identical-forces",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-    )
+    add_dedup_argument(parser)
+    add_eval_dedup_argument(parser)
     parser.add_argument(
         "--image-encoder",
         choices=("efficientnet_b0", "compact"),
@@ -252,7 +296,12 @@ def main(argv: list[str] | None = None) -> Path:
         )
     )
     runs = _experiment_runs(
-        args.study, baseline, tuple(args.modality_dropout_rates)
+        args.study,
+        baseline,
+        tuple(args.modality_dropout_rates),
+        eval_dedup=(
+            True if args.eval_dedup_identical_forces is None else args.eval_dedup_identical_forces
+        ),
     )
     shared_settings = {
         name: str(value) if isinstance(value, Path) else value
@@ -318,12 +367,26 @@ def main(argv: list[str] | None = None) -> Path:
             changed_settings["ablation"] = spec["ablation"]
         config_overrides.update(changed_settings)
         model_width = int(config_overrides.pop("d_model", args.d_model))
+        # Data settings vary per variant only in the deduplication study; they are
+        # passed to the loader, never to ModelConfig.
+        data_overrides = dict(spec.get("data_overrides", {}))
+        dedup_identical_forces = bool(
+            data_overrides.get("dedup_identical_forces", args.dedup_identical_forces)
+        )
+        eval_dedup_identical_forces = data_overrides.get(
+            "eval_dedup_identical_forces", args.eval_dedup_identical_forces
+        )
+        if eval_dedup_identical_forces is None:
+            eval_dedup_identical_forces = dedup_identical_forces
+        changed_settings.update(data_overrides)
         run_record: dict[str, Any] = {
             "status": "running",
             "group": group,
             "changed_settings": changed_settings,
             "config_overrides": config_overrides,
             "d_model": model_width,
+            "dedup_identical_forces": dedup_identical_forces,
+            "eval_dedup_identical_forces": eval_dedup_identical_forces,
             "output_dir": str(run_path.relative_to(study_root)),
             "started_at_utc": datetime.now(timezone.utc).isoformat(),
         }
@@ -344,7 +407,8 @@ def main(argv: list[str] | None = None) -> Path:
                 stride=args.stride,
                 decimation=args.decimation,
                 label_column=args.label_column,
-                dedup_identical_forces=args.deduplicate_identical_forces,
+                dedup_identical_forces=dedup_identical_forces,
+                eval_dedup_identical_forces=eval_dedup_identical_forces,
                 trim_pass=args.trim_pass,
                 image_encoder=args.image_encoder,
                 d_model=model_width,

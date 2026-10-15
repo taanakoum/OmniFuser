@@ -382,6 +382,7 @@ def run_cross_validation(
     decimation: int = 1,
     label_column: str = "image_label",
     dedup_identical_forces: bool = True,
+    eval_dedup_identical_forces: bool | None = None,
     trim_pass: bool = True,
     image_encoder: str = "efficientnet_b0",
     d_model: int = 32,
@@ -400,6 +401,8 @@ def run_cross_validation(
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    if eval_dedup_identical_forces is None:
+        eval_dedup_identical_forces = dedup_identical_forces
     tools = discover_tools(data_dir)
     folds = list(leave_one_tool_out_folds(tools))
     source_signature = nonastreda_source_signature(data_dir)
@@ -448,6 +451,7 @@ def run_cross_validation(
                 "image_lag": image_lag,
                 "label_column": label_column,
                 "dedup_identical_forces": dedup_identical_forces,
+                "eval_dedup_identical_forces": eval_dedup_identical_forces,
                 "trim_pass": trim_pass,
             },
             "model": expected_config,
@@ -498,6 +502,7 @@ def run_cross_validation(
                     "image_lag": image_lag,
                     "label_column": label_column,
                     "dedup_identical_forces": dedup_identical_forces,
+                    "eval_dedup_identical_forces": eval_dedup_identical_forces,
                     "trim_pass": trim_pass,
                     "stride": train_stride,
                     "evaluation_stride": eval_stride,
@@ -542,6 +547,7 @@ def run_cross_validation(
             decimation=decimation,
             label_column=label_column,
             dedup_identical_forces=dedup_identical_forces,
+            eval_dedup_identical_forces=eval_dedup_identical_forces,
             trim_pass=trim_pass,
             image_encoder=image_encoder,
             d_model=d_model,
@@ -574,6 +580,8 @@ def run_cross_validation(
         "protocol": "10-fold leave-one-tool-out; 8 train tools, next cyclic tool validation, 1 test tool",
         "prediction_head": prediction_head,
         "trim_pass": trim_pass,
+        "dedup_identical_forces": dedup_identical_forces,
+        "eval_dedup_identical_forces": eval_dedup_identical_forces,
         "pass_trimming": "span" if trim_pass else "none",
         "pool": pool,
         "image_lag": image_lag,

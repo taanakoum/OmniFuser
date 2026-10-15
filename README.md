@@ -29,7 +29,7 @@ omnifuser/            the package: config, data, models, train, evaluation,
 scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
                       (paper studies), train_local.py (smoke test), eda.py,
                       compare_with_paper.py, model_summary.py, task_diagnostics.py
-tests/                104 pytest tests
+tests/                119 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -54,7 +54,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 104 tests
+python -m pytest -o addopts= -q tests                    # 119 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -119,6 +119,7 @@ data choices that `EDA.md` justifies.
 | Photo `--image-lag` | 0 (same pass, paper) | 1 (previous pass) | With lag 0, the photo's label gives away 92-99 % of targets (`EDA.md` §7) |
 | Horizon / input | 96 / 96 | 96 / 96 | Paper horizons go up to 96 |
 | Training stride | input + horizon (192) | 24 | More training windows at 1 s steps |
+| Duplicates `--dedup-identical-forces` | True (378 passes) | True | 134 records are exact copies, 24 groups with conflicting labels (`EDA.md` §3). Compare with `--study deduplication`, which scores both on the same deduplicated test data (`--eval-dedup-identical-forces`). |
 | Epochs | 5 | 30 | The paper gives no epoch count |
 | Optimizer | Adam, lr 1e-4, batch 32, dropout 0.1 | same | Paper values |
 | Architecture | d=32, L=4, s_l=3, r=8, GAT 4×4, k=4, n=2 | same | Paper values |
@@ -142,7 +143,7 @@ The verdicts, the reasoning and the paper's own inconsistencies are in
 ## Development checks
 
 ```bash
-python -m pytest -o addopts= -q tests    # 104 passed
+python -m pytest -o addopts= -q tests    # 119 passed
 ruff check .                             # all checks passed
 pyright                                  # 0 errors (config in pyproject.toml)
 ```

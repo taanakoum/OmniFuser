@@ -4,7 +4,12 @@ import argparse
 import json
 from pathlib import Path
 
-from omnifuser.cli import add_protocol_arguments, protocol_kwargs
+from omnifuser.cli import (
+    add_dedup_argument,
+    add_eval_dedup_argument,
+    add_protocol_arguments,
+    protocol_kwargs,
+)
 from omnifuser.train import train_fold
 
 
@@ -45,6 +50,8 @@ def main() -> None:
         action="store_true",
         help="run the selected fold without smoke-test window limits",
     )
+    add_dedup_argument(parser)
+    add_eval_dedup_argument(parser)
     add_protocol_arguments(parser)
     args = parser.parse_args()
 
@@ -58,6 +65,8 @@ def main() -> None:
         horizon=args.horizon,
         stride=args.stride,
         trim_pass=args.trim_pass,
+        dedup_identical_forces=args.dedup_identical_forces,
+        eval_dedup_identical_forces=args.eval_dedup_identical_forces,
         image_encoder=args.image_encoder,
         prediction_head=args.prediction_head,
         max_train_windows=None if args.full else 2,

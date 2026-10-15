@@ -148,3 +148,47 @@ def test_suite_refuses_to_resume_with_different_settings(tmp_path: Path) -> None
         suite.main(argv)
         with pytest.raises(ValueError, match="settings differ"):
             suite.main(argv + ["--epochs", "3"])
+
+
+def test_deduplication_study_compares_both_settings_with_everything_else_shared(tmp_path: Path) -> None:
+    calls: list[dict] = []
+
+    def record(**kwargs):
+        calls.append(kwargs)
+        output = Path(kwargs["output_dir"])
+        output.mkdir(parents=True, exist_ok=True)
+        passes = 378 if kwargs["dedup_identical_forces"] else 512
+        folds = [{"retained_records": passes, "window_counts": {"train": passes * 3, "test": 30}}]
+        (output / "cross-validation-results.json").write_text(
+            json.dumps({"modality_evaluations": {}, "folds": folds}), encoding="utf-8"
+        )
+        return {"cv_mean_std": {"folds": 1}}
+
+    argv = ["--study", "deduplication", "--output-root", str(tmp_path), "--run-id", "unit", "--device", "cpu"]
+    with mock.patch.object(suite, "run_cross_validation", record):
+        suite.main(argv)
+
+    assert [call["dedup_identical_forces"] for call in calls] == [True, False]
+    # both arms are scored on the same deduplicated validation/test windows
+    assert [call["eval_dedup_identical_forces"] for call in calls] == [True, True]
+    # the data setting never reaches ModelConfig, and nothing else differs between arms
+    assert all("dedup_identical_forces" not in call["config_overrides"] for call in calls)
+    shared = [{k: v for k, v in call.items() if k not in {"dedup_identical_forces", "output_dir"}} for call in calls]
+    assert shared[0] == shared[1]
+    study_root = tmp_path / "deduplication" / "unit"
+    with (study_root / "suite-summary.csv").open(newline="", encoding="utf-8") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["variant"], row["dedup_identical_forces"], row["retained_passes"]) for row in rows] == [
+        ("dedup-true", "True", "378"),
+        ("dedup-false", "False", "512"),
+    ]
+    assert float(rows[1]["train_windows.mean"]) == 1536.0
+    assert [row["eval_dedup_identical_forces"] for row in rows] == ["True", "True"]
+
+    # an explicit evaluation setting overrides the study's deduplicated default
+    calls.clear()
+    with mock.patch.object(suite, "run_cross_validation", record):
+        suite.main(["--study", "deduplication", "--output-root", str(tmp_path), "--run-id", "kept",
+                    "--device", "cpu", "--eval-dedup-identical-forces", "False"])
+    assert [call["eval_dedup_identical_forces"] for call in calls] == [False, False]
+    assert len(_experiment_runs("all")) == 31  # the comparison is not part of the paper studies
