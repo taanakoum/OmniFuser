@@ -615,6 +615,8 @@ label already equals most future labels.
 
   Each EfficientNet checkpoint is about 17 MB, so one 10-fold run is about
   170 MB.
+- **Write up the results.** Follow [`REPORT_PLAN.md`](REPORT_PLAN.md): its §1 lists what to download
+  and record before stopping the Studio, and its snippets build every report table and figure.
 - **Stop the Studio** when finished, so GPU time is no longer billed. Files
   in `/teamspace/studios/this_studio` remain.
 

@@ -20,6 +20,7 @@ points, not targets this code claims to reproduce.
 | [`PAPER_IMPLEMENTATION_ALIGNMENT.md`](PAPER_IMPLEMENTATION_ALIGNMENT.md) | Paper versus code: a verdict for each of 35 items, deviations and their flags, and the paper's own inconsistencies |
 | [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md) | Code reference: every module, the model equations and tensor shapes, training, metrics, tracking, cross-validation, tests, and verification |
 | [`experiment_results/README.md`](experiment_results/README.md) | Layout of the generated results |
+| [`REPORT_PLAN.md`](REPORT_PLAN.md) | **After training**: what to download, the report outline with the source of every section, and tested snippets that produce every table and figure |
 
 ## Repository layout
 

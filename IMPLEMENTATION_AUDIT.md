@@ -12,7 +12,8 @@ Two companion documents cover other ground:
   each, and lists the paper's own inconsistencies.
 - [`EDA.md`](EDA.md) analyzes the Nonastreda data.
 
-Commands are in [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md).
+Commands are in [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). How to turn the results into
+a report is in [`REPORT_PLAN.md`](REPORT_PLAN.md).
 
 This repository implements the OmniFuser method on the Nonastreda dataset. The
 paper reports results on "Mudestreda" and MATWI. Nothing here claims to
@@ -519,6 +520,18 @@ Real data, CPU, compact encoder, capped windows:
 | `train_lightning.py` | All 10 folds. Rerunning reused every fold in 4 s. |
 | `run_experiment_suite.py --study missing-modality` | Both variants completed, with the summary CSV. |
 | Other scripts | `train_local.py` (horizon 96, all 8 paper horizons), `model_summary.py --check`, `task_diagnostics.py`, `compare_with_paper.py`, `eda.py` |
+
+Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training`):
+
+| Check | Result |
+|---|---|
+| Push state | Branch in sync with GitHub; working tree clean |
+| Fresh clone | A clean `git clone` (code from git only) passes all 119 tests, Ruff, and Pyright |
+| Runbook steps 0-1 on real data (CPU, EfficientNet) | `inspect` (378 passes, 10 tools, 147/118/113 per class, 0 duplicates), `model_summary.py --check` (4,183,600, match), one-fold smoke writing all 9 artifacts |
+| Every study variant | All 33 (31 in `--study all` plus 2 deduplication arms) build and train a step with finite loss |
+| Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |
+| Documentation | Every `--flag`, source path and test count named in the docs exists and matches |
+| Report snippets | All 9 snippets in `REPORT_PLAN.md` run against real smoke outputs |
 
 Behavioral checks:
 

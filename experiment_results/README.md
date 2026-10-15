@@ -10,6 +10,7 @@ study finishes. The commands that write each subfolder are in
 experiment_results/
   logs/                         console logs of each launched command
   eda/                          exploratory data analysis (scripts/eda.py; see ../EDA.md)
+  report/                       report tables and figures (snippets in ../REPORT_PLAN.md)
   validation/                   smoke tests (capped windows; not results)
   pilot/                        uncapped one-fold timing runs
   main/full-model/              main 10-fold full-model run
