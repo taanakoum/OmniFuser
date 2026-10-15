@@ -78,7 +78,7 @@ git status                       # what has changed
 git add -A                       # stage everything that is not git-ignored
 git commit -m "Prepare for Lightning AI training"
 git push                         # upload to GitHub
-git branch --show-current        # note this branch name for §4
+git branch --show-current        # the branch you pushed; §4 clones main
 ```
 
 `Nonastreda_Data/` and `experiment_results/` are git-ignored, so the data
@@ -115,14 +115,16 @@ tar -czf Nonastreda_Data.tar.gz Nonastreda_Data
 
 ```bash
 cd /teamspace/studios/this_studio
-git clone -b <your-branch> https://github.com/<your-user>/OmniFuser.git OmniFuser
+git clone https://github.com/taanakoum/OmniFuser.git OmniFuser
 cd OmniFuser
 git log -1 --oneline        # confirm it is the commit you pushed in §2
 ```
 
-- `git clone -b <branch> <url> OmniFuser` downloads the repository into a
-  new folder `OmniFuser`, checked out at your branch. For this project:
-  `git clone -b Lightning-AI-training https://github.com/taanakoum/OmniFuser.git OmniFuser`.
+- `git clone <url> OmniFuser` downloads the repository into a new folder
+  `OmniFuser`, on its default branch `main`, which holds the complete
+  training code.
+- To use another branch instead, add `-b <branch>`, for example
+  `git clone -b Lightning-AI-training <url> OmniFuser`.
 - If the repository is private, GitHub asks for a username and a password.
   Use a **personal access token** as the password (GitHub → Settings →
   Developer settings → Personal access tokens).
