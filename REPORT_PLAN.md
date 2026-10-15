@@ -17,17 +17,20 @@ Text in brackets, such as [epochs], marks values to fill in from your runs.
 
 ### 1.1 Archive the outputs
 
-Zip the results without the checkpoints, then download both zips from the
-Studio's file explorer:
+Pack the results, then download both archives from the Studio's file
+explorer (right-click → **Download**):
 
 ```bash
 cd /teamspace/studios/this_studio/OmniFuser
-zip -qr results-no-checkpoints.zip experiment_results -x "*.pt"
-zip -qr results-checkpoints.zip experiment_results -i "*.pt"
+tar -czf results-no-checkpoints.tar.gz --exclude='*.pt' experiment_results
+find experiment_results -name '*.pt' | tar -czf results-checkpoints.tar.gz -T -
 ```
 
-The first zip is everything the report needs. The second keeps the trained
-models, at about 17 MB per fold.
+The first archive is everything the report needs. The second keeps the
+trained models, at about 17 MB per fold. On Windows, unpack with
+`tar -xzf results-no-checkpoints.tar.gz` in PowerShell, from the repository
+folder, so the files land in `experiment_results/` where the snippets in §5
+expect them.
 
 ### 1.2 Record the provenance
 

@@ -9,3 +9,7 @@ experiment_results/*
 Nonastreda_Data/
 *.pdf
 Literature/
+# data and result archives moved to and from Lightning AI
+Nonastreda_Data.tar.gz
+Nonastreda_Data.zip
+results-*.tar.gz

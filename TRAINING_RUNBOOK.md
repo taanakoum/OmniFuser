@@ -14,7 +14,7 @@ Nonastreda, so the paper's numbers are reference points, not targets.
 |---|---|
 | **Part A: Lightning AI for first-time users** | §1 Concepts · §2 Prepare on your laptop · §3 Create a Studio · §4 Get the code · §5 Upload the data · §6 Install · §7 Switch to a GPU · §8 Terminal basics |
 | **Part B: The experiments** | §9 Shared protocol · §10 Step 0: verify · §11 Steps 1-2: smoke test and pilot · §12 Step 3: main 10-fold run · §13 Steps 4-6: paper studies · §14 Optional runs |
-| **Part C: Operating and reference** | §15 Unattended runs, resuming, downloading · §16 Complete argument reference · §17 Results layout and metrics · §18 Local Windows commands · §19 Not covered |
+| **Part C: Operating and reference** | §15 Unattended runs, resuming, downloading, troubleshooting · §16 Complete argument reference · §17 Results layout and metrics · §18 Local Windows commands · §19 Not covered |
 
 ## Overview of the experiments
 
@@ -30,6 +30,7 @@ Nonastreda, so the paper's numbers are reference points, not targets.
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
 | (opt) | Printed-paper readings of the four deviations | 4 | `experiment_results/paper-literal/<arm>/` |
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
+| After | Download the results and write the report (§15, [`REPORT_PLAN.md`](REPORT_PLAN.md)) | 0 | `results-*.tar.gz`, `experiment_results/report/` |
 
 A **10-fold CV run** trains 10 models. Each one holds out a different tool for
 testing, uses the next tool for validation, and trains on the other 8
@@ -81,14 +82,20 @@ git branch --show-current        # note this branch name for §4
 ```
 
 `Nonastreda_Data/` and `experiment_results/` are git-ignored, so the data
-does not go through GitHub. Zip it for upload. In PowerShell, from the
-repository folder:
+does not go through GitHub. Pack it into one archive for upload. In
+PowerShell, from the repository folder:
 
 ```powershell
-Compress-Archive -Path Nonastreda_Data -DestinationPath Nonastreda_Data.zip
+tar -czf Nonastreda_Data.tar.gz Nonastreda_Data
 ```
 
-The zip is about 400 MB: a 270 MB force file and 512 photos.
+- `tar` is built into Windows 10 and 11. `-c` creates an archive, `-z`
+  compresses it, and `-f` names the file. The result is about 383 MB.
+- The archive name is git-ignored, so a later `git add -A` cannot commit it.
+- Do **not** use the Explorer "Compress" menu or PowerShell's
+  `Compress-Archive`. Windows PowerShell writes paths inside the zip with
+  backslashes, and on the Studio's Linux they unpack into wrongly named
+  files instead of a `tool/` folder.
 
 ## 3. Create a Studio
 
@@ -114,7 +121,8 @@ git log -1 --oneline        # confirm it is the commit you pushed in §2
 ```
 
 - `git clone -b <branch> <url> OmniFuser` downloads the repository into a
-  new folder `OmniFuser`, checked out at your branch.
+  new folder `OmniFuser`, checked out at your branch. For this project:
+  `git clone -b Lightning-AI-training https://github.com/taanakoum/OmniFuser.git OmniFuser`.
 - If the repository is private, GitHub asks for a username and a password.
   Use a **personal access token** as the password (GitHub → Settings →
   Developer settings → Personal access tokens).
@@ -122,20 +130,20 @@ git log -1 --oneline        # confirm it is the commit you pushed in §2
 
 ## 5. Upload the data
 
-1. Drag `Nonastreda_Data.zip` from your computer onto the `OmniFuser` folder
-   in the Studio's file explorer and wait for the upload to finish.
+1. Drag `Nonastreda_Data.tar.gz` from your computer onto the `OmniFuser`
+   folder in the Studio's file explorer and wait for the upload to finish.
 2. Unpack it in the terminal:
 
    ```bash
    cd /teamspace/studios/this_studio/OmniFuser
-   unzip -q Nonastreda_Data.zip && rm Nonastreda_Data.zip
+   tar -xzf Nonastreda_Data.tar.gz && rm Nonastreda_Data.tar.gz
    ls Nonastreda_Data          # forces_xyz_raw.mat  labels.csv  labels_reg.csv  tool
    ls Nonastreda_Data/tool | wc -l     # 512
    ```
 
-   `unzip -q` extracts quietly; `rm` deletes the zip afterwards to save
-   space. If `unzip` is missing, run
-   `python -m zipfile -e Nonastreda_Data.zip .` instead.
+   `tar -xzf` extracts the archive (`-x` extract, `-z` decompress, `-f` the
+   file), and `rm` then deletes it to save space. If `tar` is unavailable,
+   `python -m tarfile -e Nonastreda_Data.tar.gz .` does the same.
 
 ## 6. Install the project
 
@@ -304,6 +312,26 @@ That gives the same effective batch of 32, using half the memory per step.
 
 ## 12. Step 3: full model, 10-fold cross-validation
 
+> **Steps 3-6 run for hours.** The commands below are written in the
+> foreground `... 2>&1 | tee LOG` form, which stops if the terminal or browser
+> tab closes. For an unattended run, change any of them as follows:
+>
+> - put `nohup` in front;
+> - replace `2>&1 | tee LOG` with `> LOG 2>&1 &`;
+> - then follow the log with `tail -f LOG`.
+>
+> Step 3 as a background run:
+>
+> ```bash
+> nohup python scripts/train_lightning.py $PROTOCOL \
+>   --output-dir experiment_results/main/full-model \
+>   > experiment_results/logs/main-full-model.log 2>&1 &
+> tail -f experiment_results/logs/main-full-model.log
+> ```
+>
+> Ctrl+C stops `tail`, not the run. Alternatively, start `tmux` first (§8)
+> and run the commands unchanged.
+
 ```bash
 python scripts/train_lightning.py $PROTOCOL \
   --output-dir experiment_results/main/full-model \
@@ -384,7 +412,8 @@ To run one ablation alone:
 
 ```bash
 python scripts/train_lightning.py $PROTOCOL --ablation without_als \
-  --output-dir experiment_results/ablations/single/without-als
+  --output-dir experiment_results/ablations/single/without-als \
+  2>&1 | tee experiment_results/logs/ablation-single-without-als.log
 ```
 
 ### Step 5: missing-modality robustness, 2 runs
@@ -409,7 +438,8 @@ To sweep several rates, use a new `--run-id`:
 
 ```bash
 python scripts/run_experiment_suite.py --study missing-modality --run-id rates-v1 \
-  --modality-dropout-rates 0.1 0.2 0.3 --output-root experiment_results $PROTOCOL
+  --modality-dropout-rates 0.1 0.2 0.3 --output-root experiment_results $PROTOCOL \
+  2>&1 | tee experiment_results/logs/missing-modality-rates-v1.log
 ```
 
 To read the results, compare the `full.*`, `sensor_missing.*` and
@@ -521,13 +551,15 @@ To run one setting outside the suite:
 # train with duplicates, test on the deduplicated windows
 python scripts/train_lightning.py $PROTOCOL \
   --dedup-identical-forces False --eval-dedup-identical-forces True \
-  --output-dir experiment_results/deduplication/single/dedup-false-eval-true
+  --output-dir experiment_results/deduplication/single/dedup-false-eval-true \
+  2>&1 | tee experiment_results/logs/dedup-false-eval-true.log
 
 # the whole protocol without deduplication (training and test); both flags are
 # needed because $PROTOCOL sets both to True
 python scripts/train_lightning.py $PROTOCOL \
   --dedup-identical-forces False --eval-dedup-identical-forces False \
-  --output-dir experiment_results/deduplication/single/dedup-false-eval-false
+  --output-dir experiment_results/deduplication/single/dedup-false-eval-false \
+  2>&1 | tee experiment_results/logs/dedup-false-eval-false.log
 ```
 
 `compare_with_paper.py` prints both settings and both pass counts in its
@@ -579,13 +611,17 @@ explains each). These runs measure what each departure changes:
 
 ```bash
 python scripts/train_lightning.py $PROTOCOL --image-lag 0 \
-  --output-dir experiment_results/paper-literal/same-pass-image
+  --output-dir experiment_results/paper-literal/same-pass-image \
+  2>&1 | tee experiment_results/logs/paper-literal-same-pass-image.log
 python scripts/train_lightning.py $PROTOCOL --prediction-head paper_literal \
-  --output-dir experiment_results/paper-literal/repeated-head
+  --output-dir experiment_results/paper-literal/repeated-head \
+  2>&1 | tee experiment_results/logs/paper-literal-repeated-head.log
 python scripts/train_lightning.py $PROTOCOL --decomp-mode literal \
-  --output-dir experiment_results/paper-literal/eq3-literal
+  --output-dir experiment_results/paper-literal/eq3-literal \
+  2>&1 | tee experiment_results/logs/paper-literal-eq3-literal.log
 python scripts/train_lightning.py $PROTOCOL --als-mode k_sum \
-  --output-dir experiment_results/paper-literal/eq10-unnormalized
+  --output-dir experiment_results/paper-literal/eq10-unnormalized \
+  2>&1 | tee experiment_results/logs/paper-literal-eq10-unnormalized.log
 ```
 
 Two other variants are available:
@@ -610,14 +646,20 @@ label already equals most future labels.
 - **Watch progress:**
 
   ```bash
-  tail -f experiment_results/logs/<name>.log
+  tail -f experiment_results/logs/ablations-paper-v1.log
   watch -n 5 nvidia-smi
-  cat experiment_results/<study>/<run-id>/suite.json | head -40
+  python -c 'import json, sys; m = json.load(open(sys.argv[1])); print("suite:", m["status"]); [print(" ", k, v["status"]) for k, v in m["runs"].items()]' experiment_results/ablations/paper-v1/suite.json
   ```
 
-  - The log prints one `Fold k/10` line per fold.
-  - `suite.json` shows each variant's status.
-  - `cross-validation-progress.json` in a run folder updates after each fold.
+  - `tail -f` follows a log: one `Fold k/10` line per fold, and one
+    `=== group/variant ===` line per suite variant. Ctrl+C stops following,
+    not the run. Use the log name from your command's `tee` or `nohup`.
+  - `watch -n 5 nvidia-smi` refreshes GPU use and memory every 5 s.
+  - The `python -c` line prints a suite's overall status and each variant
+    as `completed`, `running` or `failed`. Replace `ablations/paper-v1` with
+    your `<study>/<run-id>`.
+  - `cross-validation-progress.json` in each run folder lists the folds
+    finished so far.
 - **Resume after any interruption**, including a sleep, a crash or a stopped
   Studio: rerun the **exact same command**, with the same `--run-id` for
   suites.
@@ -625,27 +667,53 @@ label already equals most future labels.
   - Finished folds are reused.
   - An interrupted fold continues from its last finished epoch
     (`fold-Tn-resume.pt`).
+  - The rerun's log shows `T1: reusing a completed fold with matching
+    settings` for each finished fold, and has no `===` line for finished
+    variants.
+  - The rerun **replaces** the console log (`> file` and `tee file`
+    overwrite it). The metrics are safe: `tracking/metrics.jsonl` and
+    `metrics.csv` append across attempts. To keep the old console log,
+    rename it first, e.g. `mv experiment_results/logs/all-paper-v1.log
+    experiment_results/logs/all-paper-v1-attempt1.log`.
 - **Changed settings are refused.** Different settings stop with an error
   instead of mixing configurations. A different GPU type or library version
   is allowed and noted in `tracking/run.json` under `runtime_history`.
 - **Do not modify the data mid-study.** Each input file's path, size and
   modification time are recorded and checked. Editing or re-uploading
   `Nonastreda_Data/` during a study forces retraining.
-- **Download results.** In the file explorer, right-click
-  `experiment_results` and choose **Download**. Or zip it first; the second
-  command below leaves out the large checkpoints:
+- **Download results.** Pack them first, then right-click the archive in
+  the file explorer and choose **Download**:
 
   ```bash
-  zip -qr results.zip experiment_results
-  zip -qr results-no-checkpoints.zip experiment_results -x "*.pt"
+  tar -czf results-no-checkpoints.tar.gz --exclude='*.pt' experiment_results
+  find experiment_results -name '*.pt' | tar -czf results-checkpoints.tar.gz -T -
   ```
 
-  Each EfficientNet checkpoint is about 17 MB, so one 10-fold run is about
-  170 MB.
+  - The first archive holds everything except the model checkpoints:
+    metrics, predictions, logs and figures. It is all the report needs.
+  - The second holds only the checkpoints (`find` lists them, and `-T -`
+    makes `tar` read that list). Each EfficientNet checkpoint is about
+    17 MB, so one 10-fold run is about 170 MB.
+  - On Windows, unpack with `tar -xzf results-no-checkpoints.tar.gz` in
+    PowerShell.
 - **Write up the results.** Follow [`REPORT_PLAN.md`](REPORT_PLAN.md): its §1 lists what to download
   and record before stopping the Studio, and its snippets build every report table and figure.
 - **Stop the Studio** when finished, so GPU time is no longer billed. Files
   in `/teamspace/studios/this_studio` remain.
+
+### Troubleshooting
+
+| You see | Cause | Fix |
+|---|---|---|
+| `experiment output directory belongs to a different configuration` | You reran into an existing output folder with different settings: any flag, including `--num-workers` | Use the original command exactly, or a new `--output-dir` |
+| `cannot resume ...; study settings differ from suite.json` | A suite was rerun with the same `--run-id` but different settings | The original command, or a new `--run-id` |
+| `CUDA was requested but is not available` | The Studio is on a CPU machine, or PyTorch lacks CUDA | Switch to a GPU (§7); the §7 check must print `True` |
+| `CUDA out of memory` | Batch too large for the GPU | Add `--batch-size 16 --accumulation-steps 2` (same effective batch) |
+| `10-fold tool CV requires 10 tools; found 0` or `No such file or directory: ...labels.csv` | Wrong data folder, or the data was not unpacked | Run from `OmniFuser/`; `ls Nonastreda_Data/tool \| wc -l` must print 512 (§5) |
+| `ModuleNotFoundError: No module named 'omnifuser'` or `omnifuser: command not found` | The project is not installed in this environment | Rerun §6 from inside `OmniFuser/` |
+| `DataLoader worker ... killed`, `Bus error`, or a shared-memory error | The data-loading worker processes ran out of shared memory | Add `--num-workers 0` (slower loading, same results); a new output folder is then needed, see the first row |
+| `Killed` with no Python error during `eda.py` or training | The machine ran out of RAM (the EDA needs about 3 GB) | Choose a machine with more memory, or close other processes |
+| The log stops growing for a long time | One fold is still training. With `nohup`, nothing prints between folds | `tail experiment_results/<run>/cross-validation-progress.json` and `nvidia-smi`; the process is alive if `ps aux \| grep python` lists it |
 
 ## 16. Complete argument reference
 

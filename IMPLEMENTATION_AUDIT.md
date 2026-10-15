@@ -532,6 +532,7 @@ Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training
 | Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |
 | Documentation | Every `--flag`, source path and test count named in the docs exists and matches |
 | Report snippets | All 9 snippets in `REPORT_PLAN.md` run against real smoke outputs |
+| Runbook commands, run as written | A GitHub clone; the data packed, uploaded-equivalent and unpacked with `tar`; then every command block extracted from `TRAINING_RUNBOOK.md` and run with a light `$PROTOCOL` (CPU, compact encoder, capped windows): steps 0-3; all suites (ablations, missing-modality, rates, deduplication) to completion; `--study sensitivity` and `--study all` orchestration for all 22 and 31 variants; every sensitivity variant trained one real fold through its documented flag; the `--study all` command interrupted mid-variant and resumed (finished variant skipped, finished folds reused); all optional runs; monitoring, download archives and Windows unpacking; the report snippets on the unpacked copy; §18 in Windows PowerShell. Fixes from this test: `tar` replaces `Compress-Archive`/`zip` (which wrote backslash paths), archive names git-ignored, consistent `tee` logs, a working suite-status command, a troubleshooting table, a background-run callout, and a note that reruns replace the console log. |
 
 Behavioral checks:
 
