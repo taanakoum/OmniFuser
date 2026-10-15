@@ -196,6 +196,7 @@ PROTOCOL="--data-dir Nonastreda_Data --device cuda \
   --epochs 30 --batch-size 32 --learning-rate 1e-4 \
   --input-len 96 --horizon 96 --stride 24 \
   --pool 1000 --image-lag 1 --prediction-head direct \
+  --dedup-identical-forces True --eval-dedup-identical-forces True \
   --image-encoder efficientnet_b0 --seed 42 --num-workers 4"
 mkdir -p experiment_results/logs
 ```
@@ -218,6 +219,8 @@ override it (for example `--epochs 1`).
 | `--pool` | 1000 | Average 1000 force samples (1 s) into one step. This matches the paper's difficulty (`EDA.md` §6). |
 | `--image-lag` | 1 | Show the previous pass's photo. The same-pass photo (0, the paper's reading) leaks the label (`EDA.md` §7). |
 | `--prediction-head` | `direct` | Separate output weights per forecast step (closest usable reading of Eqs. 21-22) |
+| `--dedup-identical-forces` | True | Merge the 134 bit-identical copied recordings for **training**, keeping the most-worn label: 378 passes instead of 512 (`EDA.md` §3). This is also the default; it is written out so the choice appears in every command and saved configuration. |
+| `--eval-dedup-identical-forces` | True | The same for the **validation and test** data, so every run is scored on the same 378-pass windows. Omitted, it would follow the training setting. §14 explains both options. |
 | `--image-encoder` | `efficientnet_b0` | The paper's photo backbone (`compact` is for quick CPU tests) |
 | `--seed` | 42 | Random seed. Fold \(i\) uses seed + \(i\). |
 | `--num-workers` | 4 | Background processes preparing batches. Use at most the `nproc` count; 0 loads in the main process. |
@@ -463,6 +466,26 @@ control them:
 | `--dedup-identical-forces {True,False}` | The **training** data, and by default everything else | `True` (default): one pass per group, 378 passes. `False`: all 512. |
 | `--eval-dedup-identical-forces {True,False}` | The **validation and test** data | Omitted: same as `--dedup-identical-forces`. Set it to fix the evaluation data independently. |
 
+How the training setting changes a run (the evaluation setting has the same
+effects on validation and test data):
+
+| Stage | `True` (protocol) | `False` |
+|---|---|---|
+| Passes | 378 | 512: the 134 copies are kept, mostly B4 repeating B3 |
+| Labels | One label per signal (the most-worn) | In 24 groups the same force signal has two labels: label noise |
+| Tool timelines | Each pass once | Copied passes appear twice, back to back |
+| Folds | Unchanged: tool membership only | Unchanged |
+| Force normalizer (8 training tools) | From deduplicated data | Shifts slightly, because copies count twice |
+| Windows (protocol, all tools) | 1,462 | 2,012: more training steps per epoch |
+| Photo with `--image-lag 1` | The previous *distinct* pass's photo | B4 shows B3's photo: the same signal, possibly a different label |
+| Model | Unchanged | Unchanged: the setting is not part of the model config |
+| Saved and checked | `fold-Tn.json`, `tracking/run.json` and the resume check record both settings and both pass counts, so a changed setting retrains instead of reusing folds | Same |
+
+The library function `load_nonastreda` also defaults to `True`, but that
+default only applies when the setting is not passed. Every command passes the
+value you choose. `eda.py` always describes the deduplicated data, plus the
+raw 512 passes side by side.
+
 The comparison study trains both settings with everything else identical,
 and scores both on the **same deduplicated validation and test windows**:
 
@@ -478,8 +501,10 @@ python scripts/run_experiment_suite.py --study deduplication --run-id dedup-v1 \
 | `dedup-false` | 512 passes | 378 passes |
 
 Because the test windows are identical, any metric difference comes from the
-training data alone. To score both arms on non-deduplicated data instead, add
-`--eval-dedup-identical-forces False` to the suite command.
+training data alone. The study sets `--dedup-identical-forces` per variant,
+overriding the value in `$PROTOCOL`. To score both arms on non-deduplicated
+data instead, add `--eval-dedup-identical-forces False` at the end of the
+suite command.
 
 `suite-summary.csv` gets one row per setting. Besides the usual metrics it
 has these columns:
@@ -498,8 +523,10 @@ python scripts/train_lightning.py $PROTOCOL \
   --dedup-identical-forces False --eval-dedup-identical-forces True \
   --output-dir experiment_results/deduplication/single/dedup-false-eval-true
 
-# the whole protocol without deduplication (training and test)
-python scripts/train_lightning.py $PROTOCOL --dedup-identical-forces False \
+# the whole protocol without deduplication (training and test); both flags are
+# needed because $PROTOCOL sets both to True
+python scripts/train_lightning.py $PROTOCOL \
+  --dedup-identical-forces False --eval-dedup-identical-forces False \
   --output-dir experiment_results/deduplication/single/dedup-false-eval-false
 ```
 
@@ -518,7 +545,7 @@ This prints 512 passes, 2,012 windows and 134 remaining duplicates, against
 What to keep in mind when you read the results:
 
 - **Use deduplicated evaluation for the comparison.** If both training and
-  test keep the duplicates (`--dedup-identical-forces False` alone), each
+  test keep the duplicates (both options `False`), each
   test tool also contains its copied passes. The two settings are then scored
   on different windows, and the copies make the test easier: at 1 s steps a
   pass lasts about 97 steps, so a 96-step input window that ends in B3
@@ -718,7 +745,7 @@ experiment_results/
   tracking/run.json                       configuration, data signature, runtime history
   tracking/metrics.jsonl                  every event: setup, per-epoch train/validation, final evaluations
   tracking/metrics.csv                    the same numbers in long form (fold, epoch, split, evaluation_mode, metric, value)
-  fold-Tn.json                            fold settings, epoch history, test and missing-modality metrics
+  fold-Tn.json                            fold settings (incl. both duplicate settings and pass counts), epoch history, test and missing-modality metrics
   fold-Tn.pt                              selected checkpoint with config and normalizer
   fold-Tn-predictions[-<mode>].npz        test forecasts, targets, class probabilities (original units)
   fold-Tn-roc[-<mode>].npz                one-vs-rest ROC coordinates per class
