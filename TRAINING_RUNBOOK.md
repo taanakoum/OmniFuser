@@ -110,15 +110,16 @@ git log -1 --oneline origin/main # the exact commit the Studio will clone
 
   ```bash
   git switch main
-  git pull                          # get GitHub's latest main
-  git merge --ff-only <your-branch> # move main forward to your branch
+  git pull                              # get GitHub's latest main
+  git merge --ff-only your-branch-name  # move main forward to your branch
   git push
   ```
 
-  `--ff-only` only moves `main` forward along your branch's history. If
-  `main` has commits your branch lacks, it refuses instead of creating a
-  merge; then run `git merge <your-branch>` and check the result before
-  pushing.
+  Replace `your-branch-name` with the branch's real name, for example
+  `Lightning-AI-training`; `git branch` lists your branches. `--ff-only`
+  only moves `main` forward along your branch's history. If `main` has
+  commits your branch lacks, it refuses instead of creating a merge; then run
+  `git merge your-branch-name` and check the result before pushing.
 
 `Nonastreda_Data/` and `experiment_results/` are git-ignored, so the data
 does not go through GitHub. Pack it into one archive for upload. In
@@ -145,10 +146,14 @@ tar -czf Nonastreda_Data.tar.gz Nonastreda_Data
 3. Check what you have:
 
    ```bash
-   pwd                     # should print /teamspace/studios/this_studio
-   python --version        # needs 3.10 or newer
-   nproc                   # number of CPU cores; used for --num-workers (§9)
+   pwd
+   python --version
+   nproc
    ```
+
+   `pwd` must print `/teamspace/studios/this_studio`, `python --version`
+   must show 3.10 or newer, and `nproc` prints the number of CPU cores, the
+   upper limit for `--num-workers` (§9).
 
 ## 4. Get the code
 
@@ -241,8 +246,9 @@ than bash. Every command in this runbook works in both. Two consequences:
   (§9). A plain text variable inserted as `$PROTOCOL` is **not** split into
   words by zsh, so the program receives the whole protocol as one argument
   and stops with `unrecognized arguments: --data-dir Nonastreda_Data ...`.
-- Commands contain no `#` comments, because zsh only accepts them when the
-  `interactivecomments` option is set.
+- Commands run in the Studio contain no `#` comments, because zsh only
+  accepts them when the `interactivecomments` option is set. (The laptop
+  commands in §2 have comments; PowerShell and Git Bash accept them.)
 
 To check which shell you have: `echo $0` prints `zsh` or `bash`.
 
@@ -313,6 +319,23 @@ that is how individual steps override it (for example `--epochs 1`).
 
 `PROTOCOL` has no `--pretrained`, so every main run trains the image
 encoder from scratch; §14 has the pretrained comparison.
+
+**Duplicate handling is not in `PROTOCOL`.** You choose it in each command
+instead:
+
+- `scripts/train_lightning.py` (step 3, the single runs in §13 and §14) **requires**
+  `--dedup-identical-forces True` or `False`. Without it, the script stops
+  before loading any data with
+  `error: the following argument is required: --dedup-identical-forces True|False`.
+- `True` merges the 134 bit-identical copied recordings, keeping the
+  most-worn label: 378 passes instead of 512 (`EDA.md` §3). `False` keeps all
+  512.
+- `--eval-dedup-identical-forces True|False` sets the same for the
+  validation and test data. It is optional; omitted, it follows
+  `--dedup-identical-forces`.
+- `omnifuser train` (steps 1-2) and `run_experiment_suite.py` (steps 4-6)
+  default to `True`, the protocol value, so their commands below leave it
+  out. The suite's `deduplication` study sets it per variant (§14).
 
 The architecture defaults equal the paper's values, so they are not in
 `PROTOCOL`: \(d=32\), 4 MRTE layers with stride 3 and rank 8, 4 GAT layers ×
@@ -387,23 +410,6 @@ split `train`:
 One 10-fold run costs about `epoch_seconds × 30 × 10`, plus about one epoch
 per fold for the final evaluations. Multiply by the run counts in the
 overview to estimate a study.
-
-**Duplicate handling is not in `PROTOCOL`.** You choose it in each command
-instead:
-
-- `scripts/train_lightning.py` (step 3, the single runs in §13 and §14) **requires**
-  `--dedup-identical-forces True` or `False`. Without it, the script stops
-  before loading any data with
-  `error: the following argument is required: --dedup-identical-forces True|False`.
-- `True` merges the 134 bit-identical copied recordings, keeping the
-  most-worn label: 378 passes instead of 512 (`EDA.md` §3). `False` keeps all
-  512.
-- `--eval-dedup-identical-forces True|False` sets the same for the
-  validation and test data. It is optional; omitted, it follows
-  `--dedup-identical-forces`.
-- `omnifuser train` (steps 1-2) and `run_experiment_suite.py` (steps 4-6)
-  default to `True`, the protocol value, so their commands below leave it
-  out. The suite's `deduplication` study sets it per variant (§14).
 
 If you get `CUDA out of memory`, add `--batch-size 16 --accumulation-steps 2`.
 That gives the same effective batch of 32, using half the memory per step.
@@ -879,15 +885,17 @@ Two other variants are available:
 
 ## 15. Unattended runs, resuming, and downloading results
 
-- **Keep runs alive.** Use `nohup ... &` (§13) or `tmux` (§8) for anything
+- **Keep runs alive.** Use `nohup ... &` (§12) or `tmux` (§8) for anything
   longer than a few minutes. Plain `| tee` commands stop when their terminal
   closes.
-- **Watch progress:**
+- **Watch progress.** Three separate tools; run them one at a time. The
+  first prints once and returns. The other two keep running until you press
+  Ctrl+C, which stops only the watching, never the training.
 
   ```bash
+  python -c 'import json, sys; m = json.load(open(sys.argv[1])); print("suite:", m["status"]); [print(" ", k, v["status"]) for k, v in m["runs"].items()]' experiment_results/ablations/paper-v1/suite.json
   tail -f experiment_results/logs/ablations-paper-v1.log
   watch -n 5 nvidia-smi
-  python -c 'import json, sys; m = json.load(open(sys.argv[1])); print("suite:", m["status"]); [print(" ", k, v["status"]) for k, v in m["runs"].items()]' experiment_results/ablations/paper-v1/suite.json
   ```
 
   - `tail -f` follows a log: one `Fold k/10` line per fold, and one
@@ -946,7 +954,7 @@ Two other variants are available:
 |---|---|---|
 | `unrecognized arguments: --data-dir Nonastreda_Data --device cuda ...` | zsh received the protocol as one argument: it was defined as text (`PROTOCOL="..."`) or inserted as `$PROTOCOL` | Define it with the §9 block (`PROTOCOL=( ... )`) and insert it as `"${PROTOCOL[@]}"` |
 | `argument --data-dir: expected one argument` | bash inserted only the array's first entry: `$PROTOCOL` instead of `"${PROTOCOL[@]}"` | Write `"${PROTOCOL[@]}"` |
-| `train_lightning.py`: `the following arguments are required: --data-dir`. `omnifuser train`: no error, but it runs with the library defaults: CPU, 1 ms steps (`pool=1`), same-pass photos | `PROTOCOL` is empty: a new terminal, or the §9 block was not run. `omnifuser train` has defaults for every option, so it starts anyway. | Stop the run with Ctrl+C, run the §9 block in this terminal (its `printf` line must print the arguments), then rerun the command |
+| `train_lightning.py`: `the following arguments are required: --data-dir`. `omnifuser train`: no error, but it runs with the library defaults: CPU, 1 ms steps (`pool=1`), 5 epochs | `PROTOCOL` is empty: a new terminal, or the §9 block was not run. `omnifuser train` has defaults for every option, so it starts anyway. | Stop the run with Ctrl+C, run the §9 block in this terminal (its `printf` line must print the arguments), then rerun the command |
 | `experiment output directory belongs to a different configuration` | You reran into an existing output folder with different settings: any flag, including `--num-workers` | Use the original command exactly, or a new `--output-dir` |
 | `cannot resume ...; study settings differ from suite.json` | A suite was rerun with the same `--run-id` but different settings | The original command, or a new `--run-id` |
 | `CUDA was requested but is not available` | The Studio is on a CPU machine, or PyTorch lacks CUDA | Switch to a GPU (§7); the §7 check must print `True` |
