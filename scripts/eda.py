@@ -611,8 +611,8 @@ def make_figures(
     fig, axis = plt.subplots(figsize=(7.5, 4))
     protocol_pool = 1000 if 1000 in pools else pools[-1]
     rows = [r for r in difficulty if r["pool"] == protocol_pool]
-    axis.plot([r["horizon"] for r in rows], [r["persistence_accuracy_lag0"] for r in rows], color=SERIES_COLORS[1], linewidth=2, marker="o", label="label of shown photo, lag 0 (paper)")
-    axis.plot([r["horizon"] for r in rows], [r["persistence_accuracy_lag1"] for r in rows], color=SERIES_COLORS[0], linewidth=2, marker="o", label="label of shown photo, lag 1 (protocol)")
+    axis.plot([r["horizon"] for r in rows], [r["persistence_accuracy_lag0"] for r in rows], color=SERIES_COLORS[1], linewidth=2, marker="o", label="label of shown photo, lag 0 (paper, protocol)")
+    axis.plot([r["horizon"] for r in rows], [r["persistence_accuracy_lag1"] for r in rows], color=SERIES_COLORS[0], linewidth=2, marker="o", label="label of shown photo, lag 1 (experimental)")
     axis.plot(PAPER_HORIZONS, PAPER_OMNIFUSER_RESULTS["accuracy"], color=INK, linewidth=2, linestyle="--", marker="s", label="paper OmniFuser accuracy")
     axis.set_ylim(0, 1.02)
     _style(axis, f"Accuracy of copying the shown photo's label (pool {protocol_pool})", "horizon P (steps)", "cumulative accuracy")

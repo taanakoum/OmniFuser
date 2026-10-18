@@ -47,11 +47,11 @@ reproduce the paper's scores.
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `task_diagnostics.py` | Descriptive trivial-baseline difficulty for chosen pool factors and horizons. |
 
-### Tests `tests/`: 124 tests
+### Tests `tests/`: 125 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
-| `test_model.py` | 30 | Embeddings and positions; GAT normalization; image position placement; orthogonal private residual; landmark pooling (defaults and `k_colnorm` scale bound); `exact_split` reconstruction; heads; every ablation (forward/backward plus the intended structural change); masked-modality independence; paper-reading defaults; image-encoder name validation. |
+| `test_model.py` | 31 | Embeddings and positions; ImageNet input normalization only with `--pretrained` (checkpoint keys unchanged); GAT normalization; image position placement; orthogonal private residual; landmark pooling (defaults and `k_colnorm` scale bound); `exact_split` reconstruction; heads; every ablation (forward/backward plus the intended structural change); masked-modality independence; paper-reading defaults; image-encoder name validation. |
 | `test_alignment_patch.py` | 17 | Pooling, image lag, shown-label exposure, the image cache, ALS modes, modality masking statistics, BatchNorm freezing, gradients for every option, and an end-to-end fold with interruption and resume. |
 | `test_block12_integration.py` | 23 | Architecture flags reach `ModelConfig`; invalid dimensions fail early; the full compact model runs with all three heads. `--dedup-identical-forces` parses True/False, the bare flag and every alias for `train`, `inspect` and the suite, and rejects ambiguous values. |
 | `test_data.py` | 13 | Window shapes; exact input/target alignment; windows never mix tools; class change at a pass boundary; lag-1 photo with current-pass label; fold partitions; pooled normalizer statistics; collation; duplicate merging; span trimming and its documented limit. |
@@ -483,7 +483,7 @@ aggregate.
 | `deduplication` | 2 | Training with `--dedup-identical-forces` True and False, all else shared. Both arms are evaluated on the same deduplicated windows unless `--eval-dedup-identical-forces` is given. Not part of `all`. The summary adds the two settings, `retained_passes`, `evaluation_passes` and window-count columns. |
 
 - **Defaults.** Unlike the other entry points, the suite defaults to the
-  protocol: `--pool 1000 --image-lag 1`, 30 epochs, horizon 96, stride 24,
+  protocol: `--pool 1000 --image-lag 0`, 30 epochs, horizon 96, stride 24,
   batch 32, the direct head, and CUDA.
 - **Layout.** Each variant is a complete 10-fold run in
   `<output-root>/<study>/<run-id>/<group>/<variant>/`.
@@ -506,7 +506,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 124 tests. Three deliberately injected defects each make a
+`pytest` passes all 125 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 
@@ -530,6 +530,7 @@ Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training
 | Default branch | `main` was fast-forwarded to the training branch (commit `43bf03c`; no merge commit, no force push). A fresh `git clone https://github.com/taanakoum/OmniFuser.git` checks out `main` and passes all 119 tests. The runbook clones `main`. |
 | Required duplicate setting (2026-10-15) | `train_lightning.py` has no default for `--dedup-identical-forces`: without it the script stops before loading data. `$PROTOCOL` no longer contains it, and every `train_lightning.py` command in the runbook states it. Step 3 runs 3a (`True`/`True`, `main/full-model`) and 3b (`False`/`False`, `main/full-model-no-dedup`). All 13 runbook blocks that call `train_lightning.py` or `run_experiment_suite.py` pass `bash -n` and the real argument parsers with training stubbed. 3a and 3b also ran all 10 folds on the real data (CPU, capped windows), followed by `compare_with_paper.py` (378/378 vs 512/512 passes). A rerun of 3a reused all 10 folds in 4 s, and 3b's setting pointed at 3a's folder is refused. 124 tests, Ruff and Pyright pass. |
 | Shell-independent protocol (2026-10-15) | In the Studio's zsh terminal, step 1 failed with `unrecognized arguments: --data-dir Nonastreda_Data ...`: zsh does not word-split an unquoted `$PROTOCOL`, so the whole protocol arrived as one argument. `PROTOCOL` is now an array, `PROTOCOL=( ... )`, used as `"${PROTOCOL[@]}"` in all 25 places, which expands to separate arguments in bash and zsh. Commands no longer contain `#` comments (zsh rejects them without `interactivecomments`). Verified in bash: the runbook array has 28 entries, and step 1 parses. All 13 `train_lightning.py`/suite blocks pass `bash -n` and the stubbed parsers. The three troubleshooting errors were reproduced. zsh itself was not available for testing. |
+| Image lag 0 protocol and pretrained comparison (2026-10-18) | The protocol (`PROTOCOL`, the suite default) uses the paper's same-pass photo, `--image-lag 0`; `--image-lag 1` is an experimental runbook run (`image-lag-1/full-model`). Main runs train EfficientNet-B0 from scratch; an optional `--pretrained` run (`image-encoder/pretrained`) compares with step 3a. `--pretrained` now also normalizes photos with the ImageNet mean and standard deviation (non-persistent buffers, so checkpoint keys are unchanged; random-init runs see the pixels unchanged). Verified: all 16 runbook blocks that call `train_lightning.py` or the suite pass `bash -n` and the stubbed real parsers (lag 0 everywhere except the experimental run, `pretrained` only in its run); real-data one-fold runs from scratch and pretrained wrote all 9 artifacts; light 10-fold runs of step 3a and the pretrained run completed with `compare_with_paper.py`; an old lag-1 run moved to `image-lag-1/full-model` reused all 10 folds, and a lag-0 run into it was refused. 125 tests, Ruff and Pyright pass. |
 | Runbook steps 0-1 on real data (CPU, EfficientNet) | `inspect` (378 passes, 10 tools, 147/118/113 per class, 0 duplicates), `model_summary.py --check` (4,183,600, match), one-fold smoke writing all 9 artifacts |
 | Every study variant | All 33 (31 in `--study all` plus 2 deduplication arms) build and train a step with finite loss |
 | Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |

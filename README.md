@@ -55,11 +55,11 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 124 tests
+python -m pytest -o addopts= -q tests                    # 125 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
-  --pool 1000 --image-lag 1 --stride 24                  # one capped fold
+  --pool 1000 --image-lag 0 --stride 24                  # one capped fold
 ```
 
 For GPU training on Lightning AI, follow
@@ -76,8 +76,9 @@ The loader prepares the data in five steps:
 2. **Trim each pass.** The entry and exit transients are removed.
 3. **Pool to 1 s steps.** `--pool 1000` averages 1000 samples into one step.
 4. **Concatenate per tool.** Each tool's passes are joined into one timeline.
-   Every step carries its pass's label and photo. With `--image-lag 1`, the
-   photo shown is the *previous* pass's.
+   Every step carries its pass's label and photo (`--image-lag 0`, the
+   paper's association). The experimental `--image-lag 1` shows the
+   *previous* pass's photo instead.
 5. **Window.** Each window is 96 input steps followed by 96 forecast steps.
 
 ### Model
@@ -117,7 +118,8 @@ data choices that `EDA.md` justifies.
 | Setting | `omnifuser train`, `train_lightning.py` | Protocol (runbook, `run_experiment_suite.py`) | Why |
 |---|---|---|---|
 | Time step `--pool` | 1 (1 ms) | 1000 (1 s) | Only 1 s steps match the paper's difficulty (`EDA.md` §6) |
-| Photo `--image-lag` | 0 (same pass, paper) | 1 (previous pass) | With lag 0, the photo's label gives away 92-99 % of targets (`EDA.md` §7) |
+| Photo `--image-lag` | 0 (same pass, paper) | 0 (same pass, paper); 1 is an experimental run | The paper's association. Its photo label already matches 91 % of target labels (`EDA.md` §7), so lag 1 is run as an experiment to measure that |
+| Image encoder `--pretrained` | off (from scratch) | off (from scratch); pretrained is an optional comparison run | The paper does not say its EfficientNet was pretrained. With `--pretrained`, photos are also normalized with the ImageNet mean and standard deviation. |
 | Horizon / input | 96 / 96 | 96 / 96 | Paper horizons go up to 96 |
 | Training stride | input + horizon (192) | 24 | More training windows at 1 s steps |
 | Duplicates `--dedup-identical-forces` | True (378 passes); `train_lightning.py` requires it | True (step 3b: False) | 134 records are exact copies, 24 groups with conflicting labels (`EDA.md` §3). Compare with `--study deduplication`, which scores both on the same deduplicated test data (`--eval-dedup-identical-forces`). |
@@ -128,7 +130,7 @@ data choices that `EDA.md` justifies.
 
 ### Departures from the printed paper
 
-Four defaults depart from the printed paper; each has a flag that restores
+Three defaults depart from the printed paper; each has a flag that restores
 it:
 
 | Default | Restore the printed version with | Reason |
@@ -136,7 +138,9 @@ it:
 | Fig. 5's trend and seasonal branches | `--decomp-mode literal` | Printed Eq. 3 cancels to the identity |
 | Per-lead head | `--prediction-head paper_literal` | The printed head predicts one value for all 96 leads |
 | Normalized landmark scale | `--als-mode k_sum` | Printed landmarks grow with input length |
-| Previous-pass photo | `--image-lag 0` | The same-pass photo leaks the label |
+
+The photo association follows the paper (same-pass photo, `--image-lag 0`);
+the previous-pass photo is an experimental run (runbook §14).
 
 The verdicts, the reasoning and the paper's own inconsistencies are in
 `PAPER_IMPLEMENTATION_ALIGNMENT.md`.

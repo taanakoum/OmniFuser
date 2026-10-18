@@ -15,6 +15,8 @@ experiment_results/
   pilot/                        uncapped one-fold timing runs
   main/full-model/              step 3a: main 10-fold run, duplicates merged
   main/full-model-no-dedup/     step 3b: the same with duplicates kept (train and test)
+  image-encoder/pretrained/     optional: ImageNet-pretrained encoder (compare with 3a)
+  image-lag-1/full-model/       experimental: previous-pass photo (compare with 3a)
   heads/<head>/                 optional prediction-head comparison
   ablations/<run-id>/           paper Fig. 13 component ablations
   missing-modality/<run-id>/    modality-dropout robustness study

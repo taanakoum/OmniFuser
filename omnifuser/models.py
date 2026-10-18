@@ -182,7 +182,15 @@ class GraphAttentionLayer(nn.Module):
         return output.reshape(batch, steps, -1), attention
 
 
+# torchvision's ImageNet statistics; pretrained weights expect inputs normalized with them.
+IMAGENET_MEAN = (0.485, 0.456, 0.406)
+IMAGENET_STD = (0.229, 0.224, 0.225)
+
+
 class ImageFeatureEncoder(nn.Module):
+    input_mean: Tensor  # registered buffers; declared for type checkers
+    input_std: Tensor
+
     def __init__(
         self,
         name: str,
@@ -192,6 +200,12 @@ class ImageFeatureEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.freeze_bn = freeze_bn
+        # Pixels arrive in [0, 1]. Pretrained weights get ImageNet-normalized inputs;
+        # a randomly initialized encoder sees the pixels unchanged (mean 0, std 1).
+        # Non-persistent, so checkpoints keep the same keys either way.
+        mean, std = (IMAGENET_MEAN, IMAGENET_STD) if pretrained else ((0.0,) * 3, (1.0,) * 3)
+        self.register_buffer("input_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("input_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
         if name not in {"efficientnet_b0", "compact"}:
             raise ValueError(f"unknown image encoder: {name!r}")
         if name == "efficientnet_b0":
@@ -231,7 +245,7 @@ class ImageFeatureEncoder(nn.Module):
     def forward(self, images: Tensor) -> Tensor:
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
-        flat = images.flatten(0, 1)
+        flat = (images.flatten(0, 1) - self.input_mean) / self.input_std
         features = self.features(flat)
         features = self.pool(features).flatten(1)
         return self.projection(features).reshape(images.shape[0], images.shape[1], -1)

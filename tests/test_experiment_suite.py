@@ -75,8 +75,8 @@ def test_experiment_suite_parser_exposes_studies_and_durable_output_layout() -> 
     assert args.study == "ablations"
     assert str(args.output_root) == "experiment_results"
     assert args.modality_dropout_rates == [0.2]
-    # protocol defaults: 1 s steps and the previous-pass photo
-    assert (args.pool, args.image_lag, args.stride, args.horizon, args.epochs) == (1000, 1, 24, 96, 30)
+    # protocol defaults: 1 s steps and the same-pass photo (paper)
+    assert (args.pool, args.image_lag, args.stride, args.horizon, args.epochs) == (1000, 0, 24, 96, 30)
     # combined study: 9 ablation arms + 21 sensitivity points + 1 dropout arm
     assert len(_experiment_runs("all")) == 31
 

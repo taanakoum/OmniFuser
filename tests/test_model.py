@@ -419,3 +419,36 @@ def test_image_encoder_rejects_unknown_names_instead_of_falling_back() -> None:
         ImageFeatureEncoder("efficientnet-b0", 32)
     with pytest.raises(ValueError, match="image_encoder"):
         ModelConfig(image_encoder="efficientnet-b0")
+
+
+def test_pretrained_encoder_normalizes_inputs_with_imagenet_statistics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import torchvision.models as tvm
+
+    from omnifuser.models import IMAGENET_MEAN, IMAGENET_STD, ImageFeatureEncoder
+
+    # an untrained backbone stands in for the download; the weights requested are recorded
+    real = tvm.efficientnet_b0
+    requested: list = []
+    monkeypatch.setattr(
+        tvm, "efficientnet_b0", lambda weights=None: requested.append(weights) or real(weights=None)
+    )
+    pretrained = ImageFeatureEncoder("efficientnet_b0", 8, pretrained=True).eval()
+    scratch = ImageFeatureEncoder("efficientnet_b0", 8).eval()
+    assert requested == [tvm.EfficientNet_B0_Weights.IMAGENET1K_V1, None]
+
+    seen: list[torch.Tensor] = []
+    for encoder in (pretrained, scratch):
+        encoder.features.register_forward_pre_hook(lambda _, args: seen.append(args[0]))
+    images = torch.rand(2, 1, 3, 32, 96)
+    pretrained(images)
+    scratch(images)
+
+    flat = images.flatten(0, 1)
+    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
+    assert torch.allclose(seen[0], (flat - mean) / std)
+    assert torch.equal(seen[1], flat)  # from scratch: pixels unchanged
+    # the statistics are not saved, so checkpoints keep the same keys
+    assert set(pretrained.state_dict()) == set(scratch.state_dict())

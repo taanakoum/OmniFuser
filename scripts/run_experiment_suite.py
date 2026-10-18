@@ -267,9 +267,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-train-windows", type=int)
     parser.add_argument("--max-eval-windows", type=int)
     add_protocol_arguments(parser)
-    # The suite's other defaults (30 epochs, stride 24, horizon 96) assume 1 s steps
-    # and the previous-pass photo; keep pool/lag consistent with them.
-    parser.set_defaults(pool=1000, image_lag=1)
+    # The suite's other defaults (30 epochs, stride 24, horizon 96) assume 1 s steps;
+    # the photo is the same pass's, as in the paper (lag 1 is an experimental run).
+    parser.set_defaults(pool=1000, image_lag=0)
     return parser
 
 

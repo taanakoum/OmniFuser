@@ -265,9 +265,10 @@ h = 12…96. That is above the paper's OmniFuser (0.82-0.93). With the paper's
 alignment, accuracy mostly rewards reading the label off the input photo.
 
 Lag 1 lowers the free accuracy to about 0.80. The model must then actually
-forecast wear for about one window in five. This is the reason for the
-protocol's lag-1 choice. The lag-0 arm is in `TRAINING_RUNBOOK.md` §10b, and
-each fold JSON reports `persistence_class_accuracy` as the baseline to beat.
+forecast wear for about one window in five. The protocol keeps the paper's
+lag 0, so its accuracy includes this effect; the experimental lag-1 run in
+`TRAINING_RUNBOOK.md` §14 measures it. Each fold JSON reports
+`persistence_class_accuracy` as the baseline to beat.
 
 ### Per-tool alignment
 
@@ -365,7 +366,7 @@ The EDA supports or settles these pipeline decisions:
 | Decision | Evidence |
 |---|---|
 | `--pool 1000` (1 s steps) | §6: the only tested step whose trivial-baseline difficulty matches the paper's tables |
-| `--image-lag 1` | §7: the paper's same-pass photo gives away 91-99 % of target labels |
+| `--image-lag 0` (paper), lag 1 as an experiment | §7: the paper's same-pass photo gives away 91-99 % of target labels; the lag-1 run measures how much of the accuracy that explains |
 | Deduplicate identical forces | §3: 134 bit-identical copies, 24 groups with conflicting labels |
 | Span trimming unchanged | §5: the known limit affects 2 passes; the alternative damages real cutting signal |
 | Leave-one-tool-out folds, training-only normalization | §8: tools differ in force level and class mix, so mixing tools would overstate accuracy |
