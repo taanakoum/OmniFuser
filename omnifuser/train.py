@@ -640,6 +640,14 @@ def train_fold(
         history.append(
             {"epoch": epoch, "train": train_metrics, "validation": validation_metrics}
         )
+        # One progress line per epoch, so a log shows a long fold is advancing.
+        print(
+            f"  {test_tool} epoch {epoch}/{epochs}: "
+            f"train loss {train_metrics['loss']:.4f}, "
+            f"validation loss {validation_metrics['loss']:.4f}, "
+            f"{train_seconds + validation_seconds:.0f} s",
+            flush=True,
+        )
         if validation_metrics["loss"] < best_score:
             best_score = validation_metrics["loss"]
             best_epoch = epoch

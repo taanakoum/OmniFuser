@@ -967,7 +967,7 @@ Two other variants are available:
 | `ModuleNotFoundError: No module named 'omnifuser'` or `omnifuser: command not found` | The project is not installed in this environment | Rerun §6 from inside `OmniFuser/` |
 | `DataLoader worker ... killed`, `Bus error`, or a shared-memory error | The data-loading worker processes ran out of shared memory | Add `--num-workers 0` (slower loading, same results); a new output folder is then needed, see the first row |
 | `Killed` with no Python error during `eda.py` or training | The machine ran out of RAM (the EDA needs about 3 GB) | Choose a machine with more memory, or close other processes |
-| The log stops growing for a long time | One fold is still training. With `nohup`, nothing prints between folds | `tail experiment_results/<run>/cross-validation-progress.json` and `nvidia-smi`; the process is alive if `ps aux \| grep python` lists it |
+| The log stops growing for a long time | Each epoch prints one line (`T1 epoch 3/30: ...`), so a pause much longer than one epoch time is unusual | `tail experiment_results/<run>/cross-validation-progress.json` and `nvidia-smi`; the process is alive if `ps aux \| grep python` lists it |
 
 ## 16. Complete argument reference
 

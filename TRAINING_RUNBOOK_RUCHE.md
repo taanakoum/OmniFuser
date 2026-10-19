@@ -19,7 +19,7 @@ where to type it, and what you should see.
 
 | Part | Sections |
 |---|---|
-| **Overview** | What changes compared with Lightning AI · the experiments |
+| **Overview** | What changes compared with Lightning AI · the experiments · before you start · the whole path at a glance |
 | **Part A: Set up Ruche (once)** | §1 Concepts · §2 Prepare on your laptop · §3 Connect · §4 Storage · §5 Get the code · §6 Upload the data · §7 Python environment · §8 SLURM in 10 minutes |
 | **Part B: The experiments** | §9 Start of every session · §10 Step 0: checks · §11 Steps 1-2: smoke test and pilot · §12 Plan the job lengths · §13 Step 3: main runs · §14 Steps 4-6: paper studies · §15 Optional runs |
 | **Part C: Operating** | §16 Watch, resume and cancel · §17 Download the results · §18 Troubleshooting · §19 Rules of the cluster · §20 Submission cheat sheet |
@@ -76,6 +76,44 @@ Every main run uses the paper's same-pass photo (image lag 0) and an image
 encoder trained from scratch, exactly as in the Lightning runbook. Its
 "Main runs and comparison runs" box and §9 explain these choices, and its
 §14 explains the optional runs.
+
+### Before you start
+
+| You need | Notes |
+|---|---|
+| A Ruche account (login and password) | Requested from the Mésocentre; ask your supervisor which project to name |
+| Windows 10/11 with PowerShell | `ssh`, `scp` and `tar` are built in |
+| Git on your laptop, and this repository | The branch `Ruche-OmniFuser-Training` must be pushed (§2) |
+| The `Nonastreda_Data/` folder in your local repository | `forces_xyz_raw.mat`, `labels.csv`, `labels_reg.csv` and `tool/` with 512 photos |
+| About 20 GB free in `$WORKDIR` | The conda environment takes about 5 GB, the data 0.4 GB, and the results with checkpoints about 10-15 GB |
+
+How the time splits up:
+
+| Phase | Your time | Waiting time |
+|---|---|---|
+| Set up Ruche (§2-§7) | 1-2 h, once | 10-20 min for the installation |
+| Checks, smoke test, pilot (§10-§11) | 15 min | The queue, plus about one pilot fold |
+| Main runs and studies (§12-§15) | 30 min to submit everything; 10 min a day to check | Days, depending on the epoch time and the queue |
+| Download and write-up (§17) | 30 min to download | |
+
+### The whole path at a glance
+
+1. **Laptop:** push the branch and pack the data (§2).
+2. **Connect** with SSH (§3); optionally set up a key so you stop typing
+   your password.
+3. **Prepare storage** (§4), **clone** the branch (§5), **upload** the data
+   (§6).
+4. **Install** the Python environment and enter its names in
+   `slurm/env.sh` (§7).
+5. **Every session:** the §9 block.
+6. **Check** the installation: step 0 and the GPU check (§10).
+7. **Smoke test, then pilot** (§11).
+8. **Plan** the number of 24 h parts per run from the pilot (§12).
+9. **Submit** 3a first, check it after about an hour, then submit the rest
+   in the recommended order (§12-§15).
+10. **Check once or twice a day** with `bash slurm/status.sh` (§16).
+11. **When everything is complete:** run the finishing checklist, pack and
+    download the results (§17).
 
 ---
 
@@ -183,6 +221,24 @@ ssh $Ruche
   `ruche.mesocentre.universite-paris-saclay.fr` and port 22.
 
 `exit` closes the connection. Your jobs keep running after you disconnect.
+
+**Optional: log in without typing your password.** Every `ssh` and `scp`
+asks for the password. An SSH key replaces it. On your laptop, once:
+
+```powershell
+ssh-keygen -t ed25519
+type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh $Ruche "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+ssh $Ruche
+```
+
+- `ssh-keygen` creates a key pair in `C:\Users\<you>\.ssh\`. Press Enter
+  to accept the file name. A passphrase is optional; if you set one, you
+  type it instead of the password.
+- The second line copies the public half to Ruche (it asks for your Ruche
+  password one last time).
+- The third line must now log you in without the Ruche password. If it
+  still asks, key logins may be disabled on Ruche; keep using the password.
+- Never share the file without `.pub`: it is your private key.
 
 From here on, every command in a `bash` block is typed **on Ruche** (in the
 SSH session), and every `powershell` block **on your laptop**.
@@ -393,6 +449,7 @@ Common reasons in the last column of `squeue`:
 | `slurm/job.sbatch` | Runs **one command** on one GPU. Whatever follows `slurm/job.sbatch` on the `sbatch` line is the command it runs. |
 | `slurm/checks.sbatch` | Step 0 on a CPU node |
 | `slurm/chain.sh` | Submits the same job several times in a row, for runs longer than 24 h (§12) |
+| `slurm/status.sh` | Shows your jobs, the state of every run and suite, and logs with errors (§16). It only reads files, so it may run on the login node. |
 
 `slurm/job.sbatch` requests, unless you override it on the `sbatch` line:
 
@@ -433,6 +490,8 @@ printf '%s ' "${PROTOCOL[@]}"; echo
 - You do **not** need to activate the conda environment to submit jobs;
   every job activates it itself. You need it only to run Python on the
   login node (§12, §16).
+
+Then `bash slurm/status.sh` shows where everything stands (§16).
 
 `"${PROTOCOL[@]}"` in a command is replaced by the settings when you press
 Enter, so the job receives the full list of arguments. Type it exactly so,
@@ -544,6 +603,48 @@ command again later: it continues where it stopped.
 **Never run two jobs on the same output folder at the same time.** The
 parts of one chain never overlap, but two separate submissions of the same
 command would write into the same files.
+
+### Recommended order of submissions
+
+1. **Step 0, the GPU check and the smoke test** (§10, §11): submit all three
+   at once. `gpu_test` runs one job per user at a time, so the smoke test
+   waits until the GPU check has finished; `squeue` shows it as pending.
+2. **The pilot** (§11), once all three logs are fine.
+3. **Plan the parts** (above) from the pilot's epoch time.
+4. **Step 3a alone first** (§13). After about an hour, run
+   `bash slurm/status.sh` and `tail -20` on its log. You should see the line
+   `Fold 1/10: train=8 tools, validation=T2, test=T1`, then one line per
+   epoch such as `T1 epoch 3/30: train loss 1.2345, validation loss
+   1.3456, 98 s`, and no `Traceback`. This first hour catches a wrong setting
+   before it is repeated in 40 runs.
+5. **Then everything else, in this order:** 3b (§13), the ablations,
+   missing-modality and sensitivity suites (§14), then the optional runs you
+   want (§15), the pretrained encoder and the previous-pass photo first.
+   You can submit them all in one go. At most 4 of your A100 jobs run at a
+   time; the others wait (`squeue` shows a reason such as
+   `QOSMaxGRESPerUser`) and start on their own as GPUs free up, roughly in
+   the order you submitted them.
+6. **Check once or twice a day** (§16, "Daily routine").
+
+### Keep a record
+
+Copy this table into a notes file on your laptop and fill it in as you go.
+The job IDs come from the output of `chain.sh` and `sbatch`.
+
+| Run | Submitted on | Parts | Job IDs | Complete on | Notes |
+|---|---|---|---|---|---|
+| Step 0 / GPU check / smoke / pilot | | 1 each | | | epoch time: … s |
+| 3a `main/full-model` | | | | | |
+| 3b `main/full-model-no-dedup` | | | | | |
+| 4 ablations `paper-v1` | | | | | |
+| 5 missing-modality `paper-v1` | | | | | |
+| 6 sensitivity `paper-v1` | | | | | |
+| Pretrained encoder | | | | | |
+| Previous-pass photo | | | | | |
+| (other optional runs) | | | | | |
+
+For the report you need: the commit (`git log -1 --oneline`), the GPU type
+(the `nvidia-smi` line at the top of every job log), and this table.
 
 ## 13. Step 3: the main runs
 
@@ -696,6 +797,38 @@ Run `compare_with_paper.py` on each finished run folder as in §13.
 
 ## 16. Watch, resume and cancel
 
+**Everything at a glance:**
+
+```bash
+bash slurm/status.sh
+```
+
+Example output:
+
+```text
+== Your jobs (ST: PD waiting, R running)
+     JOBID                               NAME ST       TIME  TIME_LIMIT NODELIST(REASON)
+    812345                    main-full-model  R    3:10:00  1-00:00:00 ruche-gpu11
+    812346                    main-full-model PD       0:00  1-00:00:00 (Dependency)
+
+== Experiments
+  main/full-model                                in progress   3/10 folds  (training T4)
+  ablations/paper-v1/                            running      1/9 variants
+      now: paper-ablation/without-rr (1/10 folds)
+
+== Logs with an error (time-limit stops are expected and not listed; read a log's end with: tail -40 FILE)
+  none
+
+== Disk use of the results: 1.2G
+```
+
+| Section | Meaning |
+|---|---|
+| Your jobs | The `squeue` list: running (`R`) and waiting (`PD`) jobs, with the time used and the time limit |
+| Experiments | Each 10-fold run: `complete`, `in progress` (with the fold being trained) or `started`. Each suite: its overall status, the number of finished variants, the variant now running, and any `FAILED` variant. |
+| Logs with an error | Logs that contain a Python error, an out-of-memory kill or a cancellation. A time-limit stop is normal and not listed. |
+| Disk use | The size of `experiment_results/`; compare with `ruche-quota` |
+
 **Your jobs:**
 
 ```bash
@@ -715,7 +848,8 @@ tail -f experiment_results/logs/main-full-model-123456.out
 `ls -t` lists the newest logs first. `tail -f` shows new lines as they
 arrive; Ctrl+C stops the watching, not the job. Each part of a chain has its
 own log (same name, different job ID). A training log shows one
-`Fold k/10` line per fold and one line per epoch; a suite log shows one
+`Fold k/10: ...` line per fold and one `T1 epoch 3/30: train loss ...,
+validation loss ..., 98 s` line per epoch; a suite log adds one
 `=== group/variant ===` line per variant.
 
 **Progress of a run or a suite:**
@@ -756,7 +890,50 @@ checked by path, size and modification time, and the settings must match
 exactly; a change forces retraining or a refusal. Do not move the
 `OmniFuser` folder either: the data path is part of the check.
 
+### Daily routine
+
+Once or twice a day, about 10 minutes:
+
+1. Connect (§3) and run the §9 block.
+2. `bash slurm/status.sh`.
+3. **Errors listed?** Read the end of that log (`tail -40 FILE`), find the
+   message in §18, cancel the rest of that chain (the `scancel` line
+   `chain.sh` printed), fix the cause, and submit the chain again. Finished
+   folds and variants are kept.
+4. **A run no longer in the queue but not `complete`?** Its chain ran out
+   of parts; submit the same `chain.sh` command again with one or two more
+   parts (§12).
+5. **A run `complete`?** Note the date in your record (§12) and run
+   `compare_with_paper.py` on it (§13), or wait for the finishing
+   checklist (§17).
+6. **Disk:** `ruche-quota` now and then; the results grow by about
+   250 MB per 10-fold run.
+
 ## 17. Download the results
+
+### Finishing checklist
+
+1. `squeue -u $USER` lists no jobs of this project any more, and
+   `bash slurm/status.sh` shows every run `complete` and every suite
+   `completed` with all its variants.
+2. Compare every finished run with the paper in one go. This writes
+   `paper-comparison.json` and `paper-comparison.txt` into each run folder
+   (suite variants included) and takes a minute or two:
+
+   ```bash
+   cd "$WORKDIR/OmniFuser"
+   source slurm/env.sh
+   find experiment_results -name cross-validation-results.json -printf '%h\n' | sort | while read -r dir; do
+     echo "== $dir"
+     python scripts/compare_with_paper.py "$dir" --json "$dir/paper-comparison.json" > "$dir/paper-comparison.txt"
+   done
+   ```
+
+   `find ... -printf '%h\n'` lists the folder of every finished run; the
+   loop runs the comparison on each and saves the printed table.
+3. Note in your record the commit (`git log -1 --oneline`) and the GPU type.
+
+### Pack and download
 
 When everything has finished, pack the results on Ruche. The first archive
 (metrics, predictions, logs, figures; everything the report needs) is small
@@ -848,6 +1025,7 @@ from §12.
 
 | Step | Submission |
 |---|---|
+| Status of everything | `bash slurm/status.sh` |
 | 0 | `sbatch slurm/checks.sbatch` |
 | GPU check | `sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch python -c "import torch; print(torch.cuda.is_available())"` |
 | 1 | `sbatch --job-name=gpu-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch omnifuser train "${PROTOCOL[@]}" --epochs 1 --test-tool T10 --output-dir experiment_results/validation/gpu-smoke --max-train-windows 64 --max-eval-windows 32` |
