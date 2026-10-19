@@ -123,22 +123,31 @@ behind.
 
 ## 2. Prepare on your laptop
 
-The same as §2 of the Lightning runbook: your work must be committed on
-`main` and pushed, because Ruche clones `main` from GitHub. In PowerShell or
-Git Bash, inside your local repository:
+Ruche clones the branch **`Ruche-OmniFuser-Training`** from GitHub (§5).
+It is `main` plus this runbook, the `slurm/` job scripts and the
+interruption-safe saves. Your work must therefore be committed on that
+branch and pushed. In PowerShell or Git Bash, inside your local repository:
 
 ```bash
-git switch main
+git switch Ruche-OmniFuser-Training
 git status
-git push
+git push -u origin Ruche-OmniFuser-Training
 git status -sb
-git log -1 --oneline origin/main
+git log -1 --oneline origin/Ruche-OmniFuser-Training
 ```
 
-- `git status -sb` must show `## main...origin/main` with nothing after it.
+- `git push -u origin Ruche-OmniFuser-Training` uploads the branch.
+  `-u` makes GitHub's copy the default target, so later pushes are a
+  plain `git push`.
+- `git status -sb` must show
+  `## Ruche-OmniFuser-Training...origin/Ruche-OmniFuser-Training` with
+  nothing after it. `[ahead 1]` means a commit is not pushed yet.
 - The last line is the commit Ruche will get; note it.
 - If `git status` lists changes you want to keep, commit them first
   (`git add -A`, then `git commit -m "message"`), then `git push`.
+- Changes made on `main` later do not reach this branch by themselves. To
+  bring them in: `git switch Ruche-OmniFuser-Training`, `git merge main`,
+  check the result, then `git push`.
 
 Pack the data into one archive, in PowerShell inside the repository folder:
 
@@ -220,21 +229,25 @@ ls -ld "$HOME/.conda"
 
 ```bash
 cd "$WORKDIR"
-git clone https://github.com/taanakoum/OmniFuser.git OmniFuser
+git clone -b Ruche-OmniFuser-Training https://github.com/taanakoum/OmniFuser.git OmniFuser
 cd OmniFuser
+git branch --show-current
 git log -1 --oneline
 ```
 
-- The last line must show the commit you noted in §2.
+- `-b Ruche-OmniFuser-Training` checks out the Ruche branch instead of
+  `main`; only this branch contains `slurm/` and this runbook.
+- `git branch --show-current` must print `Ruche-OmniFuser-Training`, and
+  the last line must show the commit you noted in §2.
 - Everything from now on happens inside `$WORKDIR/OmniFuser`.
 - To get later changes: `git pull` inside `OmniFuser/`. Do not pull in the
   middle of a study: a resume checks the settings and the data, not the
   code.
 - **If the clone fails** (no access to GitHub from Ruche), make an archive of
-  `main` on your laptop and copy it over:
+  the branch on your laptop and copy it over:
 
   ```powershell
-  git archive --format=tar.gz --prefix=OmniFuser/ -o OmniFuser-code.tar.gz main
+  git archive --format=tar.gz --prefix=OmniFuser/ -o OmniFuser-code.tar.gz Ruche-OmniFuser-Training
   scp OmniFuser-code.tar.gz "${Ruche}:/workdir/$RucheLogin/"
   ```
 
