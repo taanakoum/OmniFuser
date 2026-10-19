@@ -86,8 +86,11 @@ class ExperimentTracker:
                 "updated_at_utc": _utc_now(),
                 "metadata": metadata,
             }
-        with self.manifest_path.open("w", encoding="utf-8") as file:
+        # Replace atomically, so a job killed mid-write keeps the previous manifest.
+        temporary_manifest = self.manifest_path.with_suffix(".json.tmp")
+        with temporary_manifest.open("w", encoding="utf-8") as file:
             json.dump(manifest, file, indent=2, allow_nan=False)
+        os.replace(temporary_manifest, self.manifest_path)
 
         self.events_path = self.directory / "metrics.jsonl"
         self.csv_path = self.directory / "metrics.csv"

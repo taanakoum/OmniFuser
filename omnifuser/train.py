@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import pickle
 import platform
 import random
 import time
@@ -41,9 +43,24 @@ from omnifuser.models import OmniFuser, multitask_loss
 from omnifuser.tracking import ExperimentTracker
 
 
+def _temporary_path(path: Path) -> Path:
+    return path.with_name(path.name + ".tmp")
+
+
 def save_arrays(path: Path, arrays: Mapping[str, np.ndarray]) -> None:
-    # NumPy's stubs let a ``**`` key bind ``allow_pickle``; every key here is an array name.
-    np.savez_compressed(path, **arrays)  # pyright: ignore[reportArgumentType]
+    # Written to a temporary file, then renamed: a job killed mid-write (e.g. at a
+    # cluster time limit) never leaves a truncated file under the final name.
+    temporary = _temporary_path(path)
+    with temporary.open("wb") as file:
+        # NumPy's stubs let a ``**`` key bind ``allow_pickle``; every key here is an array name.
+        np.savez_compressed(file, **arrays)  # pyright: ignore[reportArgumentType]
+    os.replace(temporary, path)
+
+
+def _atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
+    temporary = _temporary_path(path)
+    torch.save(payload, temporary)
+    os.replace(temporary, path)
 
 
 def save_roc_curves(
@@ -522,8 +539,13 @@ def train_fold(
     best_score = float("inf")
     best_epoch = 0
     start_epoch = 1
+    saved: dict[str, Any] | None = None
     if resume and resume_path.exists():
-        saved = torch.load(resume_path, map_location="cpu", weights_only=False)
+        try:
+            saved = torch.load(resume_path, map_location="cpu", weights_only=False)
+        except (EOFError, OSError, RuntimeError, pickle.UnpicklingError):
+            print(f"{stem}: ignoring an unreadable resume file; restarting this fold", flush=True)
+    if saved is not None:
         if (
             saved.get("signature") == resume_signature
             and saved.get("epoch", epochs + 1) <= epochs
@@ -625,7 +647,7 @@ def train_fold(
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
             }
-        torch.save(
+        _atomic_torch_save(
             {
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
@@ -828,11 +850,9 @@ def train_fold(
             **modality_artifacts,
         },
     }
-    with (output_path / f"{stem}.json").open("w", encoding="utf-8") as file:
-        json.dump(result, file, indent=2)
     save_arrays(output_path / f"{stem}-predictions.npz", test_predictions)
     save_roc_curves(output_path / f"{stem}-roc.npz", roc_curves)
-    torch.save(
+    _atomic_torch_save(
         {
             "model_state": model.state_dict(),
             "config": asdict(config),
@@ -842,5 +862,11 @@ def train_fold(
         },
         output_path / f"{stem}.pt",
     )
+    # The fold JSON is the completion marker that fold reuse looks for, so it is
+    # written last: an interrupted fold never looks finished.
+    json_path = output_path / f"{stem}.json"
+    with _temporary_path(json_path).open("w", encoding="utf-8") as file:
+        json.dump(result, file, indent=2)
+    os.replace(_temporary_path(json_path), json_path)
     resume_path.unlink(missing_ok=True)
     return result

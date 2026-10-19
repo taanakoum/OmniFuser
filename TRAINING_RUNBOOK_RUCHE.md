@@ -1,0 +1,850 @@
+# OmniFuser training runbook: Ruche cluster (Mésocentre Paris-Saclay)
+
+This runbook runs the complete OmniFuser experiment programme on **Ruche**,
+the computing cluster of the Mésocentre Paris-Saclay. It assumes you have
+**never used a computing cluster before**. Each step explains what to type,
+where to type it, and what you should see.
+
+- The experiments are exactly the same as in
+  [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) (the Lightning AI version,
+  which stays valid). Only the way you start and supervise them changes.
+- The argument reference (§16) and the results layout (§17) of that runbook
+  apply here unchanged.
+- The Ruche facts below come from the Ruche training course (November 2023):
+  partition names, limits, paths and module names. If something does not
+  match what you see on the cluster, the current user documentation wins:
+  <https://mesocentre.pages.centralesupelec.fr/user_doc/>.
+
+**Contents**
+
+| Part | Sections |
+|---|---|
+| **Overview** | What changes compared with Lightning AI · the experiments |
+| **Part A: Set up Ruche (once)** | §1 Concepts · §2 Prepare on your laptop · §3 Connect · §4 Storage · §5 Get the code · §6 Upload the data · §7 Python environment · §8 SLURM in 10 minutes |
+| **Part B: The experiments** | §9 Start of every session · §10 Step 0: checks · §11 Steps 1-2: smoke test and pilot · §12 Plan the job lengths · §13 Step 3: main runs · §14 Steps 4-6: paper studies · §15 Optional runs |
+| **Part C: Operating** | §16 Watch, resume and cancel · §17 Download the results · §18 Troubleshooting · §19 Rules of the cluster · §20 Submission cheat sheet |
+
+## Overview
+
+### What changes compared with Lightning AI
+
+| Topic | Lightning AI Studio | Ruche |
+|---|---|---|
+| The machine | Your own cloud machine with one GPU | A shared cluster used by more than 300 people. A scheduler, **SLURM**, hands out GPUs. |
+| Where you type | A terminal on the GPU machine itself | A **login node** reached with SSH. You prepare and submit work there, but **never train there**; heavy processes on login nodes are killed. |
+| How a run starts | You type the command and it runs at once | You **submit a job** (`sbatch`). It waits in a queue, then runs on a compute node without you. |
+| Time limit | None while the Studio is awake | **24 h** per job on the GPU partitions, 1 h on `gpu_test` |
+| Runs longer than the limit | `nohup` or `tmux` | A **chain of jobs** (`slurm/chain.sh`): each part continues where the previous one stopped |
+| Logs | `tee` into `experiment_results/logs/` | SLURM writes each job's output to `experiment_results/logs/<job name>-<job id>.out` |
+| Python | PyTorch preinstalled | You build your own conda environment once (§7) |
+| Storage | `/teamspace/studios/this_studio` | `$WORKDIR` (500 GB) for code, data and results; `$HOME` (50 GB). **Neither is backed up.** |
+| Data upload | Drag and drop in the browser | `scp` or WinSCP from your laptop |
+| Shell | zsh | bash |
+| Parallel runs | One GPU, runs one after another | Up to 4 A100 jobs at the same time, so independent experiments run in parallel |
+| Cost | Credits per hour | Free; your priority drops the more you computed in the last 30 days (fairshare) |
+
+The experiment commands themselves are identical to the Lightning runbook.
+On Ruche they are wrapped in a job submission:
+
+```text
+Lightning:  python scripts/train_lightning.py "${PROTOCOL[@]}" ... 2>&1 | tee LOG
+Ruche:      sbatch --job-name=NAME slurm/job.sbatch python scripts/train_lightning.py "${PROTOCOL[@]}" ...
+```
+
+### The experiments
+
+The same programme as the Lightning runbook. "10-fold runs" counts full
+cross-validations; each one trains 10 models.
+
+| Step | What it runs | 10-fold runs | Output folder |
+|---|---|---|---|
+| 0 | Tests, data inspection, parameter check, EDA (CPU job) | 0 | `experiment_results/eda/` |
+| 1 | Capped one-fold GPU smoke test | 0 (1 fold) | `experiment_results/validation/gpu-smoke/` |
+| 2 | Uncapped one-fold pilot, measures the time per epoch | 0 (1 fold) | `experiment_results/pilot/T10/` |
+| 3a | Full model, duplicates merged (the protocol, main result) | 1 | `experiment_results/main/full-model/` |
+| 3b | Full model, duplicates kept in training and test | 1 | `experiment_results/main/full-model-no-dedup/` |
+| 4 | Paper Fig. 13 component ablations | 9 | `experiment_results/ablations/paper-v1/` |
+| 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/paper-v1/` |
+| 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/paper-v1/` |
+| (opt) | Pretrained image encoder, compared with 3a | 1 | `experiment_results/image-encoder/pretrained/` |
+| (opt) | Experimental: previous-pass photo (`--image-lag 1`), compared with 3a | 1 | `experiment_results/image-lag-1/full-model/` |
+| (opt) | Duplicate handling study | 2 | `experiment_results/deduplication/dedup-v1/` |
+| (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
+| (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
+
+Every main run uses the paper's same-pass photo (image lag 0) and an image
+encoder trained from scratch, exactly as in the Lightning runbook. Its
+"Main runs and comparison runs" box and §9 explain these choices, and its
+§14 explains the optional runs.
+
+---
+
+# Part A: Set up Ruche (once)
+
+## 1. Concepts you need
+
+- **Cluster.** Many computers ("nodes") connected together and shared by
+  many users.
+- **Login node** (`ruche01`, `ruche02`). The computer you reach with SSH.
+  Use it to edit files, install software, move data and submit jobs. Do
+  **not** run training, tests or the EDA there: the support team kills long
+  CPU-heavy processes on login nodes and sends a warning email.
+- **Compute node.** A computer that runs jobs. GPU nodes have 4 GPUs each:
+  NVIDIA A100 40 GB (partition `gpua100`) or V100 32 GB (partitions `gpu` and
+  `gpu_test`).
+- **Job.** A script plus a resource request: how many GPUs and CPUs, how much
+  time, which partition. You hand it to SLURM with `sbatch`. SLURM starts it
+  when the resources are free, and stops it when its time is up.
+- **Partition.** A queue with its own hardware and limits (table in §8).
+- **Walltime.** The maximum run time you request for a job (`--time`). When
+  it runs out, the job is killed, even in the middle of an epoch.
+- **Priority and fairshare.** Waiting jobs start in order of priority.
+  Priority grows the longer a job waits and drops the more you (and your lab)
+  computed in the last 30 days. A job can wait minutes or hours; that is
+  normal.
+- **Job ID.** The number `sbatch` prints. You use it to follow, inspect or
+  cancel the job.
+- **Module.** Software the cluster provides, switched on with
+  `module load NAME`. You use one module: conda.
+- **Conda environment.** Your own Python installation with PyTorch and this
+  project, created once in §7.
+
+**How this project survives the 24 h limit.** Every training run saves its
+progress after each epoch and after each fold. If you start the same command
+again:
+
+- finished folds and finished suite variants are reused;
+- an interrupted fold continues from its last finished epoch.
+
+So a long run is simply submitted as several consecutive jobs, the "parts"
+of a chain (§12). Every save is written to a temporary file first and then
+renamed, so a job killed in the middle of a save never leaves a damaged file
+behind.
+
+## 2. Prepare on your laptop
+
+The same as §2 of the Lightning runbook: your work must be committed on
+`main` and pushed, because Ruche clones `main` from GitHub. In PowerShell or
+Git Bash, inside your local repository:
+
+```bash
+git switch main
+git status
+git push
+git status -sb
+git log -1 --oneline origin/main
+```
+
+- `git status -sb` must show `## main...origin/main` with nothing after it.
+- The last line is the commit Ruche will get; note it.
+- If `git status` lists changes you want to keep, commit them first
+  (`git add -A`, then `git commit -m "message"`), then `git push`.
+
+Pack the data into one archive, in PowerShell inside the repository folder:
+
+```powershell
+tar -czf Nonastreda_Data.tar.gz Nonastreda_Data
+```
+
+The archive is about 383 MB. Use `tar`, not the Explorer "Compress" menu:
+zip files made on Windows unpack into wrongly named files on Linux.
+
+## 3. Connect to Ruche
+
+You need a Ruche account (login and password) from the Mésocentre.
+
+**Windows 10/11 (PowerShell has SSH built in).** Store your login once per
+PowerShell window, then connect:
+
+```powershell
+$RucheLogin = "your-ruche-login"
+$Ruche = "$RucheLogin@ruche.mesocentre.universite-paris-saclay.fr"
+ssh $Ruche
+```
+
+- Replace `your-ruche-login` with your login. The two `$Ruche...` variables
+  are reused for file transfers (§6, §17); define them again in every new
+  PowerShell window.
+- The first connection asks whether to trust the host key: answer `yes`.
+- Type your password; nothing appears while you type, which is normal.
+- You are in when the Ruche banner appears and the prompt looks like
+  `[your-login@ruche01 ~]$`.
+- Change the initial password with `passwd` if you were given a default one.
+- Graphical alternatives: MobaXterm or PuTTY, with host
+  `ruche.mesocentre.universite-paris-saclay.fr` and port 22.
+
+`exit` closes the connection. Your jobs keep running after you disconnect.
+
+From here on, every command in a `bash` block is typed **on Ruche** (in the
+SSH session), and every `powershell` block **on your laptop**.
+
+## 4. Storage: where things go
+
+| Directory | Variable | Size limit | Use it for |
+|---|---|---|---|
+| `/home/<login>` | `$HOME` | 50 GB, 200,000 files | Small configuration files |
+| `/workdir/<login>` | `$WORKDIR` | 500 GB | The code, the data, the conda environment, all results |
+
+**Neither directory is backed up.** Download your results to your laptop
+(§17) and keep them there.
+
+Check your usage at any time:
+
+```bash
+ruche-quota
+```
+
+Conda installs into `$HOME/.conda` by default. A PyTorch environment takes
+several GB and fills the 50 GB home quota quickly, so move that folder to
+`$WORKDIR` **before** creating the environment, as the Ruche documentation
+recommends:
+
+```bash
+if [ -d "$HOME/.conda" ] && [ ! -L "$HOME/.conda" ] && [ ! -e "$WORKDIR/.conda" ]; then mv "$HOME/.conda" "$WORKDIR/.conda"; fi
+mkdir -p "$WORKDIR/.conda"
+if [ ! -e "$HOME/.conda" ]; then ln -s "$WORKDIR/.conda" "$HOME/.conda"; fi
+ls -ld "$HOME/.conda"
+```
+
+- The first line moves an existing `~/.conda` folder to `$WORKDIR`, if
+  there is one.
+- `mkdir -p` creates `$WORKDIR/.conda` if it does not exist yet.
+- `ln -s` puts a link in the old place, so conda keeps finding its files at
+  `~/.conda`.
+- The `ls` line must show `.conda -> /workdir/<login>/.conda`. If it shows a
+  normal folder instead (a line starting with `d`), `$WORKDIR/.conda` already
+  existed when you ran the first line; ask the support team or move the
+  contents by hand.
+
+## 5. Get the code
+
+```bash
+cd "$WORKDIR"
+git clone https://github.com/taanakoum/OmniFuser.git OmniFuser
+cd OmniFuser
+git log -1 --oneline
+```
+
+- The last line must show the commit you noted in §2.
+- Everything from now on happens inside `$WORKDIR/OmniFuser`.
+- To get later changes: `git pull` inside `OmniFuser/`. Do not pull in the
+  middle of a study: a resume checks the settings and the data, not the
+  code.
+- **If the clone fails** (no access to GitHub from Ruche), make an archive of
+  `main` on your laptop and copy it over:
+
+  ```powershell
+  git archive --format=tar.gz --prefix=OmniFuser/ -o OmniFuser-code.tar.gz main
+  scp OmniFuser-code.tar.gz "${Ruche}:/workdir/$RucheLogin/"
+  ```
+
+  Then on Ruche: `cd "$WORKDIR" && tar -xzf OmniFuser-code.tar.gz && cd OmniFuser`.
+  Without git on Ruche, update by repeating this; `git pull` is not available.
+
+## 6. Upload the data
+
+On your laptop, in the repository folder (with `$Ruche` and `$RucheLogin`
+from §3):
+
+```powershell
+scp Nonastreda_Data.tar.gz "${Ruche}:/workdir/$RucheLogin/OmniFuser/"
+```
+
+`scp SOURCE DESTINATION` copies a file over SSH; it asks for your password
+and shows the progress. The graphical alternative is WinSCP or FileZilla
+(protocol SFTP, the same host, port 22).
+
+Then on Ruche:
+
+```bash
+cd "$WORKDIR/OmniFuser"
+tar -xzf Nonastreda_Data.tar.gz && rm Nonastreda_Data.tar.gz
+ls Nonastreda_Data
+ls Nonastreda_Data/tool | wc -l
+```
+
+The first `ls` must list `forces_xyz_raw.mat  labels.csv  labels_reg.csv
+tool`, and the count must be `512`.
+
+## 7. Python environment (once)
+
+**7.1 Find the conda module.**
+
+```bash
+module avail anaconda miniconda
+```
+
+This lists the conda versions installed on Ruche, such as
+`anaconda3/2020.02/gcc-9.2.0`. Choose the newest `anaconda3` or
+`miniconda3` entry and load it:
+
+```bash
+module load anaconda3/2020.02/gcc-9.2.0
+```
+
+Replace the name with the one you chose.
+
+**7.2 Create the environment and install the project.** This takes 10-20
+minutes and downloads a few GB; it is allowed on the login node.
+
+```bash
+cd "$WORKDIR/OmniFuser"
+conda create -n omnifuser python=3.11 -y
+source activate omnifuser
+python --version
+python -m pip install --no-cache-dir --upgrade pip
+python -m pip install --no-cache-dir -e ".[test,eda]"
+```
+
+| Command | What it does |
+|---|---|
+| `conda create -n omnifuser python=3.11 -y` | Creates an environment named `omnifuser` with Python 3.11 (the project needs 3.10 or newer); `-y` answers yes to the confirmation |
+| `source activate omnifuser` | Switches to it; the prompt starts with `(omnifuser)`. Ruche asks for `source activate`: do **not** use `conda activate` or `conda init`, which edit `~/.bashrc`. |
+| `python --version` | Must print 3.11.x |
+| `pip install --no-cache-dir -e ".[test,eda]"` | Installs PyTorch, torchvision, the other dependencies, pytest and matplotlib, and this project in editable mode (creates the `omnifuser` command). `--no-cache-dir` keeps the download cache out of your home quota. |
+
+If `conda create` fails with "PackagesNotFoundError" (an old conda that does
+not know Python 3.11), add `-c conda-forge`:
+`conda create -n omnifuser -c conda-forge python=3.11 -y`.
+
+**7.3 Tell the job scripts about your environment.** Open `slurm/env.sh`
+(`nano slurm/env.sh`; save with Ctrl+O, Enter, quit with Ctrl+X) and set:
+
+```bash
+CONDA_MODULE="anaconda3/2020.02/gcc-9.2.0"
+CONDA_ENV="omnifuser"
+```
+
+`CONDA_MODULE` is the exact module name from 7.1, `CONDA_ENV` the
+environment name from 7.2. Every job loads the environment through this
+file. Check that it works:
+
+```bash
+source slurm/env.sh
+python -c "import torch, torchvision, omnifuser; print(torch.__version__, torchvision.__version__)"
+```
+
+It prints the two versions. CUDA cannot be checked here because the login
+node has no GPU; §10 does that in a GPU job.
+
+**7.4 Download the pretrained image weights once** (for the optional
+pretrained run, §15). Compute nodes may have no internet access, so do this
+on the login node; the file (about 20 MB) is cached in `~/.cache/torch` and
+the jobs find it there:
+
+```bash
+python -c "from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0; efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1); print('weights cached')"
+```
+
+## 8. SLURM in 10 minutes
+
+### The partitions this project uses
+
+| Partition | Hardware per node | Max time | Use it for |
+|---|---|---|---|
+| `gpu_test` | 4 × V100 32 GB, 40 CPUs | 1 h, one job at a time | The GPU check and the smoke test (fast start) |
+| `gpua100` | 4 × A100 40 GB, 32 CPUs | 24 h; at most 4 GPUs in use per user | **All real runs** (default of `slurm/job.sbatch`) |
+| `gpu` | 4 × V100 32 GB, 40 CPUs | 24 h; at most 8 GPUs per user | Alternative if `gpua100` is crowded |
+| `cpu_short` | CPU only | 1 h, one job at a time | Step 0 (`slurm/checks.sbatch`) |
+
+Ruche asks users to prefer the A100s: they are faster and use less energy.
+Keep all experiments you compare with each other on the **same GPU type**:
+results on V100 and A100 differ slightly.
+
+### The commands
+
+| Command | What it does |
+|---|---|
+| `sbatch [options] SCRIPT [arguments]` | Submits a job and prints `Submitted batch job 123456` |
+| `squeue -u $USER` | Lists your waiting (`PD`) and running (`R`) jobs. The last column gives the node, or the reason a job waits. |
+| `scancel 123456` | Cancels a job (waiting or running) |
+| `sacct -j 123456 --format=JobID,JobName,State,Elapsed,ExitCode` | State of a finished job: `COMPLETED`, `FAILED`, `TIMEOUT` (walltime reached) or `CANCELLED` |
+| `seff 123456` | Time, CPU and memory used by a finished job |
+| `srun ... --pty bash` | An interactive shell on a compute node, for debugging (§18) |
+
+Common reasons in the last column of `squeue`:
+
+| Reason | Meaning |
+|---|---|
+| `Priority`, `Resources` | Waiting for its turn or for a free GPU: normal |
+| `Dependency` | A chained part waiting for the previous part |
+| `QOSMaxGRESPerUser` or similar | You already use your maximum number of GPUs; it starts when one of your jobs ends |
+| `DependencyNeverSatisfied` | The previous part was cancelled; cancel this one too |
+
+### The scripts in `slurm/`
+
+| File | Role |
+|---|---|
+| `slurm/env.sh` | Loads the conda module and activates your environment (edited in 7.3) |
+| `slurm/protocol.sh` | Defines `PROTOCOL`, the shared experiment settings (identical to the Lightning runbook §9) |
+| `slurm/job.sbatch` | Runs **one command** on one GPU. Whatever follows `slurm/job.sbatch` on the `sbatch` line is the command it runs. |
+| `slurm/checks.sbatch` | Step 0 on a CPU node |
+| `slurm/chain.sh` | Submits the same job several times in a row, for runs longer than 24 h (§12) |
+
+`slurm/job.sbatch` requests, unless you override it on the `sbatch` line:
+
+| Directive | Value | Meaning |
+|---|---|---|
+| `--partition` | `gpua100` | A100 nodes |
+| `--gres=gpu:1` | 1 GPU | This project trains on one GPU |
+| `--cpus-per-task` | 8 | CPU cores for data loading (the A100 nodes allow at most 8 per GPU); memory is 4 GB per core, so 32 GB |
+| `--time` | `24:00:00` | The maximum on `gpua100` |
+| `--output` | `experiment_results/logs/%x-%j.out` | The log file; `%x` is the job name, `%j` the job ID |
+| `--export=NONE` | | The job does not inherit your terminal's variables (recommended by Ruche); `env.sh` sets up everything it needs |
+
+Options on the `sbatch` line go **before** `slurm/job.sbatch`; everything
+after it is the command. For example, `--partition=gpu_test --time=00:30:00`
+runs the same script on the test partition for at most 30 minutes.
+
+---
+
+# Part B: The experiments
+
+## 9. Start of every session
+
+Each time you connect, run:
+
+```bash
+cd "$WORKDIR/OmniFuser"
+source slurm/protocol.sh
+mkdir -p experiment_results/logs
+printf '%s ' "${PROTOCOL[@]}"; echo
+```
+
+- `source slurm/protocol.sh` defines `PROTOCOL` in this terminal. The last
+  line prints it: it must start with `--data-dir Nonastreda_Data` and end
+  with `--num-workers 4`.
+- `mkdir -p experiment_results/logs` matters: SLURM cannot create the log
+  folder itself, and a job whose log file cannot be written fails without
+  any message.
+- You do **not** need to activate the conda environment to submit jobs;
+  every job activates it itself. You need it only to run Python on the
+  login node (§12, §16).
+
+`"${PROTOCOL[@]}"` in a command is replaced by the settings when you press
+Enter, so the job receives the full list of arguments. Type it exactly so,
+with the quotes, the braces and `[@]`. The settings themselves are explained
+in §9 of the Lightning runbook; the most important are 30 epochs, 1 s steps
+(`--pool 1000`), the paper's same-pass photo (`--image-lag 0`) and windows of
+96 input and 96 forecast steps.
+
+## 10. Step 0: checks
+
+**10.1 Tests, data, parameter count and EDA** (a CPU job, about 15-30
+minutes):
+
+```bash
+sbatch slurm/checks.sbatch
+```
+
+When `squeue -u $USER` no longer lists it, read the log:
+
+```bash
+ls experiment_results/logs/
+less experiment_results/logs/step0-checks-*.out
+```
+
+`less` shows a file page by page: Space for the next page, `q` to quit. Check:
+
+| Section in the log | Expected |
+|---|---|
+| `=== tests` | `127 passed` |
+| `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
+| `=== parameter count` | `4,183,600 ... (match)` |
+| `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |
+| Last line | `finished ...` |
+
+**10.2 GPU check** (a few minutes on `gpu_test`):
+
+```bash
+sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch \
+  python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no CUDA')"
+```
+
+The log `experiment_results/logs/gpu-check-<job id>.out` must contain
+`True` and a GPU name such as `Tesla V100-SXM2-32GB`. If it prints `False`,
+the installed PyTorch build does not match the cluster's GPU driver; §18
+explains the fix.
+
+## 11. Steps 1-2: smoke test and pilot
+
+**Step 1: capped smoke test** (a few minutes on `gpu_test`). It checks the
+whole pipeline on the GPU with a few windows; its numbers are not results.
+
+```bash
+sbatch --job-name=gpu-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch \
+  omnifuser train "${PROTOCOL[@]}" --epochs 1 --test-tool T10 \
+  --output-dir experiment_results/validation/gpu-smoke \
+  --max-train-windows 64 --max-eval-windows 32
+```
+
+Afterwards `ls experiment_results/validation/gpu-smoke` must list
+`fold-T10.json`, `fold-T10.pt`, three `fold-T10-predictions*.npz`, three
+`fold-T10-roc*.npz` and `tracking/`.
+
+**Step 2: uncapped pilot on the A100s** (one complete fold, 3 epochs). It
+measures the time per epoch on the hardware the real runs will use.
+
+```bash
+sbatch --job-name=pilot-T10 --time=03:00:00 slurm/job.sbatch \
+  omnifuser train "${PROTOCOL[@]}" --epochs 3 --test-tool T10 \
+  --output-dir experiment_results/pilot/T10
+```
+
+No `--partition` is given, so it uses the default `gpua100`.
+
+## 12. Plan the job lengths
+
+When the pilot has finished, compute the time per epoch and per 10-fold run
+on the login node:
+
+```bash
+source slurm/env.sh
+python -c "import csv; r=[x for x in csv.DictReader(open('experiment_results/pilot/T10/tracking/metrics.csv')) if x['metric']=='epoch_seconds' and x['split'] in ('train','validation') and not x['evaluation_mode']]; e=len({x['epoch'] for x in r}); s=sum(float(x['value']) for x in r)/e; print(f'{s:.0f} s per epoch; about {s*31*10/3600:.1f} h per 10-fold run')"
+```
+
+It adds the training and validation time of each epoch, averages over the 3
+epochs, and multiplies by 31 (30 epochs plus about one for the final
+evaluations) and by 10 folds.
+
+From that, choose the number of **parts** (consecutive 24 h jobs) per
+submission:
+
+```text
+parts = round up( hours per 10-fold run × number of 10-fold runs ÷ 22 ) + 1
+```
+
+- The division by 22 instead of 24 leaves margin for data loading and for
+  the epoch interrupted at each time limit.
+- The `+ 1` is a spare. Spare parts that start after the work is finished
+  only load the data, see that everything is done, and end within a few
+  minutes.
+- Example: 3 h per run gives `3 × 1 / 22 → 1, + 1 = 2` parts for step 3a,
+  and `3 × 22 / 22 = 3, + 1 = 4` parts for the 22-run sensitivity study.
+
+`bash slurm/chain.sh PARTS [sbatch options] slurm/job.sbatch COMMAND ...`
+submits the parts. Each part waits for the previous one to end, whether it
+finished, failed or reached the time limit, and resumes from there. If the
+work needs more parts than you submitted, simply run the same `chain.sh`
+command again later: it continues where it stopped.
+
+**Never run two jobs on the same output folder at the same time.** The
+parts of one chain never overlap, but two separate submissions of the same
+command would write into the same files.
+
+## 13. Step 3: the main runs
+
+Both commands state the duplicate setting explicitly; `train_lightning.py`
+refuses to start without it. Replace `2` with your number of parts from §12.
+The two chains are independent, so they run in parallel on two GPUs.
+
+**Step 3a: duplicates merged (the protocol, main result)**
+
+```bash
+bash slurm/chain.sh 2 --job-name=main-full-model slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" \
+  --dedup-identical-forces True --eval-dedup-identical-forces True \
+  --output-dir experiment_results/main/full-model
+```
+
+**Step 3b: duplicates kept in training and test**
+
+```bash
+bash slurm/chain.sh 2 --job-name=main-full-model-no-dedup slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" \
+  --dedup-identical-forces False --eval-dedup-identical-forces False \
+  --output-dir experiment_results/main/full-model-no-dedup
+```
+
+The output of `chain.sh` lists the job IDs of all parts and the `scancel`
+command that would cancel the chain. While they run, §16 shows how to follow
+them.
+
+When a run has finished (its folder contains `cross-validation-results.json`),
+compare it with the paper. This reads the result files only and takes
+seconds, so it may run on the login node:
+
+```bash
+source slurm/env.sh
+python scripts/compare_with_paper.py experiment_results/main/full-model \
+  --json experiment_results/main/full-model/paper-comparison.json
+python scripts/compare_with_paper.py experiment_results/main/full-model-no-dedup \
+  --json experiment_results/main/full-model-no-dedup/paper-comparison.json
+```
+
+How to read 3a against 3b (3b's test data contains the copied passes and is
+easier) is explained in §12 of the Lightning runbook.
+
+## 14. Steps 4-6: the paper studies
+
+Each study is one suite: `scripts/run_experiment_suite.py` trains its
+variants one after another and writes `suite.json` and `suite-summary.csv`.
+A rerun with the same `--run-id` skips finished variants and resumes the
+interrupted one, so a suite is a chain like any other run. The three suites
+are independent and can run at the same time on three GPUs. Choose their
+number of parts from §12 (9, 2 and 22 runs).
+
+```bash
+bash slurm/chain.sh 3 --job-name=ablations-paper-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study ablations --run-id paper-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
+
+bash slurm/chain.sh 2 --job-name=missing-modality-paper-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study missing-modality --run-id paper-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
+
+bash slurm/chain.sh 6 --job-name=sensitivity-paper-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
+```
+
+- The part counts above are placeholders for about 3 h per 10-fold run;
+  use your own from §12.
+- The suites use the duplicate setting `True`, like step 3a, so every
+  variant is comparable with it.
+- What each variant changes, and which column of `suite-summary.csv` to
+  read, is explained in §13 of the Lightning runbook.
+- `--study all` also exists (all 31 runs in one suite). On Ruche, three
+  parallel suites finish about three times sooner.
+
+## 15. Optional runs
+
+All use one GPU each and can run in parallel with everything else, up to
+your GPU limit; additional jobs simply wait. Each is one 10-fold run unless
+stated, so it needs the same number of parts as step 3a. The Lightning
+runbook §14 explains what each one measures.
+
+**Pretrained image encoder** (compare with 3a, which trains from scratch).
+The weights were downloaded in 7.4.
+
+```bash
+bash slurm/chain.sh 2 --job-name=image-encoder-pretrained slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" \
+  --dedup-identical-forces True --eval-dedup-identical-forces True \
+  --pretrained \
+  --output-dir experiment_results/image-encoder/pretrained
+```
+
+**Experimental: previous-pass photo** (compare with 3a, which uses the
+same-pass photo):
+
+```bash
+bash slurm/chain.sh 2 --job-name=image-lag-1 slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" \
+  --dedup-identical-forces True --eval-dedup-identical-forces True \
+  --image-lag 1 \
+  --output-dir experiment_results/image-lag-1/full-model
+```
+
+**Duplicate handling study** (2 runs, both scored on the same deduplicated
+test windows):
+
+```bash
+bash slurm/chain.sh 3 --job-name=deduplication-dedup-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study deduplication --run-id dedup-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
+```
+
+**Printed-paper readings** (three separate runs):
+
+```bash
+bash slurm/chain.sh 2 --job-name=paper-literal-repeated-head slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
+  --prediction-head paper_literal --output-dir experiment_results/paper-literal/repeated-head
+
+bash slurm/chain.sh 2 --job-name=paper-literal-eq3-literal slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
+  --decomp-mode literal --output-dir experiment_results/paper-literal/eq3-literal
+
+bash slurm/chain.sh 2 --job-name=paper-literal-eq10-unnormalized slurm/job.sbatch \
+  python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
+  --als-mode k_sum --output-dir experiment_results/paper-literal/eq10-unnormalized
+```
+
+**Prediction-head comparison** (three runs; `direct` repeats step 3a's
+configuration):
+
+```bash
+for head in paper_literal lead_conditioned direct; do
+  bash slurm/chain.sh 2 --job-name=head-$head slurm/job.sbatch \
+    python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True \
+    --prediction-head $head --output-dir experiment_results/heads/$head
+done
+```
+
+`for head in a b c; do ...; done` repeats the command once per value, with
+`$head` replaced each time.
+
+Run `compare_with_paper.py` on each finished run folder as in §13.
+
+---
+
+# Part C: Operating
+
+## 16. Watch, resume and cancel
+
+**Your jobs:**
+
+```bash
+squeue -u $USER
+```
+
+`ST` is the state (`PD` waiting, `R` running), `TIME` the time used so far,
+and the last column the node or the reason for waiting (§8).
+
+**Follow a log while the job runs:**
+
+```bash
+ls -t experiment_results/logs/ | head
+tail -f experiment_results/logs/main-full-model-123456.out
+```
+
+`ls -t` lists the newest logs first. `tail -f` shows new lines as they
+arrive; Ctrl+C stops the watching, not the job. Each part of a chain has its
+own log (same name, different job ID). A training log shows one
+`Fold k/10` line per fold and one line per epoch; a suite log shows one
+`=== group/variant ===` line per variant.
+
+**Progress of a run or a suite:**
+
+```bash
+cat experiment_results/main/full-model/cross-validation-progress.json | head -20
+source slurm/env.sh
+python -c 'import json, sys; m = json.load(open(sys.argv[1])); print("suite:", m["status"]); [print(" ", k, v["status"]) for k, v in m["runs"].items()]' experiment_results/ablations/paper-v1/suite.json
+```
+
+The first lists the folds finished so far; the second prints a suite's
+overall status and each variant as `completed`, `running` or `failed`
+(replace `ablations/paper-v1` with your `<study>/<run-id>`).
+
+**When a part reaches its time limit**, SLURM ends it (state `TIMEOUT`, and
+the log ends with a `DUE TO TIME LIMIT` message). That is expected. The next
+part of the chain starts automatically; its log shows
+`T1: reusing a completed fold with matching settings` for finished folds and
+`resuming after epoch N` for the interrupted one.
+
+**If the chain ends before the work is done** (the last log ends with
+`TIMEOUT` and the run folder has no `cross-validation-results.json`), submit
+the same `chain.sh` command again with one or two more parts.
+
+**If a part fails** (state `FAILED`), read the end of its log. The following
+parts will fail the same way within minutes, so cancel them with the
+`scancel` line that `chain.sh` printed, fix the cause (§18), and submit the
+chain again.
+
+**Cancel a job:** `scancel JOBID`; all your jobs: `scancel -u $USER`.
+
+**Email notifications** (optional): add
+`--mail-user=you@example.org --mail-type=END,FAIL` to the options before
+`slurm/job.sbatch`.
+
+**Do not change or move anything a running study uses.** The data files are
+checked by path, size and modification time, and the settings must match
+exactly; a change forces retraining or a refusal. Do not move the
+`OmniFuser` folder either: the data path is part of the check.
+
+## 17. Download the results
+
+When everything has finished, pack the results on Ruche. The first archive
+(metrics, predictions, logs, figures; everything the report needs) is small
+and quick to pack on the login node:
+
+```bash
+cd "$WORKDIR/OmniFuser"
+tar -czf results-no-checkpoints.tar.gz --exclude='*.pt' experiment_results
+ls -lh results-no-checkpoints.tar.gz
+```
+
+The model checkpoints are larger (about 170 MB per 10-fold run). Pack them
+in a short CPU job instead of on the login node:
+
+```bash
+srun --partition=cpu_short --time=00:30:00 bash -c "find experiment_results -name '*.pt' | tar -czf results-checkpoints.tar.gz -T -"
+```
+
+Then download to your laptop, in PowerShell (with `$Ruche` and
+`$RucheLogin` from §3):
+
+```powershell
+scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-no-checkpoints.tar.gz" .
+scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-checkpoints.tar.gz" .
+tar -xzf results-no-checkpoints.tar.gz
+```
+
+Then follow [`REPORT_PLAN.md`](REPORT_PLAN.md). Keep the archives: Ruche's
+directories are not backed up, and they are deleted when your account
+closes.
+
+## 18. Troubleshooting
+
+| You see | Cause | Fix |
+|---|---|---|
+| An email saying a process on the login node was killed | Heavy work (training, tests, EDA) on the login node | Use `sbatch` (or `srun` for interactive work) |
+| `sbatch: error: invalid partition specified` | The partition names changed since 2023 | `sinfo -s` lists the current partitions; use the A100 one in `--partition=` |
+| The job ends at once and no log file exists | `experiment_results/logs` did not exist when the job started | Run `mkdir -p experiment_results/logs` (§9), then resubmit |
+| `module: command not found` or `Lmod has detected the following error` in a log | Wrong module name in `slurm/env.sh` | Check `module avail anaconda miniconda` and correct `CONDA_MODULE` (7.3) |
+| `activate: No such file or directory`, or `ModuleNotFoundError: No module named 'omnifuser'` | Wrong environment name in `slurm/env.sh`, or the installation in 7.2 did not finish | Check `conda env list` and `CONDA_ENV`; repeat 7.2 |
+| `CUDA was requested but is not available`, or `False` in the GPU check | The PyTorch build needs a newer GPU driver than the cluster has. The `CUDA Version` in the `nvidia-smi` line of any GPU job log shows what the driver supports. | Install the CUDA 11.8 build: `source slurm/env.sh`, then `python -m pip install --no-cache-dir --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu118`; repeat the GPU check |
+| `CUDA out of memory` | Not expected on 32-40 GB GPUs; possible for the widest sensitivity variants | Add `--batch-size 16 --accumulation-steps 2` (same effective batch) in a new output folder |
+| `DUE TO TIME LIMIT` / state `TIMEOUT` | The 24 h walltime ran out | Normal; the next part resumes. If no part is left, submit the chain again (§16). |
+| `oom-kill`, `Exceeded job memory limit`, or `Killed` | The job used more than its 32 GB of RAM | Add `--mem=64G` before `slurm/job.sbatch` |
+| `Disk quota exceeded` | Home or workdir quota full | `ruche-quota`; move `~/.conda` (§4); delete `~/.cache/pip`; delete old results you have downloaded |
+| `experiment output directory belongs to a different configuration` | A command with different settings points at an existing output folder | Use the original command exactly, or a new `--output-dir` / `--run-id` |
+| `cannot resume ...; study settings differ from suite.json` | A suite resubmitted with the same `--run-id` but other settings | The original command, or a new `--run-id` |
+| `the following argument is required: --dedup-identical-forces` | A `train_lightning.py` command without the duplicate setting | Add `--dedup-identical-forces True` (or `False`) |
+| `unrecognized arguments` or `argument --data-dir: expected one argument` | `PROTOCOL` not defined in this terminal, or written as `$PROTOCOL` | Run the §9 block; write `"${PROTOCOL[@]}"` |
+| The pretrained run fails while downloading weights | Compute nodes without internet, and the weights not cached | Run the 7.4 command on the login node, then resubmit |
+| `DependencyNeverSatisfied` in `squeue` | The previous part of a chain was cancelled | `scancel` that part and submit the chain again |
+| `git clone` fails | No GitHub access from Ruche | Use the archive route in §5 |
+
+**Interactive debugging on a GPU node.** To try commands by hand on a GPU
+(for at most 30 minutes):
+
+```bash
+srun --partition=gpu_test --gres=gpu:1 --cpus-per-task=4 --time=00:30:00 --pty bash
+cd "$WORKDIR/OmniFuser"
+source slurm/env.sh
+source slurm/protocol.sh
+nvidia-smi
+```
+
+The prompt changes to the compute node's name. `exit` ends the session and
+frees the GPU.
+
+## 19. Rules of the cluster
+
+- **Never compute on the login nodes.** Installing, editing, moving files,
+  submitting jobs and short scripts such as `compare_with_paper.py` are fine;
+  training, tests and the EDA go into jobs.
+- **Request what you use.** One GPU and 8 CPUs per job (the defaults of
+  `slurm/job.sbatch`); this project cannot use more GPUs per run.
+- **Prefer the A100s** (`gpua100`), as the Mésocentre asks for energy
+  reasons.
+- **Do not edit `~/.bashrc`, `~/.bash_profile` or `~/.bash_login`**, and do
+  not run `conda init`; Ruche asks for `module load` plus
+  `source activate`, which `slurm/env.sh` does.
+- **Back up your results yourself** (§17).
+- **Asking for help:** <ruche.support@universite-paris-saclay.fr>. Include
+  your login, your lab, the job ID, the problem, the log output, and whether
+  the support team may look at your files.
+
+## 20. Submission cheat sheet
+
+After the §9 block, from `$WORKDIR/OmniFuser`. `N` is your number of parts
+from §12.
+
+| Step | Submission |
+|---|---|
+| 0 | `sbatch slurm/checks.sbatch` |
+| GPU check | `sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch python -c "import torch; print(torch.cuda.is_available())"` |
+| 1 | `sbatch --job-name=gpu-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch omnifuser train "${PROTOCOL[@]}" --epochs 1 --test-tool T10 --output-dir experiment_results/validation/gpu-smoke --max-train-windows 64 --max-eval-windows 32` |
+| 2 | `sbatch --job-name=pilot-T10 --time=03:00:00 slurm/job.sbatch omnifuser train "${PROTOCOL[@]}" --epochs 3 --test-tool T10 --output-dir experiment_results/pilot/T10` |
+| 3a | `bash slurm/chain.sh N --job-name=main-full-model slurm/job.sbatch python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --eval-dedup-identical-forces True --output-dir experiment_results/main/full-model` |
+| 3b | `bash slurm/chain.sh N --job-name=main-full-model-no-dedup slurm/job.sbatch python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces False --eval-dedup-identical-forces False --output-dir experiment_results/main/full-model-no-dedup` |
+| 4 | `bash slurm/chain.sh N --job-name=ablations-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study ablations --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+| 5 | `bash slurm/chain.sh N --job-name=missing-modality-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study missing-modality --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+| 6 | `bash slurm/chain.sh N --job-name=sensitivity-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+
+The optional runs are in §15. Every long command can be split over several
+lines with a `\` at the end of each line except the last, as in the
+sections above.

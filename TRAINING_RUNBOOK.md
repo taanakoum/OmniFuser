@@ -8,6 +8,10 @@ to be run in order.
 The paper reports results on "Mudestreda" and MATWI. This repository trains on
 Nonastreda, so the paper's numbers are reference points, not targets.
 
+Running on the Ruche cluster (Mésocentre Paris-Saclay) instead? Use
+[`TRAINING_RUNBOOK_RUCHE.md`](TRAINING_RUNBOOK_RUCHE.md). It runs the same
+experiments as SLURM jobs and refers back here for the explanations.
+
 **Contents**
 
 | Part | Sections |
@@ -357,7 +361,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 125 tests. `-o addopts=` clears the default options and `-q` keeps the output short. | `125 passed` |
+| `pytest ... tests` | Runs the 127 tests. `-o addopts=` clears the default options and `-q` keeps the output short. | `127 passed` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `model_summary.py --check` | Builds the default model, prints per-block parameter counts and shapes, and checks the total | `4,183,600 ... (match)` |

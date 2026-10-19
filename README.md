@@ -16,6 +16,7 @@ points, not targets this code claims to reproduce.
 | Document | Read it for |
 |---|---|
 | [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) | **Running anything**: Lightning AI setup for first-time users, and every command with every argument explained |
+| [`TRAINING_RUNBOOK_RUCHE.md`](TRAINING_RUNBOOK_RUCHE.md) | The same experiments on the Ruche cluster (Mésocentre Paris-Saclay): SSH, conda, SLURM jobs, chained 24 h jobs, for first-time cluster users |
 | [`EDA.md`](EDA.md) | The data: passes, labels, alignment, folds, the time step, label leakage, and every EDA metric |
 | [`PAPER_IMPLEMENTATION_ALIGNMENT.md`](PAPER_IMPLEMENTATION_ALIGNMENT.md) | Paper versus code: a verdict for each of 35 items, deviations and their flags, and the paper's own inconsistencies |
 | [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md) | Code reference: every module, the model equations and tensor shapes, training, metrics, tracking, cross-validation, tests, and verification |
@@ -30,7 +31,9 @@ omnifuser/            the package: config, data, models, train, evaluation,
 scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
                       (paper studies), train_local.py (smoke test), eda.py,
                       compare_with_paper.py, model_summary.py, task_diagnostics.py
-tests/                119 pytest tests
+slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
+                      env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
+tests/                127 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -55,7 +58,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 125 tests
+python -m pytest -o addopts= -q tests                    # 127 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -63,7 +66,8 @@ python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact
 ```
 
 For GPU training on Lightning AI, follow
-[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) from the top.
+[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) from the top. On the Ruche
+cluster, follow [`TRAINING_RUNBOOK_RUCHE.md`](TRAINING_RUNBOOK_RUCHE.md).
 
 ## How it works
 
