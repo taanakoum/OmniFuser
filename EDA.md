@@ -256,7 +256,7 @@ much the photo gives away:
 | Metric | Value | Meaning |
 |---|---|---|
 | `persistence_accuracy_lag0` | 0.913 | Copying the label of the photo shown at lag 0 is right for 91 % of target steps |
-| `persistence_accuracy_lag1` | 0.769 | The same with the previous pass's photo |
+| `persistence_accuracy_lag1` | 0.769 | The same with the previous pass's photo. Measured before 2026-10-21, when a tool's first pass still showed its own photo; it now shows none, which lowers this value slightly. Rerun `eda.py` for the current figure. |
 | `eval_windows_target_class_change` | 21 % | Windows whose targets change class relative to the end of the input |
 | `eval_windows_input_spans_records` | 95 % | Input windows covering more than one pass, so the GAT sees at least two photos |
 

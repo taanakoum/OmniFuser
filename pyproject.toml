@@ -31,8 +31,8 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.ruff]
-# Archived Blocks 9-12 patch folders are reference material, not maintained code.
-extend-exclude = ["omnifuser_blocks12", "omnifuser_blocks911", "Literature", "experiment_results"]
+# Local paper notes and generated results are not maintained code.
+extend-exclude = ["Literature", "experiment_results"]
 
 [tool.pyright]
 include = ["omnifuser", "scripts", "tests"]

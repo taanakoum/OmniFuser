@@ -182,30 +182,20 @@ class GraphAttentionLayer(nn.Module):
         return output.reshape(batch, steps, -1), attention
 
 
-# torchvision's ImageNet statistics; pretrained weights expect inputs normalized with them.
-IMAGENET_MEAN = (0.485, 0.456, 0.406)
-IMAGENET_STD = (0.229, 0.224, 0.225)
-
-
 class ImageFeatureEncoder(nn.Module):
-    input_mean: Tensor  # registered buffers; declared for type checkers
-    input_std: Tensor
-
     def __init__(
         self,
         name: str,
         d_model: int,
         pretrained: bool = False,
         freeze_bn: bool = False,
+        freeze_weights: bool = False,
     ) -> None:
         super().__init__()
-        self.freeze_bn = freeze_bn
-        # Pixels arrive in [0, 1]. Pretrained weights get ImageNet-normalized inputs;
-        # a randomly initialized encoder sees the pixels unchanged (mean 0, std 1).
-        # Non-persistent, so checkpoints keep the same keys either way.
-        mean, std = (IMAGENET_MEAN, IMAGENET_STD) if pretrained else ((0.0,) * 3, (1.0,) * 3)
-        self.register_buffer("input_mean", torch.tensor(mean).view(1, 3, 1, 1), persistent=False)
-        self.register_buffer("input_std", torch.tensor(std).view(1, 3, 1, 1), persistent=False)
+        # Frozen weights only make sense with frozen BatchNorm statistics as well.
+        self.freeze_bn = freeze_bn or freeze_weights
+        # Photos arrive already ImageNet-normalized (``data.IMAGE_MEAN``/``IMAGE_STD``),
+        # which is what pretrained weights expect; no further scaling happens here.
         if name not in {"efficientnet_b0", "compact"}:
             raise ValueError(f"unknown image encoder: {name!r}")
         if name == "efficientnet_b0":
@@ -233,6 +223,8 @@ class ImageFeatureEncoder(nn.Module):
             self.pool = nn.Identity()
             input_width = 96
         self.projection = nn.Linear(input_width, d_model)
+        if freeze_weights:
+            self.features.requires_grad_(False)
 
     def train(self, mode: bool = True) -> ImageFeatureEncoder:
         super().train(mode)
@@ -245,7 +237,7 @@ class ImageFeatureEncoder(nn.Module):
     def forward(self, images: Tensor) -> Tensor:
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
-        flat = (images.flatten(0, 1) - self.input_mean) / self.input_std
+        flat = images.flatten(0, 1)
         features = self.features(flat)
         features = self.pool(features).flatten(1)
         return self.projection(features).reshape(images.shape[0], images.shape[1], -1)
@@ -261,6 +253,7 @@ class ImageBranch(nn.Module):
             config.d_model,
             pretrained=config.pretrained,
             freeze_bn=config.freeze_bn,
+            freeze_weights=config.freeze_image_encoder,
         )
         self.register_buffer(
             "position_encoding",

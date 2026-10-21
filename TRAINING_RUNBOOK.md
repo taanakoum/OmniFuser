@@ -17,7 +17,7 @@ experiments as SLURM jobs and refers back here for the explanations.
 | Part | Sections |
 |---|---|
 | **Part A: Lightning AI for first-time users** | §1 Concepts · §2 Prepare on your laptop · §3 Create a Studio · §4 Get the code · §5 Upload the data · §6 Install · §7 Switch to a GPU · §8 Terminal basics |
-| **Part B: The experiments** | §9 Shared protocol · §10 Step 0: verify · §11 Steps 1-2: smoke test and pilot · §12 Step 3: main 10-fold run · §13 Steps 4-6: paper studies · §14 Optional runs |
+| **Part B: The experiments** | §9 Shared protocol · §10 Step 0: verify · §11 Steps 1-2: smoke test and pilot · §12 Step 3: main 10-fold runs · §13 Steps 4-7: paper studies and the image-encoder study · §14 Optional runs (image source with spectrograms, duplicates, printed-paper readings, heads) |
 | **Part C: Operating and reference** | §15 Unattended runs, resuming, downloading, troubleshooting · §16 Complete argument reference · §17 Results layout and metrics · §18 Local Windows commands · §19 Not covered |
 
 ## Overview of the experiments
@@ -33,10 +33,11 @@ experiments as SLURM jobs and refers back here for the explanations.
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/<run-id>/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
-| (opt) | **Pretrained image encoder:** ImageNet EfficientNet-B0, compared with step 3a (from scratch) | 1 | `experiment_results/image-encoder/pretrained/` |
-| (opt) | **Experimental: previous-pass photo** (`--image-lag 1`), compared with step 3a (lag 0) | 1 | `experiment_results/image-lag-1/full-model/` |
-| (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
+| 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/<run-id>/` |
+| (opt) | Experimental image source: previous-pass photos versus force spectrograms (all with image lag 1) | 3 | `experiment_results/image-source/<run-id>/` |
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
+| (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
+| (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
 | After | Download the results and write the report (§15, [`REPORT_PLAN.md`](REPORT_PLAN.md)) | 0 | `results-*.tar.gz`, `experiment_results/report/` |
 
 A **10-fold CV run** trains 10 models. Each one holds out a different tool for
@@ -46,19 +47,23 @@ with both inputs (`full`), with the force signal masked (`sensor_missing`),
 and with the photos masked (`image_missing`). Missing-modality evaluation
 needs no extra command.
 
-> **Main runs and comparison runs.** Steps 1-6 all use:
+> **Main runs and experiments.** Steps 1-6 all use the protocol:
 >
 > - **image lag 0:** each pass is shown its own photo, as in the paper;
-> - **an image encoder trained from scratch:** EfficientNet-B0 without
->   `--pretrained`.
+> - **photos as the image input**, through **an EfficientNet-B0 trained from
+>   scratch** (no `--pretrained`);
+> - **duplicates merged** (step 3b repeats the full model with them kept).
 >
-> Two optional runs (§14) change exactly one of these, so each compares
-> directly with step 3a:
+> The experiments change one thing at a time, so each compares directly
+> with step 3a:
 >
-> | Optional run | Differs from step 3a by | Output folder |
+> | Experiment | Variants | Differs from step 3a by |
 > |---|---|---|
-> | Pretrained image encoder | `--pretrained` | `image-encoder/pretrained/` |
-> | Previous-pass photo (experimental) | `--image-lag 1` | `image-lag-1/full-model/` |
+> | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen | `--pretrained`, `--freeze-image-encoder` |
+> | Image source, optional (§14) | previous-pass photo, spectrogram, pretrained spectrogram | `--image-lag 1`, `--image-source spectrogram` |
+>
+> The force spectrograms are an optional experiment only: no main run uses
+> them.
 
 ---
 
@@ -441,28 +446,19 @@ That gives the same effective batch of 32, using half the memory per step.
 > Ctrl+C stops `tail`, not the run. Alternatively, start `tmux` first (§8)
 > and run the commands unchanged.
 
-> **If you trained anything before 2026-10-18,** it used `--image-lag 1`,
-> the previous protocol. Rerunning into the same folder is refused
-> (`different configuration`), so move the old results aside first.
-> `grep -o '"image_lag": [01]' experiment_results/main/full-model/fold-T1.json`
-> prints the lag a finished run used. For step 3:
+> **Results from earlier code versions cannot be continued.** Runs started
+> before 2026-10-21 used different settings (image lag 1 before 2026-10-18;
+> no `freeze_image_encoder` field before 2026-10-21). Rerunning into such a
+> folder is refused (`different configuration`), so move it aside first,
+> for example:
 >
 > ```bash
 > mkdir -p experiment_results/archive
-> mv experiment_results/main experiment_results/archive/main-image-lag-1
+> mv experiment_results/main experiment_results/archive/main-before-2026-10-21
 > ```
 >
-> The old 3a run has exactly the settings of the experimental lag-1 run in
-> §14. To reuse it as that run instead of training it again:
->
-> ```bash
-> mkdir -p experiment_results/image-lag-1
-> mv experiment_results/archive/main-image-lag-1/full-model experiment_results/image-lag-1/full-model
-> ```
->
-> The §14 command then reuses every finished fold; a run with any other
-> setting is refused. For older suites (steps 4-6), use a new `--run-id`
-> such as `paper-v2`, or move their folders aside the same way.
+> For older suites, use a new `--run-id` such as `paper-v2`, or move their
+> folders aside the same way.
 
 Step 3 trains the full model twice, once per duplicate setting. Both
 commands state `--dedup-identical-forces` explicitly; `train_lightning.py`
@@ -537,15 +533,15 @@ Its options:
 | `--average weighted` | Support-weighted precision instead of macro |
 | `--by pooled_by_windows` | Weight folds by their window counts |
 
-## 13. Steps 4-6: the paper's studies
+## 13. Steps 4-7: the paper's studies and the image-encoder study
 
-All three use `scripts/run_experiment_suite.py`. It runs each **variant** as
+All four use `scripts/run_experiment_suite.py`. It runs each **variant** as
 its own full 10-fold run, then writes a manifest and a comparison table. Its
 own arguments:
 
 | Argument | Meaning |
 |---|---|
-| `--study` | `ablations`, `sensitivity`, `missing-modality`, `all` (the three paper studies), or `deduplication` (§14) |
+| `--study` | `ablations`, `sensitivity`, `missing-modality`, `all` (the three paper studies), `image-encoder` (step 7), or the optional `image-source` and `deduplication` (§14) |
 | `--run-id` | Folder name for this suite, e.g. `paper-v1`. Reuse it to resume; use a new one for a new suite. Without it, a UTC timestamp is used. |
 | `--output-root` | Parent folder. The suite writes to `<output-root>/<study>/<run-id>/`. |
 | `--modality-dropout-rates` | Training dropout rates for the missing-modality study (default `0.2`) |
@@ -656,7 +652,91 @@ nohup python scripts/run_experiment_suite.py --study all --run-id paper-v1 \
 tail -f experiment_results/logs/all-paper-v1.log
 ```
 
+### Step 7: image encoder, 3 runs
+
+The paper does not say whether its EfficientNet was pretrained. The main runs
+train it from scratch; this study measures what ImageNet weights change:
+
+| Variant | Encoder weights | What trains |
+|---|---|---|
+| `from-scratch` | Random initialization (the main-run configuration) | Everything |
+| `pretrained-finetuned` | ImageNet (torchvision `IMAGENET1K_V1`) | Everything, including the backbone |
+| `pretrained-frozen` | ImageNet, kept fixed | The projection after the backbone and the rest of the model; the backbone's weights and BatchNorm statistics stay fixed |
+
+Photos are normalized with the ImageNet mean and standard deviation in every
+run, which is the input the pretrained weights expect. Download the weights
+(about 20 MB, cached in `~/.cache/torch`) before the long run, so a network
+problem shows up immediately:
+
+```bash
+python -c "from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0; efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1); print('weights cached')"
+python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}" \
+  2>&1 | tee experiment_results/logs/image-encoder-encoder-v1.log
+```
+
+`from-scratch` repeats step 3a's configuration inside the study, so the three
+variants sit side by side in one `suite-summary.csv`. Compare the `full.*`
+columns between rows, and the gap between `full.*` and `image_missing.*`
+within a row: it shows how much each encoder's photo features contribute.
+
 ## 14. Optional runs
+
+### Experimental: image source (previous-pass photos versus force spectrograms)
+
+> **An optional experiment, not a main run.** It changes what the image
+> branch sees; everything else is the protocol.
+
+All three variants use **image lag 1**, the previous pass's image, so they
+differ only in the image source:
+
+| Variant | Image branch input | Encoder |
+|---|---|---|
+| `photo-previous-pass` | The previous pass's photo | From scratch |
+| `spectrogram` | A spectrogram of the previous pass's force | From scratch |
+| `spectrogram-pretrained` | The same | ImageNet weights, fine-tuned |
+
+How a spectrogram is made (`omnifuser/spectrogram.py`):
+
+- the pass's **raw 1 kHz force** (before the 1 s pooling, which removes
+  everything faster than 1 Hz) has its mean removed per axis;
+- a short-time Fourier transform (Hann window of 1024 samples, hop 256)
+  gives the log power per frequency and time;
+- the three force axes Fx, Fy, Fz become the three image channels, resized
+  to the photo size (128 × 384), so the image branch is unchanged;
+- each image is standardized on its own, so no statistic is fitted across
+  tools.
+
+Why image lag 1 is required: a pass's spectrogram covers the whole pass,
+including force samples that fall inside the forecast window of a window
+ending mid-pass. With lag 1 every image comes from a pass that ended before
+the window's input does. A tool's first pass has no previous pass and shows
+no image (zeros) and no label. `--image-source spectrogram` with image lag 0
+is refused.
+
+First a capped one-fold smoke test of the spectrogram path on the real data
+(a few minutes; its numbers are not results), then the study:
+
+```bash
+omnifuser train "${PROTOCOL[@]}" --image-lag 1 --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
+python scripts/run_experiment_suite.py --study image-source --run-id source-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}" \
+  2>&1 | tee experiment_results/logs/image-source-source-v1.log
+```
+
+How to read it:
+
+- `photo-previous-pass` against step 3a: how much the same-pass photo (lag 0)
+  helps. Copying the photo's label gets about 91 % of targets right at lag 0
+  and about 77 % at lag 1 (`EDA.md` §7), so judge each run against its own
+  `persistence` baseline in `compare_with_paper.py`.
+- `spectrogram` against `photo-previous-pass`: whether the force spectrum
+  carries more wear information than the photo, at the same timing.
+- `spectrogram-pretrained` against `spectrogram`: whether ImageNet features
+  transfer to spectrograms.
+- STFT settings: `--spectrogram-window` and `--spectrogram-hop` (in raw
+  samples). The force is sampled at 1 kHz, so frequencies up to 500 Hz are
+  visible.
 
 ### Duplicate handling: merged versus kept
 
@@ -762,87 +842,6 @@ What to keep in mind when you read the results:
   different labels. In training that is label noise. With deduplicated
   evaluation the most-worn label is the one scored, as in the default
   protocol.
-
-### Image encoder: pretrained versus trained from scratch
-
-> **Main runs train the image encoder from scratch.** Steps 1-6 build
-> EfficientNet-B0 with random weights (no `--pretrained`): the paper does not
-> say its encoder was pretrained. The two runs below differ **only** in
-> `--pretrained`, so their difference is the effect of ImageNet weights.
-
-| | From scratch (main runs) | Pretrained (comparison) |
-|---|---|---|
-| Flag | none | `--pretrained` |
-| Encoder weights | Random initialization | ImageNet (torchvision `IMAGENET1K_V1`) |
-| Photo pixels fed to the encoder | Scaled to [0, 1] | Scaled to [0, 1], then normalized with the ImageNet mean and standard deviation, which the pretrained weights expect. This happens automatically with `--pretrained`. |
-| Output folder | `experiment_results/main/full-model` (step 3a) | `experiment_results/image-encoder/pretrained` |
-
-The pretrained weights (about 20 MB) are downloaded once and cached in
-`~/.cache/torch`. Download them before the long run, so a network problem
-shows up immediately:
-
-```bash
-python -c "from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0; efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1); print('weights cached')"
-```
-
-Pretrained run:
-
-```bash
-python scripts/train_lightning.py "${PROTOCOL[@]}" \
-  --dedup-identical-forces True --eval-dedup-identical-forces True \
-  --pretrained \
-  --output-dir experiment_results/image-encoder/pretrained \
-  2>&1 | tee experiment_results/logs/image-encoder-pretrained.log
-python scripts/compare_with_paper.py experiment_results/image-encoder/pretrained \
-  --json experiment_results/image-encoder/pretrained/paper-comparison.json
-```
-
-From-scratch comparison: this is **step 3a**. If 3a is finished, do not run
-it again. To keep both arms of this comparison in one folder anyway, the
-same command without `--pretrained` trains it there (it repeats 3a's
-computation):
-
-```bash
-python scripts/train_lightning.py "${PROTOCOL[@]}" \
-  --dedup-identical-forces True --eval-dedup-identical-forces True \
-  --output-dir experiment_results/image-encoder/from-scratch \
-  2>&1 | tee experiment_results/logs/image-encoder-from-scratch.log
-```
-
-How to compare: put the two `compare_with_paper.py` tables side by side. In
-`cross-validation-results.json`, the gap between the `full` and
-`image_missing` modes shows how much each encoder's photo features
-contribute. Adding `--freeze-bn` keeps the pretrained BatchNorm statistics
-fixed; that is a further variant and needs its own `--output-dir`.
-
-### Experimental: previous-pass photo (image lag 1)
-
-> **Main runs use image lag 0**, the paper's association: each pass's force
-> steps are shown that pass's own photo. This run is an **experiment**, not
-> part of the paper protocol.
-
-With lag 0 the photo shows the very pass whose label is the target. Copying
-the photo's label already gets 91 % of target labels right (`EDA.md` §7), so
-part of the main runs' classification accuracy comes from reading the label
-off the photo. With `--image-lag 1` each pass shows the **previous** pass's
-photo. That copy rule drops to about 77 %, so the model has to forecast the
-wear change itself.
-
-```bash
-python scripts/train_lightning.py "${PROTOCOL[@]}" \
-  --dedup-identical-forces True --eval-dedup-identical-forces True \
-  --image-lag 1 \
-  --output-dir experiment_results/image-lag-1/full-model \
-  2>&1 | tee experiment_results/logs/image-lag-1-full-model.log
-python scripts/compare_with_paper.py experiment_results/image-lag-1/full-model \
-  --json experiment_results/image-lag-1/full-model/paper-comparison.json
-```
-
-Compare it with step 3a. The header of `compare_with_paper.py` prints
-`image_lag=0` or `image_lag=1`, and the `persistence` column is each run's
-copy-the-photo baseline. Its value differs between the runs (about 0.91
-versus 0.77), so judge each run against its own baseline. The difference in
-accuracy between 3a and this run is how much the same-pass photo helps.
 
 ### Prediction-head comparison (not a paper experiment)
 
@@ -988,11 +987,11 @@ after the table.
 | `--stride N` | input + horizon | Training-window spacing; evaluation uses \(\max(\text{stride},P)\) |
 | `--decimation N` | 1 | Low-pass filter, then keep every Nth sample (before pooling) |
 | `--pool N` | 1 | Average N samples into one step, within each pass. 1000 means 1 s. |
-| `--image-lag {0,1}` | 0 | 0: the pass's own photo (paper and protocol). 1: the previous pass's photo (experimental run, §14). |
+| `--image-lag {0,1}` | 0 | 0: the pass's own image (paper and protocol). 1: the previous pass's image (experiments, §14); a tool's first pass then shows no image. |
 | `--trim-pass` / `--no-trim-pass` | on | Remove each pass's entry and exit transients (`EDA.md` §5) |
 | `--label-column {image_label,tool_label}` | `image_label` | Which label file column is the class target |
 | `--dedup-identical-forces {True,False}` | True; **required** for `train_lightning.py` | Merge bit-identical force recordings within a tool/run, keeping the most-worn annotation (True: 378 passes), or keep all 512 (False). A bare flag means True. Aliases: `--deduplicate-identical-forces [VALUE]`; `--keep-identical-forces` and `--no-deduplicate-identical-forces` both mean False. |
-| `--eval-dedup-identical-forces {True,False}` | same as training | Duplicate handling for the validation and test data only. Set `True` to score a `--dedup-identical-forces False` model on the same deduplicated windows as a default run (§14). Training entry points only; `inspect` and `task_diagnostics.py` do not train. |
+| `--eval-dedup-identical-forces {True,False}` | same as training | Duplicate handling for the validation and test data only. Set `True` to score a `--dedup-identical-forces False` model on the same deduplicated windows as a default run (§14). Training entry points only; `inspect` does not train. |
 | `--image-encoder {efficientnet_b0,compact}` | `efficientnet_b0` | Photo backbone; `compact` is a small CNN for CPU tests |
 | `--d-model N` | 32 | Model width \(d\) |
 | `--prediction-head {direct,paper_literal,lead_conditioned}` | `direct` | Per-lead weights / one output repeated over all leads (printed Eq. 21) / learned lead embedding |
@@ -1005,8 +1004,11 @@ after the table.
 | `--resume` / `--no-resume` | on | Continue interrupted folds and reuse finished ones |
 | `--ablation` | `none` | One of the 9 Fig. 13 variants (§13) |
 | `--modality-dropout X` | 0 | Training probability of masking one input (half sensor, half photo) |
-| `--pretrained` | off | Start EfficientNet-B0 from ImageNet weights (downloaded once) and normalize photos with the ImageNet mean and standard deviation. Off in all main runs (from scratch); §14 compares the two. |
-| `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed |
+| `--pretrained` | off | Start EfficientNet-B0 from ImageNet weights (downloaded once). Off in all main runs (from scratch); step 7 compares. Photos are ImageNet-normalized in every run. |
+| `--freeze-image-encoder` | off | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train (step 7) |
+| `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed while its weights train |
+| `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or force spectrograms (optional experiment, §14; needs `--image-lag 1`) |
+| `--spectrogram-window N`, `--spectrogram-hop N` | 1024, 256 | STFT window and hop in raw samples, for `--image-source spectrogram` |
 | `--als-mode {k_colnorm,k_sum,time}` | `k_colnorm` | Landmark weighting: printed Eq. 10 normalized / printed sums / softmax over time |
 | `--private-attn {plain,residual_ln}` | `plain` | Private path \(\mathrm{MHA}(P)\) as printed, or with residual + LayerNorm |
 | `--exact-split` | off | Shared part \(cS\) so that \(Z=P+S\) exactly (Eq. 7) |
@@ -1030,7 +1032,7 @@ Differences per entry point:
 | `omnifuser train` | Adds `--test-tool` (default `T10`) and `--output-dir` (default `experiment_results/train`). Duplicate handling: `--dedup-identical-forces {True,False}` as in the table above. |
 | `scripts/train_lightning.py` | `--data-dir`, `--output-dir` and `--dedup-identical-forces {True,False}` are **required**; `--device` defaults to `cuda`. `--eval-dedup-identical-forces` is optional and follows the training setting. |
 | `scripts/train_local.py` | Defaults: `--epochs 1`, `--batch-size 1`, `--device cpu`, output `experiment_results/validation/local-smoke`. Windows are capped at 2/1 unless `--full`. It does not expose `--learning-rate`, `--input-len`, `--decimation`, `--label-column`, `--d-model` or `--seed` (library defaults apply). |
-| `scripts/run_experiment_suite.py` | Defaults to the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 0 --device cuda`. It also takes `--study`, `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). The study `deduplication` compares both duplicate settings (§14). |
+| `scripts/run_experiment_suite.py` | Defaults to the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 0 --device cuda`. It also takes `--study` (`ablations`, `sensitivity`, `missing-modality`, `all`, `image-encoder`, `image-source`, `deduplication`), `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). The study `deduplication` compares both duplicate settings (§14). |
 
 Invalid combinations stop before training with a clear error. Examples: a
 head count that does not divide the width, dropout ≥ 1, or `--pretrained`
@@ -1044,7 +1046,6 @@ with `compact`.
 | `scripts/eda.py` | `--data-dir`, `--out` (default `experiment_results/eda`), `--fs` sampling rate in Hz (1000), `--pool` (1000), `--input-len` (96), `--horizon` (96), `--stride` (24), `--difficulty-pools` (1 10 100 300 1000), `--windows-per-tool` (5000, a cap for the difficulty table), `--no-figures` |
 | `scripts/compare_with_paper.py RUN_DIR` | `--by {mean_over_folds,pooled_by_windows}`, `--average {macro,weighted}`, `--json FILE` |
 | `scripts/model_summary.py` | `--image-encoder`, `--input-len` (96), `--horizon` (96), `--d-model` (32), `--rounds` (2), `--prediction-head` (`direct`), `--share-c2f`, `--batch-size` (2, for the shape probe), `--check` (verify the parameter total) |
-| `scripts/task_diagnostics.py` | `--data-dir`, `--pools` (1 10 100 1000), `--horizons` (12 24 96), `--input-len` (96), `--fs` (1000), `--max-windows-per-tool` (20000), `--trim-pass`/`--no-trim-pass`, `--dedup-identical-forces {True,False}`, `--out FILE`. It prints trivial-baseline difficulty per pool and horizon (descriptive only). |
 | `python -m pytest -o addopts= -q tests` | Runs all tests. Add `-k <name>` to run matching tests only. |
 
 Every command prints its own help with `--help`, for example
@@ -1059,9 +1060,6 @@ experiment_results/
   validation/, pilot/                     smoke and timing runs (not results)
   main/full-model/                        step 3a, one 10-fold run (layout below)
   main/full-model-no-dedup/               step 3b, the same with duplicates kept
-  image-encoder/pretrained/               optional: ImageNet-pretrained encoder
-  image-encoder/from-scratch/             optional: repeat of 3a beside it
-  image-lag-1/full-model/                 experimental: previous-pass photo
   <study>/<run-id>/
     suite.json                            settings, per-variant status, notes
     suite-summary.csv                     one row per variant, test mean/std per input mode

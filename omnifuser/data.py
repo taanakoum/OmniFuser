@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 import torch
@@ -21,6 +21,11 @@ CLASS_TO_INDEX = {name: index for index, name in enumerate(CLASS_NAMES)}
 RECORD_ID = re.compile(r"^T(?P<tool>\d+)R(?P<run>\d+)B(?P<block>\d+)$")
 IMAGE_MEAN = np.asarray((0.485, 0.456, 0.406), dtype=np.float32)
 IMAGE_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
+# Shown, with image lag 1, for a tool's first pass, which has no previous pass. Its
+# image is all zeros (the mean after normalization) and its label is -1, so neither the
+# model nor the photo-label persistence baseline sees anything from that pass itself.
+NO_IMAGE = Path("<no previous image>")
+NO_IMAGE_LABEL = -1
 PASS_TRIM_WINDOW_SAMPLES = 20
 PASS_TRIM_REFERENCE_FRACTION = 0.05
 PASS_TRIM_THRESHOLD_FRACTION = 0.5
@@ -73,7 +78,7 @@ class ToolTimeline:
     batch_codes: np.ndarray
     relative_codes: np.ndarray
     image_paths: tuple[Path, ...]
-    image_labels: np.ndarray | None = None
+    image_labels: np.ndarray
 
 
 def _block_mean(force: np.ndarray, factor: int) -> np.ndarray:
@@ -335,7 +340,12 @@ def load_nonastreda(
 def make_tool_timelines(
     records: Sequence[Record], image_lag: int = 0
 ) -> list[ToolTimeline]:
-    """Build tool streams; lagged images use the preceding record in tool order."""
+    """Build tool streams; lagged images use the preceding record in tool order.
+
+    With ``image_lag=1`` a tool's first pass has no preceding record and shows
+    ``NO_IMAGE``: showing its own photo would reveal its label, and its own spectrogram
+    would contain force samples from the forecast window.
+    """
     if image_lag not in (0, 1):
         raise ValueError("image_lag must be 0 or 1")
     timelines: list[ToolTimeline] = []
@@ -344,7 +354,15 @@ def make_tool_timelines(
             (record for record in records if record.tool == tool),
             key=lambda item: (item.run, item.block),
         )
-        image_paths = tuple(dict.fromkeys(record.image_path for record in selected))
+        shown_records = [
+            selected[position - image_lag] if position >= image_lag else None
+            for position in range(len(selected))
+        ]
+        image_paths = tuple(
+            dict.fromkeys(
+                shown.image_path if shown is not None else NO_IMAGE for shown in shown_records
+            )
+        )
         image_code = {path: index for index, path in enumerate(image_paths)}
         force_parts: list[np.ndarray] = []
         label_parts: list[np.ndarray] = []
@@ -353,17 +371,14 @@ def make_tool_timelines(
         batch_parts: list[np.ndarray] = []
         relative_parts: list[np.ndarray] = []
         image_label_parts: list[np.ndarray] = []
-        for position, record in enumerate(selected):
+        for record, shown_record in zip(selected, shown_records):
             length = len(record.force)
-            shown_record = selected[max(position - image_lag, 0)]
+            shown_path = shown_record.image_path if shown_record is not None else NO_IMAGE
+            shown_label = shown_record.label if shown_record is not None else NO_IMAGE_LABEL
             force_parts.append(record.force)
             label_parts.append(np.full(length, record.label, dtype=np.int8))
-            image_parts.append(
-                np.full(length, image_code[shown_record.image_path], dtype=np.int16)
-            )
-            image_label_parts.append(
-                np.full(length, shown_record.label, dtype=np.int8)
-            )
+            image_parts.append(np.full(length, image_code[shown_path], dtype=np.int16))
+            image_label_parts.append(np.full(length, shown_label, dtype=np.int8))
             cycle_parts.append(np.full(length, record.run, dtype=np.int16))
             batch_parts.append(np.full(length, record.block, dtype=np.int16))
             relative_parts.append(
@@ -433,7 +448,7 @@ class WindowDataset(Dataset[dict[str, Any]]):
         timelines: Sequence[ToolTimeline],
         normalizer: ForceNormalizer,
         input_len: int = 96,
-        horizon: int = 24,
+        horizon: int = 96,
         stride: int = 24,
     ) -> None:
         if input_len < 1 or horizon < 1 or stride < 1:
@@ -474,13 +489,7 @@ class WindowDataset(Dataset[dict[str, Any]]):
             "force": self.normalizer.transform(timeline.force[window_start:input_end]).copy(),
             "force_target": self.normalizer.transform(timeline.force[input_end:target_end]).copy(),
             "class_target": timeline.labels[input_end:target_end].astype(np.int64),
-            "shown_label": np.int64(
-                (
-                    timeline.image_labels
-                    if timeline.image_labels is not None
-                    else timeline.labels
-                )[input_end - 1]
-            ),
+            "shown_label": np.int64(timeline.image_labels[input_end - 1]),
             "image_paths": tuple(
                 timeline.image_paths[code]
                 for code in timeline.image_codes[window_start:input_end]
@@ -492,6 +501,8 @@ class WindowDataset(Dataset[dict[str, Any]]):
 
 
 def image_tensor(path: Path, height: int = 128, width: int = 384) -> Tensor:
+    if Path(path) == NO_IMAGE:
+        return torch.zeros(3, height, width)
     with Image.open(path) as source:
         image = source.convert("RGB").resize((width, height), Image.Resampling.BILINEAR)
         array = np.asarray(image, dtype=np.float32) / 255.0
@@ -505,7 +516,7 @@ class ImageBank:
     def __init__(
         self, paths: Sequence[Path], height: int = 128, width: int = 384
     ) -> None:
-        unique = list(dict.fromkeys(Path(path) for path in paths))
+        unique = list(dict.fromkeys(Path(path) for path in paths if Path(path) != NO_IMAGE))
         self.height, self.width = height, width
         self.index = {path: position for position, path in enumerate(unique)}
         self.pixels = np.empty((len(unique), height, width, 3), dtype=np.uint8)
@@ -530,16 +541,24 @@ class ImageBank:
         return len(self.index)
 
     def tensor(self, path: Path) -> Tensor:
+        if Path(path) == NO_IMAGE:
+            return torch.zeros(3, self.height, self.width)
         array = self.pixels[self.index[Path(path)]].astype(np.float32) / 255.0
         array = (array - IMAGE_MEAN) / IMAGE_STD
         return torch.from_numpy(array.transpose(2, 0, 1).copy())
+
+
+class PixelSource(Protocol):
+    """Anything that returns the (3, H, W) image tensor for a pass's photo path."""
+
+    def tensor(self, path: Path) -> Tensor: ...
 
 
 def collate_windows(
     samples: Sequence[dict[str, Any]],
     height: int = 128,
     width: int = 384,
-    bank: ImageBank | None = None,
+    bank: PixelSource | None = None,
 ) -> dict[str, Any]:
     image_paths: list[list[Path]] = []
     image_indices: list[list[int]] = []

@@ -5,6 +5,7 @@ from PIL import Image
 from scipy.io import savemat
 
 from omnifuser.data import (
+    NO_IMAGE,
     ForceNormalizer,
     Record,
     WindowDataset,
@@ -72,9 +73,10 @@ def test_lag_one_uses_previous_pass_image_but_current_pass_target() -> None:
         [timeline], ForceNormalizer.fit([timeline]), input_len=12, horizon=6, stride=6
     )
 
-    sample = dataset[9]
+    sample = dataset[9]  # input steps 54-65: six in the first pass, six in the second
 
-    assert sample["image_paths"] == (first.image_path,) * 12
+    # the first pass has no previous pass, so it shows no image; the second shows the first
+    assert sample["image_paths"] == (NO_IMAGE,) * 6 + (first.image_path,) * 6
     assert sample["shown_label"] == 0
     assert np.array_equal(sample["class_target"], np.ones(6, dtype=np.int64))
 

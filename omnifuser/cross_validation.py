@@ -16,6 +16,7 @@ from omnifuser.data import (
     leave_one_tool_out_folds,
     nonastreda_source_signature,
 )
+from omnifuser.spectrogram import SpectrogramSettings
 from omnifuser.tracking import ExperimentTracker
 from omnifuser.train import save_arrays, train_fold
 
@@ -327,8 +328,12 @@ def _load_finished_fold(
     expected_settings: dict[str, Any],
     epochs: int,
     batch_size: int,
+    expected_spectrogram: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Reuse a fold only when its recorded training and data settings match."""
+    """Reuse a fold only when its recorded training and data settings match.
+
+    Photo folds record no ``spectrogram`` entry, so the two image sources never mix.
+    """
     path = output_dir / f"fold-{test_tool}.json"
     if not path.is_file():
         return None
@@ -347,6 +352,8 @@ def _load_finished_fold(
             if not artifact_path.is_relative_to(output_dir.resolve()) or not artifact_path.is_file():
                 return None
         if result["config"] != expected_config:
+            return None
+        if result.get("spectrogram") != expected_spectrogram:
             return None
         # Folds written before missing-modality evaluation existed must be retrained.
         modality_evaluations = result["modality_evaluations"]
@@ -377,7 +384,7 @@ def run_cross_validation(
     batch_size: int = 32,
     learning_rate: float = 1e-4,
     input_len: int = 96,
-    horizon: int = 24,
+    horizon: int = 96,
     stride: int | None = None,
     decimation: int = 1,
     label_column: str = "image_label",
@@ -398,8 +405,10 @@ def run_cross_validation(
     num_workers: int = 0,
     resume: bool = True,
     config_overrides: dict[str, Any] | None = None,
+    spectrogram: SpectrogramSettings | None = None,
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
+    spectrogram_record = asdict(spectrogram) if spectrogram is not None else None
     output_path.mkdir(parents=True, exist_ok=True)
     if eval_dedup_identical_forces is None:
         eval_dedup_identical_forces = dedup_identical_forces
@@ -453,6 +462,8 @@ def run_cross_validation(
                 "dedup_identical_forces": dedup_identical_forces,
                 "eval_dedup_identical_forces": eval_dedup_identical_forces,
                 "trim_pass": trim_pass,
+                # Recorded only when used, so photo runs keep their earlier signature.
+                **({"spectrogram": spectrogram_record} if spectrogram_record else {}),
             },
             "model": expected_config,
             "ablation": expected_config["ablation"],
@@ -519,6 +530,7 @@ def run_cross_validation(
                 },
                 epochs,
                 batch_size,
+                spectrogram_record,
             )
             if resume
             else None
@@ -564,6 +576,7 @@ def run_cross_validation(
             resume=resume,
             config_overrides=config_overrides,
             tracker=tracker,
+            spectrogram=spectrogram,
         )
         results.append(result)
         partial = {
@@ -585,6 +598,7 @@ def run_cross_validation(
         "pass_trimming": "span" if trim_pass else "none",
         "pool": pool,
         "image_lag": image_lag,
+        **({"spectrogram": spectrogram_record} if spectrogram_record else {}),
         "model_selection": (
             "best_validation_loss" if select_best else "last_epoch"
         ),

@@ -12,6 +12,8 @@
 #SBATCH --job-name=omnifuser
 #SBATCH --output=experiment_results/logs/%x-%j.out
 #SBATCH --partition=gpua100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=24:00:00
@@ -29,6 +31,9 @@ fi
 cd "$SLURM_SUBMIT_DIR" || exit 2
 source slurm/env.sh
 set -eo pipefail
+# Keep CPU thread pools inside the cores SLURM granted (Ruche gives 4 GB per core).
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 echo "job $SLURM_JOB_ID ($SLURM_JOB_NAME) on $(hostname), partition $SLURM_JOB_PARTITION, started $(date)"
 echo "command: $*"

@@ -21,7 +21,7 @@ where to type it, and what you should see.
 |---|---|
 | **Overview** | What changes compared with Lightning AI · the experiments · before you start · the whole path at a glance |
 | **Part A: Set up Ruche (once)** | §1 Concepts · §2 Prepare on your laptop · §3 Connect · §4 Storage · §5 Get the code · §6 Upload the data · §7 Python environment · §8 SLURM in 10 minutes |
-| **Part B: The experiments** | §9 Start of every session · §10 Step 0: checks · §11 Steps 1-2: smoke test and pilot · §12 Plan the job lengths · §13 Step 3: main runs · §14 Steps 4-6: paper studies · §15 Optional runs |
+| **Part B: The experiments** | §9 Start of every session · §10 Step 0: checks · §11 Steps 1-2: smoke test and pilot · §12 Plan the job lengths · §13 Step 3: main runs · §14 Steps 4-7: paper studies and image encoder · §15 Optional runs (image source with spectrograms, duplicates, printed-paper readings, heads) |
 | **Part C: Operating** | §16 Watch, resume and cancel · §17 Download the results · §18 Troubleshooting · §19 Rules of the cluster · §20 Submission cheat sheet |
 
 ## Overview
@@ -66,16 +66,18 @@ cross-validations; each one trains 10 models.
 | 4 | Paper Fig. 13 component ablations | 9 | `experiment_results/ablations/paper-v1/` |
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/paper-v1/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/paper-v1/` |
-| (opt) | Pretrained image encoder, compared with 3a | 1 | `experiment_results/image-encoder/pretrained/` |
-| (opt) | Experimental: previous-pass photo (`--image-lag 1`), compared with 3a | 1 | `experiment_results/image-lag-1/full-model/` |
+| 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/encoder-v1/` |
+| (opt) | Experimental image source: previous-pass photos versus force spectrograms (image lag 1) | 3 | `experiment_results/image-source/source-v1/` |
 | (opt) | Duplicate handling study | 2 | `experiment_results/deduplication/dedup-v1/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
 | (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
 
-Every main run uses the paper's same-pass photo (image lag 0) and an image
-encoder trained from scratch, exactly as in the Lightning runbook. Its
-"Main runs and comparison runs" box and §9 explain these choices, and its
-§14 explains the optional runs.
+Every main run uses the paper's same-pass photo (image lag 0), photos as
+the image input and an image encoder trained from scratch, exactly as in the
+Lightning runbook. Step 7 compares that encoder with a pretrained one,
+fine-tuned and frozen. The force spectrograms are an optional experiment
+only (§15). The Lightning runbook's "Main runs and experiments" box, §9, §13
+and §14 explain these choices.
 
 ### Before you start
 
@@ -396,8 +398,8 @@ python -c "import torch, torchvision, omnifuser; print(torch.__version__, torchv
 It prints the two versions. CUDA cannot be checked here because the login
 node has no GPU; §10 does that in a GPU job.
 
-**7.4 Download the pretrained image weights once** (for the optional
-pretrained run, §15). Compute nodes may have no internet access, so do this
+**7.4 Download the pretrained image weights once** (for step 7 and the
+optional image-source study, §14-§15). Compute nodes may have no internet access, so do this
 on the login node; the file (about 20 MB) is cached in `~/.cache/torch` and
 the jobs find it there:
 
@@ -460,7 +462,11 @@ Common reasons in the last column of `squeue`:
 | `--cpus-per-task` | 8 | CPU cores for data loading (the A100 nodes allow at most 8 per GPU); memory is 4 GB per core, so 32 GB |
 | `--time` | `24:00:00` | The maximum on `gpua100` |
 | `--output` | `experiment_results/logs/%x-%j.out` | The log file; `%x` is the job name, `%j` the job ID |
+| `--nodes=1`, `--ntasks=1` | | One process on one node, as in the Ruche examples |
 | `--export=NONE` | | The job does not inherit your terminal's variables (recommended by Ruche); `env.sh` sets up everything it needs |
+
+The script also sets `OMP_NUM_THREADS` to the number of CPUs granted, so
+PyTorch and NumPy start no more threads than the job has cores.
 
 Options on the `sbatch` line go **before** `slurm/job.sbatch`; everything
 after it is the command. For example, `--partition=gpu_test --time=00:30:00`
@@ -618,8 +624,8 @@ command would write into the same files.
    1.3456, 98 s`, and no `Traceback`. This first hour catches a wrong setting
    before it is repeated in 40 runs.
 5. **Then everything else, in this order:** 3b (§13), the ablations,
-   missing-modality and sensitivity suites (§14), then the optional runs you
-   want (§15), the pretrained encoder and the previous-pass photo first.
+   missing-modality, sensitivity and image-encoder suites (§14), then the
+   optional runs you want (§15), the image-source study first.
    You can submit them all in one go. At most 4 of your A100 jobs run at a
    time; the others wait (`squeue` shows a reason such as
    `QOSMaxGRESPerUser`) and start on their own as GPUs free up, roughly in
@@ -639,8 +645,8 @@ The job IDs come from the output of `chain.sh` and `sbatch`.
 | 4 ablations `paper-v1` | | | | | |
 | 5 missing-modality `paper-v1` | | | | | |
 | 6 sensitivity `paper-v1` | | | | | |
-| Pretrained encoder | | | | | |
-| Previous-pass photo | | | | | |
+| 7 image-encoder `encoder-v1` | | | | | |
+| Image source `source-v1` (optional) | | | | | |
 | (other optional runs) | | | | | |
 
 For the report you need: the commit (`git log -1 --oneline`), the GPU type
@@ -689,14 +695,14 @@ python scripts/compare_with_paper.py experiment_results/main/full-model-no-dedup
 How to read 3a against 3b (3b's test data contains the copied passes and is
 easier) is explained in §12 of the Lightning runbook.
 
-## 14. Steps 4-6: the paper studies
+## 14. Steps 4-7: the paper studies and the image-encoder study
 
 Each study is one suite: `scripts/run_experiment_suite.py` trains its
 variants one after another and writes `suite.json` and `suite-summary.csv`.
 A rerun with the same `--run-id` skips finished variants and resumes the
-interrupted one, so a suite is a chain like any other run. The three suites
-are independent and can run at the same time on three GPUs. Choose their
-number of parts from §12 (9, 2 and 22 runs).
+interrupted one, so a suite is a chain like any other run. The four suites
+are independent and can run at the same time, up to your 4 A100 GPUs.
+Choose their number of parts from §12 (9, 2, 22 and 3 runs).
 
 ```bash
 bash slurm/chain.sh 3 --job-name=ablations-paper-v1 slurm/job.sbatch \
@@ -710,7 +716,16 @@ bash slurm/chain.sh 2 --job-name=missing-modality-paper-v1 slurm/job.sbatch \
 bash slurm/chain.sh 6 --job-name=sensitivity-paper-v1 slurm/job.sbatch \
   python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 \
   --output-root experiment_results "${PROTOCOL[@]}"
+
+bash slurm/chain.sh 2 --job-name=image-encoder-encoder-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
 ```
+
+Step 7 (`image-encoder`) trains three variants: `from-scratch` (the main-run
+configuration), `pretrained-finetuned` and `pretrained-frozen` (ImageNet
+weights kept fixed, only the projection and the rest of the model train).
+The weights were downloaded in 7.4.
 
 - The part counts above are placeholders for about 3 h per 10-fold run;
   use your own from §12.
@@ -728,26 +743,24 @@ your GPU limit; additional jobs simply wait. Each is one 10-fold run unless
 stated, so it needs the same number of parts as step 3a. The Lightning
 runbook §14 explains what each one measures.
 
-**Pretrained image encoder** (compare with 3a, which trains from scratch).
-The weights were downloaded in 7.4.
+**Experimental: image source** (3 runs, all with image lag 1):
+`photo-previous-pass`, `spectrogram` (an STFT image of the previous pass's
+raw 1 kHz force) and `spectrogram-pretrained`. Spectrograms are an optional
+experiment only and require image lag 1, which the study sets itself; the
+Lightning runbook §14 explains how they are made and how to read the study.
+
+First a capped one-fold smoke test of the spectrogram path on the real data
+(a few minutes on `gpu_test`; its numbers are not results). When its log ends
+with `finished`, submit the study:
 
 ```bash
-bash slurm/chain.sh 2 --job-name=image-encoder-pretrained slurm/job.sbatch \
-  python scripts/train_lightning.py "${PROTOCOL[@]}" \
-  --dedup-identical-forces True --eval-dedup-identical-forces True \
-  --pretrained \
-  --output-dir experiment_results/image-encoder/pretrained
+sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch   omnifuser train "${PROTOCOL[@]}" --image-lag 1 --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
 ```
 
-**Experimental: previous-pass photo** (compare with 3a, which uses the
-same-pass photo):
-
 ```bash
-bash slurm/chain.sh 2 --job-name=image-lag-1 slurm/job.sbatch \
-  python scripts/train_lightning.py "${PROTOCOL[@]}" \
-  --dedup-identical-forces True --eval-dedup-identical-forces True \
-  --image-lag 1 \
-  --output-dir experiment_results/image-lag-1/full-model
+bash slurm/chain.sh 2 --job-name=image-source-source-v1 slurm/job.sbatch \
+  python scripts/run_experiment_suite.py --study image-source --run-id source-v1 \
+  --output-root experiment_results "${PROTOCOL[@]}"
 ```
 
 **Duplicate handling study** (2 runs, both scored on the same deduplicated
@@ -918,18 +931,22 @@ Once or twice a day, about 10 minutes:
    `completed` with all its variants.
 2. Compare every finished run with the paper in one go. This writes
    `paper-comparison.json` and `paper-comparison.txt` into each run folder
-   (suite variants included) and takes a minute or two:
+   (suite variants included). It starts Python once per run, about 45
+   times, so it runs as a short CPU job (`srun`) rather than on the login
+   node:
 
    ```bash
    cd "$WORKDIR/OmniFuser"
-   source slurm/env.sh
-   find experiment_results -name cross-validation-results.json -printf '%h\n' | sort | while read -r dir; do
-     echo "== $dir"
-     python scripts/compare_with_paper.py "$dir" --json "$dir/paper-comparison.json" > "$dir/paper-comparison.txt"
-   done
+   srun --partition=cpu_short --time=00:30:00 bash -c '
+     source slurm/env.sh
+     find experiment_results -name cross-validation-results.json -printf "%h\n" | sort | while read -r dir; do
+       echo "== $dir"
+       python scripts/compare_with_paper.py "$dir" --json "$dir/paper-comparison.json" > "$dir/paper-comparison.txt"
+     done'
    ```
 
-   `find ... -printf '%h\n'` lists the folder of every finished run; the
+   `srun` waits for a CPU node, runs the quoted commands there and returns.
+   `find ... -printf "%h\n"` lists the folder of every finished run; the
    loop runs the comparison on each and saves the printed table.
 3. Note in your record the commit (`git log -1 --oneline`) and the GPU type.
 
@@ -983,7 +1000,7 @@ closes.
 | `cannot resume ...; study settings differ from suite.json` | A suite resubmitted with the same `--run-id` but other settings | The original command, or a new `--run-id` |
 | `the following argument is required: --dedup-identical-forces` | A `train_lightning.py` command without the duplicate setting | Add `--dedup-identical-forces True` (or `False`) |
 | `unrecognized arguments` or `argument --data-dir: expected one argument` | `PROTOCOL` not defined in this terminal, or written as `$PROTOCOL` | Run the §9 block; write `"${PROTOCOL[@]}"` |
-| The pretrained run fails while downloading weights | Compute nodes without internet, and the weights not cached | Run the 7.4 command on the login node, then resubmit |
+| A pretrained variant fails while downloading weights | Compute nodes without internet, and the weights not cached | Run the 7.4 command on the login node, then resubmit |
 | `DependencyNeverSatisfied` in `squeue` | The previous part of a chain was cancelled | `scancel` that part and submit the chain again |
 | `git clone` fails | No GitHub access from Ruche | Use the archive route in §5 |
 
@@ -1035,6 +1052,8 @@ from §12.
 | 4 | `bash slurm/chain.sh N --job-name=ablations-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study ablations --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
 | 5 | `bash slurm/chain.sh N --job-name=missing-modality-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study missing-modality --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
 | 6 | `bash slurm/chain.sh N --job-name=sensitivity-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+| 7 | `bash slurm/chain.sh N --job-name=image-encoder-encoder-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+| Image source (optional) | `bash slurm/chain.sh N --job-name=image-source-source-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study image-source --run-id source-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
 
 The optional runs are in §15. Every long command can be split over several
 lines with a `\` at the end of each line except the last, as in the

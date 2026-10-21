@@ -45,7 +45,7 @@ the maintained code. Verdicts:
 | A3 | MRTE: RTD blocks stacked, \(Z^r=\sum_l \tilde U^{(l)}\) | Cascaded blocks (each downsamples the previous), outputs summed | Match + choice |
 | A4 | Eq. 3: \(T=\hat H PQ\), \(S=\hat H-T\), \(U=T+S\) | `decomp_mode=branch`: separate trend/seasonal FFNs, then sum (Fig. 5) | Deviation (flag `--decomp-mode literal`). As printed, \(U=T+S=\hat H\), so the low-rank split does nothing. Fig. 5 draws one FFN per component. Fig. 13's re-LR-MA ablation changes the MSE, which also implies the split matters. |
 | A5 | FFD restores length \(T_l\to T\) | Linear over time + channel MLP | Match + choice |
-| A6 | Eq. 4: lightweight EfficientNet (Fig. 4 lists the B0 stages) | torchvision EfficientNet-B0, 128×384 input, random init in all main runs; `--pretrained` (ImageNet weights plus ImageNet input normalization) is an optional comparison run | Match + choice |
+| A6 | Eq. 4: lightweight EfficientNet (Fig. 4 lists the B0 stages) | torchvision EfficientNet-B0, 128×384 input, random init in all main runs; `--pretrained` (ImageNet weights) is an optional comparison run; photos are ImageNet-normalized in every run | Match + choice |
 | A7 | GAT over the \(T\) frame features, fully connected temporal graph | `GraphAttentionLayer` ×4, 4 heads, residual + LayerNorm + ELU | Match + choice |
 | A8 | Positional and periodic embeddings added after the GAT | `ImageBranch.forward` | Match |
 | A9 | Eq. 5: \(S=ZW'\), Frobenius-orthogonal \(P\) | `_decompose` | Match |
@@ -73,7 +73,7 @@ the maintained code. Verdicts:
 | B4 | Epochs, checkpoint selection | 30 epochs, best validation loss | Match + choice (not stated) |
 | B5 | Metrics: MSE, MAE; Accuracy, Precision, Recall, F1 | all, plus weighted variants, AUC, RMSE, per lead/channel | Match |
 | B6 | Horizons 12-96 | one \(P=96\) model, cumulative leads 1..h | Match + choice (paper may train one model per horizon) |
-| B7 | Image replicated over every sensor reading of the **same** pass | protocol `--image-lag 0` (same pass's photo); `--image-lag 1` (previous pass's photo) is an experimental run | Match. Caveat: copying the shown photo's label scores 0.92-0.99 cumulative accuracy at 1 s steps, above the paper's own OmniFuser (EDA.md §7), so accuracy partly measures reading the label off the input. The lag-1 run quantifies this. |
+| B7 | Image replicated over every sensor reading of the **same** pass | protocol `--image-lag 0` (same pass's photo); `--image-lag 1` (previous pass's image; a tool's first pass then shows none) is an experiment | Match. Caveat: copying the shown photo's label scores 0.92-0.99 cumulative accuracy at 1 s steps, above the paper's own OmniFuser (EDA.md §7), so accuracy partly measures reading the label off the input. The lag-1 run quantifies this. |
 | B8 | Input length \(T\), time step, normalization, data split | \(T=96\); 1 s mean pooling; train-tool z-score; 10-fold leave-one-tool-out | Not verifiable (paper is silent); choices recorded in the EDA |
 | B9 | Fig. 13 ablations | 9 variants (`--ablation`) | Match + choice (replacement operators unspecified) |
 | B10 | Figs. 7-8 sensitivity | 8 axes in `run_experiment_suite.py --study sensitivity` | Match |
@@ -172,7 +172,7 @@ not a reproduction of the paper's scores.
 | Eq. 2, resolution-wise depthwise temporal convolution | `RTDBlock` and `MultiResolutionTemporalExtractor` in [`omnifuser/models.py`](omnifuser/models.py). | The grouped depthwise Conv1d, kernel=stride, channel projection, and zero-padding to a complete final window follow the stated operator. Padding convention for lengths not divisible by stride is an implementation choice. The multiblock cascade is a choice; Eq. 2's notation can also be read as parallel blocks. |
 | Eq. 3, trend and seasonal terms | Low-rank `down @ P @ Q` and residual subtraction in `RTDBlock`. | The factorization and subtraction are represented. **The printed \(U=T+S\) cancels algebraically** because \(S=H-T\). Default `branch` applies separate feed-forward layers to the terms, following Fig. 5; `literal` exposes the equation's identity behavior. The paper does not resolve this contradiction. |
 | Text after Eq. 3, restore the temporal length | `time_up` followed by GELU and a channel feed-forward in `RTDBlock`. | The output length is restored, but a learned linear map over the time dimension plus the channel MLP is a choice: the paper does not specify the internals of the independent restoration feed-forward. |
-| Eq. 4 and Sec. V-B, image representation | `ImageFeatureEncoder` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | EfficientNet is implemented with torchvision EfficientNet-B0 by default. B0, image resize to 128x384, random rather than pretrained initialization, and the projection from 1280 features to \(d\) are decisions because the paper calls the backbone lightweight EfficientNet without fixing all these choices. `--pretrained` opts into ImageNet weights and then normalizes the [0, 1] pixels with the ImageNet mean and standard deviation, which those weights expect; random initialization leaves the pixels unchanged. |
+| Eq. 4 and Sec. V-B, image representation | `ImageFeatureEncoder` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | EfficientNet is implemented with torchvision EfficientNet-B0 by default. B0, image resize to 128x384, random rather than pretrained initialization, and the projection from 1280 features to \(d\) are decisions because the paper calls the backbone lightweight EfficientNet without fixing all these choices. `--pretrained` opts into ImageNet weights. Photos are divided by 255 and normalized with the ImageNet mean and standard deviation in the data pipeline for every run, which is what those weights expect. |
 | Sec. V-B, image temporal graph attention | `GraphAttentionLayer` and `ImageBranch` in [`omnifuser/models.py`](omnifuser/models.py). | A fully connected temporal graph and learned attention are implemented. The additive source/target score, LeakyReLU slope, residual connection, ELU, LayerNorm, and projection details are not fully specified in the paper and are choices. The stated layer/head counts are defaults. |
 | Sec. VI-A, image-to-pass association | `make_tool_timelines`, `WindowDataset`, and `collate_windows` in [`omnifuser/data.py`](omnifuser/data.py); image gathering in `ImageBranch`. | A pass image is represented at every force sample in its pass and selected for each timestep. The implementation indexes and gathers each unique photo; it does not duplicate image files or materialize one image tensor per force row. `image_lag=0` is the paper's same-pass association; `image_lag=1` (the protocol) shows the preceding pass's photo. With lag 0, copying the photo's label already scores 0.92-0.99 cumulative accuracy at 1 s steps (`EDA.md` §7). The protocol nevertheless uses lag 0, the paper's association, and runs lag 1 as an experiment that measures this effect. Acquisition timestamps are absent, so photo timing relative to a pass is not verified. |
 | Eq. 5 and Sec. V-C, shared/private information separation | `_decompose` in `CrossModalFusionLayer` in [`omnifuser/models.py`](omnifuser/models.py). | The shared projection and Frobenius-orthogonal private residual follow the equation, including the projection across the complete sequence-feature matrix. The stabilizing denominator clamp is a numerical detail. Eq. 5 gives \(Z=P+cS\), not the stated \(Z=P+S\). `--exact-split` uses the projection \(cS\) as the shared part, so \(Z=P+S\) holds exactly (the Eq. 7 reading). It is off by default. |
@@ -268,12 +268,11 @@ See [`omnifuser/config.py`](omnifuser/config.py) and
 ## Verification boundary
 
 The focused integration tests and model-summary count check validate the
-maintained code using real PyTorch in this workspace. The supplied
-`omnifuser_blocks12/tests/test_block12_fullmodel.py` is not runnable unchanged
-because it imports earlier reference/test assets absent from the supplied
-Blocks 12/9-11 directories and the root test tree. The NumPy parity figures in
-`omnifuser_blocks12/BLOCKS_12_NOTES.md` therefore remain reported patch-author
-evidence, not independently re-run parity tests here.
+maintained code using real PyTorch in this workspace. The archived Blocks
+9-12 patch bundles (removed on 2026-10-21, still in git history) shipped a
+full-model reference test that could not run unchanged, because it imported
+assets absent from the bundles; their NumPy parity figures therefore remain
+reported patch-author evidence, not independently re-run parity tests here.
 
 The repository's capped CPU smoke tests do not validate CUDA throughput,
 memory, or training quality. Before production training, confirm CUDA in the
@@ -281,5 +280,5 @@ Lightning AI Studio, run one uncapped fold using the intended EfficientNet
 settings and persistent storage, inspect epoch time/peak memory and validation
 metrics, and only then launch the ten-fold run. The executable commands are in
 [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). The complete record of what was
-verified (static checks, 127 tests, real-data runs of every
+verified (static checks, 131 tests, real-data runs of every
 entry point and flag) is in `IMPLEMENTATION_AUDIT.md` §10.

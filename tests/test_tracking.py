@@ -80,29 +80,3 @@ def test_tracker_resumes_on_different_hardware_and_records_it(tmp_path) -> None:
     with pytest.raises(ValueError, match="different configuration"):
         ExperimentTracker(tmp_path, {"seed": 2, "runtime": {"gpu_name": "NVIDIA L4"}})
 
-
-def test_tracker_migrates_legacy_csv_without_losing_metric_rows(tmp_path) -> None:
-    tracker = ExperimentTracker(tmp_path, {"dataset": "Nonastreda"})
-    csv_path = tmp_path / "tracking" / "metrics.csv"
-    csv_path.write_text(
-        "timestamp_utc,run_id,fold,epoch,split,metric,value\n"
-        "now,run,T1,1,train,loss,2.5\n",
-        encoding="utf-8",
-    )
-
-    resumed = ExperimentTracker(tmp_path, {"dataset": "Nonastreda"})
-    resumed.log(
-        split="test",
-        fold="T1",
-        epoch=1,
-        metrics={"loss": 1.5},
-        context={"evaluation_mode": "sensor_missing"},
-    )
-
-    with csv_path.open(newline="", encoding="utf-8") as file:
-        rows = list(csv.DictReader(file))
-    assert len(rows) == 2
-    assert rows[0]["evaluation_mode"] == ""
-    assert rows[0]["value"] == "2.5"
-    assert rows[1]["evaluation_mode"] == "sensor_missing"
-    assert resumed.run_id == tracker.run_id

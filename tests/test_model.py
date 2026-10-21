@@ -127,6 +127,10 @@ def test_adaptive_landmarks_are_temporal_weighted_averages() -> None:
 def test_rtd_and_multitask_model_forward_backward() -> None:
     config = _config()
     block = RTDBlock(config.input_len, config)
+    # Eq. 2: depthwise temporal convolution with kernel = stride = s_l (3, as documented)
+    assert config.rtd_stride == 3
+    assert block.depthwise.kernel_size == (3,) and block.depthwise.stride == (3,)
+    assert block.depthwise.groups == config.d_model
     down, restored = block(torch.randn(2, config.input_len, config.d_model))
     assert down.shape == (2, 4, config.d_model)
     assert restored.shape == (2, config.input_len, config.d_model)
@@ -421,12 +425,22 @@ def test_image_encoder_rejects_unknown_names_instead_of_falling_back() -> None:
         ModelConfig(image_encoder="efficientnet-b0")
 
 
-def test_pretrained_encoder_normalizes_inputs_with_imagenet_statistics(
-    monkeypatch: pytest.MonkeyPatch,
+def test_photos_are_imagenet_normalized_exactly_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    import numpy as np
     import torchvision.models as tvm
+    from PIL import Image
 
-    from omnifuser.models import IMAGENET_MEAN, IMAGENET_STD, ImageFeatureEncoder
+    from omnifuser.data import IMAGE_MEAN, IMAGE_STD, ImageBank
+    from omnifuser.models import ImageFeatureEncoder
+
+    # the data pipeline applies the ImageNet statistics that pretrained weights expect
+    pixels = np.random.default_rng(0).integers(0, 256, (32, 96, 3), dtype=np.uint8)
+    Image.fromarray(pixels).save(tmp_path / "photo.png")
+    bank = ImageBank([tmp_path / "photo.png"], height=32, width=96)
+    expected = (pixels.astype(np.float32) / 255.0 - IMAGE_MEAN) / IMAGE_STD
+    assert torch.allclose(bank.tensor(tmp_path / "photo.png"), torch.from_numpy(expected.transpose(2, 0, 1)))
 
     # an untrained backbone stands in for the download; the weights requested are recorded
     real = tvm.efficientnet_b0
@@ -445,10 +459,65 @@ def test_pretrained_encoder_normalizes_inputs_with_imagenet_statistics(
     pretrained(images)
     scratch(images)
 
+    # both encoders pass the already-normalized pixels through unchanged
     flat = images.flatten(0, 1)
-    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1)
-    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1)
-    assert torch.allclose(seen[0], (flat - mean) / std)
-    assert torch.equal(seen[1], flat)  # from scratch: pixels unchanged
-    # the statistics are not saved, so checkpoints keep the same keys
+    assert torch.equal(seen[0], flat)
+    assert torch.equal(seen[1], flat)
     assert set(pretrained.state_dict()) == set(scratch.state_dict())
+
+
+def _fit(model: OmniFuser, inputs: tuple, force_target: torch.Tensor, class_target: torch.Tensor, steps: int) -> list[float]:
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-3)
+    losses = []
+    model.train()
+    for _ in range(steps):
+        optimizer.zero_grad()
+        loss, _ = multitask_loss(model(*inputs), force_target, class_target)
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach()))
+    return losses
+
+
+def test_model_learns_end_to_end_by_memorizing_a_small_batch() -> None:
+    """Competence check: the whole model, trained with its real loss, can fit data."""
+    torch.manual_seed(0)
+    config = _config("direct")
+    model = OmniFuser(config)
+    force = torch.randn(8, config.input_len, 3)
+    images = torch.randn(8, 2, 3, 16, 24)
+    indices = torch.tensor([[0] * 6 + [1] * 6] * 8)
+    force_target = torch.randn(8, config.horizon, 3)
+    class_target = torch.randint(0, 3, (8, config.horizon))
+    losses = _fit(model, (force, images, indices), force_target, class_target, steps=150)
+    assert losses[-1] < 0.2 * losses[0]
+    model.eval()
+    with torch.no_grad():
+        predicted = model(force, images, indices)["class_logits"].argmax(-1)
+    assert torch.equal(predicted, class_target)
+
+
+def test_image_information_reaches_the_class_head_through_fusion() -> None:
+    """The class depends only on the image; the force input is noise.
+
+    The model must learn it through the image branch and C2F, and fall back to
+    chance when the image is masked at inference.
+    """
+    torch.manual_seed(1)
+    config = _config("direct")
+    model = OmniFuser(config)
+    classes = torch.arange(24) % 3
+    patterns = torch.randn(3, 3, 16, 24)
+    images = patterns[classes][:, None]  # one image per window, chosen by its class
+    indices = torch.zeros(24, config.input_len, dtype=torch.long)
+    force = torch.randn(24, config.input_len, 3)
+    class_target = classes[:, None].expand(-1, config.horizon)
+    force_target = torch.zeros(24, config.horizon, 3)
+    _fit(model, (force, images, indices), force_target, class_target, steps=150)
+    model.eval()
+    with torch.no_grad():
+        fresh_force = torch.randn_like(force)  # unseen force: only the image can help
+        accuracy = (model(fresh_force, images, indices)["class_logits"].argmax(-1) == class_target).float().mean()
+        masked = model(fresh_force, images, indices, drop_modality="image")["class_logits"].argmax(-1)
+    assert accuracy == 1.0
+    assert (masked == class_target).float().mean() < 0.7

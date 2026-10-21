@@ -16,6 +16,7 @@ from omnifuser.data import (
     load_nonastreda,
     make_tool_timelines,
 )
+from omnifuser.spectrogram import SpectrogramSettings
 from omnifuser.train import train_fold
 
 
@@ -171,8 +172,36 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         help="use the Eq. 7 projection c*S as the shared part so Z = P + S exactly",
     )
     parser.add_argument("--modality-dropout", type=float, default=0.0)
-    parser.add_argument("--pretrained", action="store_true")
+    parser.add_argument(
+        "--pretrained",
+        action="store_true",
+        help="start EfficientNet-B0 from ImageNet weights (experiment; main runs train from scratch)",
+    )
+    parser.add_argument(
+        "--freeze-image-encoder",
+        action="store_true",
+        help="with --pretrained: keep the backbone weights and BatchNorm statistics fixed",
+    )
     parser.add_argument("--freeze-bn", action="store_true")
+    parser.add_argument(
+        "--image-source",
+        choices=("photo", "spectrogram"),
+        default="photo",
+        help="photo: the tool photos (paper, main runs); spectrogram: per-pass STFT images "
+        "of the raw force (experiment; needs --image-lag 1)",
+    )
+    parser.add_argument(
+        "--spectrogram-window",
+        type=int,
+        default=1024,
+        help="STFT window in raw samples for --image-source spectrogram",
+    )
+    parser.add_argument(
+        "--spectrogram-hop",
+        type=int,
+        default=256,
+        help="STFT hop in raw samples for --image-source spectrogram",
+    )
     parser.add_argument(
         "--decomp-mode",
         choices=("branch", "literal"),
@@ -222,6 +251,7 @@ class ProtocolKwargs(TypedDict):
     num_workers: int
     resume: bool
     config_overrides: dict[str, Any]
+    spectrogram: SpectrogramSettings | None
 
 
 def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
@@ -235,6 +265,7 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "modality_dropout": args.modality_dropout,
         "pretrained": args.pretrained,
         "freeze_bn": args.freeze_bn,
+        "freeze_image_encoder": args.freeze_image_encoder,
     }
     for attribute, field in ARCHITECTURE_OPTIONS.items():
         value = getattr(args, attribute, None)
@@ -248,6 +279,11 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "num_workers": args.num_workers,
         "resume": args.resume,
         "config_overrides": overrides,
+        "spectrogram": (
+            SpectrogramSettings(args.spectrogram_window, args.spectrogram_hop)
+            if args.image_source == "spectrogram"
+            else None
+        ),
     }
 
 

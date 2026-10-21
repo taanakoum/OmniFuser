@@ -1,11 +1,8 @@
-import importlib.util
 import json
 from pathlib import Path
 
-import numpy as np
-
 from omnifuser.cross_validation import _load_finished_fold
-from omnifuser.data import Record, nonastreda_source_signature
+from omnifuser.data import nonastreda_source_signature
 from omnifuser.train import _accumulation_group_sample_count
 
 
@@ -13,30 +10,6 @@ def test_partial_gradient_accumulation_group_is_sample_weighted() -> None:
     assert _accumulation_group_sample_count(5, 2, 1, 2) == 4
     assert _accumulation_group_sample_count(5, 2, 2, 2) == 4
     assert _accumulation_group_sample_count(5, 2, 3, 2) == 1
-
-
-def test_diagnostic_normalizer_uses_pooled_records() -> None:
-    module_spec = importlib.util.spec_from_file_location(
-        "task_diagnostics",
-        Path(__file__).parents[1] / "scripts" / "task_diagnostics.py",
-    )
-    assert module_spec is not None and module_spec.loader is not None
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
-    first = Record(
-        "T1R1B1",
-        "T1",
-        1,
-        1,
-        np.asarray([[0.0], [10.0], [0.0], [10.0]], dtype=np.float32),
-        0,
-        Path("one.jpg"),
-    )
-    pooled = module.pool_records([first], 2)
-    mean, scale = module.fit_diagnostic_normalizer(pooled)
-    assert np.allclose(mean, [5.0])
-    assert np.allclose(scale, [1.0])
-    assert not np.allclose(scale, first.force.std(axis=0))
 
 
 def test_finished_fold_reuse_checks_training_settings_and_artifacts(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@
 #SBATCH --job-name=step0-checks
 #SBATCH --output=experiment_results/logs/%x-%j.out
 #SBATCH --partition=cpu_short
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=01:00:00
@@ -17,6 +18,9 @@ fi
 cd "$SLURM_SUBMIT_DIR" || exit 2
 source slurm/env.sh
 set -eo pipefail
+# Keep CPU thread pools inside the cores SLURM granted (Ruche gives 4 GB per core).
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 echo "job $SLURM_JOB_ID on $(hostname), started $(date)"
 echo "=== tests"

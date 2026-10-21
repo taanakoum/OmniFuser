@@ -17,6 +17,7 @@ from omnifuser.cli import (
 )
 from omnifuser.config import ModelConfig
 from omnifuser.cross_validation import EVALUATION_MODES, run_cross_validation
+from omnifuser.spectrogram import SpectrogramSettings
 
 # Paper Figs. 7-8 axes: (run-name prefix, ModelConfig field, paper symbol, values).
 SENSITIVITY_AXES = (
@@ -128,6 +129,43 @@ def _deduplication_runs(eval_dedup: bool = True) -> list[dict[str, Any]]:
     ]
 
 
+def _image_encoder_runs() -> list[dict[str, Any]]:
+    """Photo encoder initialization: the main runs train from scratch."""
+    return [
+        {
+            "name": name,
+            "group": "image-encoder",
+            "overrides": {"pretrained": pretrained, "freeze_image_encoder": frozen},
+        }
+        for name, pretrained, frozen in (
+            ("from-scratch", False, False),
+            ("pretrained-finetuned", True, False),
+            ("pretrained-frozen", True, True),
+        )
+    ]
+
+
+def _image_source_runs() -> list[dict[str, Any]]:
+    """What the image branch sees, all with the previous pass's image (lag 1).
+
+    Spectrograms need lag 1 (no future force), so the photo arm uses lag 1 as well
+    and the three variants differ only in the image source and its initialization.
+    """
+    return [
+        {
+            "name": name,
+            "group": "image-source",
+            "overrides": {"pretrained": pretrained, "freeze_image_encoder": False},
+            "data_overrides": {"image_lag": 1, "image_source": source},
+        }
+        for name, source, pretrained in (
+            ("photo-previous-pass", "photo", False),
+            ("spectrogram", "spectrogram", False),
+            ("spectrogram-pretrained", "spectrogram", True),
+        )
+    ]
+
+
 def _experiment_runs(
     study: str,
     baseline: dict[str, Any] | None = None,
@@ -142,6 +180,10 @@ def _experiment_runs(
         return _missing_modality_runs(dropout_rates)
     if study == "deduplication":
         return _deduplication_runs(eval_dedup)
+    if study == "image-encoder":
+        return _image_encoder_runs()
+    if study == "image-source":
+        return _image_source_runs()
     # In the combined study the ablation full model is the shared reference arm.
     return (
         _ablation_runs()
@@ -160,8 +202,9 @@ def _write_manifest(path: Path, manifest: dict[str, Any]) -> None:
 def _write_suite_summary(study_root: Path, manifest: dict[str, Any]) -> Path:
     """One row per variant with fold mean/std test metrics for every input mode."""
     fieldnames = [
-        "group", "variant", "status", "changed_settings", "dedup_identical_forces",
-        "eval_dedup_identical_forces", "retained_passes", "evaluation_passes",
+        "group", "variant", "status", "changed_settings", "image_lag", "image_source",
+        "dedup_identical_forces", "eval_dedup_identical_forces", "retained_passes",
+        "evaluation_passes",
         "train_windows.mean", "test_windows.mean",
     ]
     for mode in EVALUATION_MODES:
@@ -175,6 +218,8 @@ def _write_suite_summary(study_root: Path, manifest: dict[str, Any]) -> Path:
             "variant": variant,
             "status": record.get("status"),
             "changed_settings": json.dumps(record.get("changed_settings", {}), sort_keys=True),
+            "image_lag": record.get("image_lag"),
+            "image_source": record.get("image_source"),
             "dedup_identical_forces": record.get("dedup_identical_forces"),
             "eval_dedup_identical_forces": record.get("eval_dedup_identical_forces"),
         }
@@ -217,9 +262,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--study",
-        choices=("ablations", "sensitivity", "missing-modality", "deduplication", "all"),
+        choices=(
+            "ablations",
+            "sensitivity",
+            "missing-modality",
+            "all",
+            "image-encoder",
+            "image-source",
+            "deduplication",
+        ),
         default="ablations",
-        help="'all' runs the three paper studies; 'deduplication' compares --dedup-identical-forces True and False",
+        help=(
+            "'all' runs the three paper studies; 'image-encoder' compares a from-scratch, "
+            "a fine-tuned and a frozen pretrained photo encoder; 'image-source' compares "
+            "previous-pass photos with force spectrograms; 'deduplication' compares "
+            "--dedup-identical-forces True and False"
+        ),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
     parser.add_argument("--output-root", type=Path, default=Path("experiment_results"))
@@ -367,9 +425,16 @@ def main(argv: list[str] | None = None) -> Path:
             changed_settings["ablation"] = spec["ablation"]
         config_overrides.update(changed_settings)
         model_width = int(config_overrides.pop("d_model", args.d_model))
-        # Data settings vary per variant only in the deduplication study; they are
-        # passed to the loader, never to ModelConfig.
+        # Data settings (duplicates, image timing and source) vary per variant in some
+        # studies; they go to the loader, never to ModelConfig.
         data_overrides = dict(spec.get("data_overrides", {}))
+        image_lag = int(data_overrides.get("image_lag", args.image_lag))
+        image_source = str(data_overrides.get("image_source", args.image_source))
+        spectrogram = (
+            SpectrogramSettings(args.spectrogram_window, args.spectrogram_hop)
+            if image_source == "spectrogram"
+            else None
+        )
         dedup_identical_forces = bool(
             data_overrides.get("dedup_identical_forces", args.dedup_identical_forces)
         )
@@ -385,6 +450,8 @@ def main(argv: list[str] | None = None) -> Path:
             "changed_settings": changed_settings,
             "config_overrides": config_overrides,
             "d_model": model_width,
+            "image_lag": image_lag,
+            "image_source": image_source,
             "dedup_identical_forces": dedup_identical_forces,
             "eval_dedup_identical_forces": eval_dedup_identical_forces,
             "output_dir": str(run_path.relative_to(study_root)),
@@ -395,6 +462,8 @@ def main(argv: list[str] | None = None) -> Path:
         print(f"=== {run_key} ({changed_settings or 'baseline'}) ===", flush=True)
         run_protocol = common_protocol.copy()
         run_protocol["config_overrides"] = config_overrides
+        run_protocol["image_lag"] = image_lag
+        run_protocol["spectrogram"] = spectrogram
         try:
             summary = run_cross_validation(
                 data_dir=args.data_dir,

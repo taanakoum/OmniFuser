@@ -282,8 +282,8 @@ def _spearman(x: Sequence[float], y: Sequence[float]) -> dict[str, float]:
 
 
 def _shown_labels(timeline: ToolTimeline) -> np.ndarray:
-    """Label of the photo shown at each step (the step's own label if not tracked)."""
-    return timeline.image_labels if timeline.image_labels is not None else timeline.labels
+    """Label of the photo shown at each step (-1 where no photo is shown)."""
+    return timeline.image_labels
 
 
 def _record_codes(timeline: ToolTimeline) -> np.ndarray:

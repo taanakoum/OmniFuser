@@ -6,7 +6,6 @@ Tests marked (torch) are skipped when PyTorch is not installed. The others need 
 """
 from __future__ import annotations
 
-import importlib.util
 import json
 import shutil
 import sys
@@ -167,7 +166,12 @@ def test_image_lag_uses_previous_pass_photo_but_own_label():
             shown_path = lag.image_paths[int(lag.image_codes[segment][0])]
             assert (lag.image_codes[segment] == lag.image_codes[segment][0]).all()
             if previous is None:
-                assert shown_path == record.image_path
+                # a tool's first pass has no previous pass: no image, and no label to copy
+                from omnifuser.data import NO_IMAGE, NO_IMAGE_LABEL
+
+                assert shown_path == NO_IMAGE
+                assert lag.image_labels is not None
+                assert (lag.image_labels[segment] == NO_IMAGE_LABEL).all()
             else:
                 assert shown_path == previous.image_path
                 assert lag.image_labels is not None
@@ -202,12 +206,6 @@ def test_window_item_exposes_label_of_the_shown_photo():
                 assert shown is not None
                 expected = shown[index * 120 + 95]
                 assert int(item["shown_label"]) == int(expected)
-        # a ToolTimeline built without image_labels (old call sites) still works
-        import dataclasses
-
-        legacy = dataclasses.replace(timelines[0], image_labels=None)
-        item = WindowDataset([legacy], ForceNormalizer.fit([legacy]), 96, 24, 120)[0]
-        assert int(item["shown_label"]) == int(legacy.labels[95])
 
 
 def test_image_bank_pixels_match_the_reference_decode():
@@ -256,16 +254,6 @@ def test_regression_report_has_normalised_per_horizon_metrics():
     assert len(report["by_horizon_normalized"]) == 24 and report["by_horizon_normalized"][0]["mse"] == 1.0
 
 
-def test_diagnostics_window_starts():
-    spec = importlib.util.spec_from_file_location("task_diagnostics", ROOT / "scripts" / "task_diagnostics.py")
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    starts = module.window_starts(1000, 96, 24, 24, None)
-    assert starts[0] == 0 and starts[-1] + 96 + 24 <= 1000 and np.all(np.diff(starts) == 24)
-    assert len(module.window_starts(100000, 96, 24, 24, 100)) <= 100
-
-
 # --------------------------------------------------------------------------------------------- models (torch)
 def _tiny_inputs(batch=2, config=None):
     import torch
@@ -280,6 +268,7 @@ def _tiny_inputs(batch=2, config=None):
 def _compact(**kwargs):
     from omnifuser.config import ModelConfig
 
+    kwargs.setdefault("horizon", 24)  # the library default is the protocol's 96
     return ModelConfig(image_encoder="compact", **kwargs)
 
 
@@ -431,7 +420,7 @@ def test_bank_tensor_equals_image_tensor_and_collate_carries_shown_label():
 def _smoke_kwargs(root: Path, out: Path) -> dict[str, Any]:
     return {"data_dir": root, "output_dir": out, "epochs": 2, "batch_size": 2, "device_name": "cpu",
             "trim_pass": False, "image_encoder": "compact", "max_train_windows": 4, "max_eval_windows": 2,
-            "num_workers": 0}
+            "num_workers": 0, "horizon": 24}
 
 
 def test_train_fold_end_to_end_with_new_options_and_resume():
@@ -458,7 +447,7 @@ def test_train_fold_end_to_end_with_new_options_and_resume():
 
         from omnifuser.config import ModelConfig
 
-        expected = asdict(ModelConfig(image_encoder="compact", prediction_head="direct", **overrides))
+        expected = asdict(ModelConfig(image_encoder="compact", prediction_head="direct", horizon=24, **overrides))
         settings = {"pool": 2, "image_lag": 1, "decimation": 1, "label_column": "image_label",
                     "dedup_identical_forces": True, "trim_pass": False, "model_selection": "best_validation_loss"}
         assert _load_finished_fold(out, "T1", expected, settings, 2, 2) is not None

@@ -7,7 +7,7 @@ class ModelConfig:
 
     d_model: int = 32
     input_len: int = 96
-    horizon: int = 24
+    horizon: int = 96
     force_channels: int = 3
     num_classes: int = 3
     num_rtd_layers: int = 4
@@ -37,6 +37,9 @@ class ModelConfig:
     modality_dropout: float = 0.0
     pretrained: bool = False
     freeze_bn: bool = False
+    # Keep the pretrained backbone's weights (and BatchNorm statistics) fixed; only the
+    # projection to d_model and everything after it train.
+    freeze_image_encoder: bool = False
     ablation: str = "none"
 
     def __post_init__(self) -> None:
@@ -70,6 +73,8 @@ class ModelConfig:
             raise ValueError("modality_dropout must be in [0, 1)")
         if self.pretrained and self.image_encoder != "efficientnet_b0":
             raise ValueError("pretrained weights are only supported for efficientnet_b0")
+        if self.freeze_image_encoder and not self.pretrained:
+            raise ValueError("freeze_image_encoder needs pretrained weights; frozen random weights learn nothing")
         if self.ablation not in {
             "none",
             "without_rr",

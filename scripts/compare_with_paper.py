@@ -1,7 +1,7 @@
 """Compare finished fold JSON files with the OmniFuser paper's Tables IV-V.
 
 Example:
-    python scripts/compare_with_paper.py runs/a_lag1_pool1000_direct
+    python scripts/compare_with_paper.py experiment_results/main/full-model
 """
 
 from __future__ import annotations
@@ -120,8 +120,16 @@ def main() -> None:
 
     folds = load_folds(args.run_dir)
     first = folds[0]
+    config = first.get("config", {})
+    image_source = "spectrogram" if first.get("spectrogram") else "photo"
+    encoder = (
+        "pretrained-frozen" if config.get("freeze_image_encoder")
+        else "pretrained" if config.get("pretrained")
+        else "from scratch"
+    )
     print(
-        f"{len(folds)} fold(s); image_lag={first.get('image_lag')}, "
+        f"{len(folds)} fold(s); image={image_source} ({encoder}), "
+        f"image_lag={first.get('image_lag')}, "
         f"pool={first.get('pool')}, label={first.get('label_column')}, "
         f"stride={first.get('stride')}, horizon={first.get('config', {}).get('horizon')}, "
         f"dedup train/eval={first.get('dedup_identical_forces')}/"

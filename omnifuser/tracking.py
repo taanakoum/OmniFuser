@@ -94,32 +94,6 @@ class ExperimentTracker:
 
         self.events_path = self.directory / "metrics.jsonl"
         self.csv_path = self.directory / "metrics.csv"
-        self._migrate_csv_context_column()
-
-    def _migrate_csv_context_column(self) -> None:
-        if not self.csv_path.is_file():
-            return
-        fieldnames = CSV_FIELDS
-        with self.csv_path.open(newline="", encoding="utf-8") as file:
-            reader = csv.DictReader(file)
-            existing_fields = reader.fieldnames
-            if existing_fields == list(fieldnames):
-                return
-            legacy_fields = [
-                name for name in fieldnames if name != "evaluation_mode"
-            ]
-            if existing_fields != legacy_fields:
-                raise ValueError(
-                    f"unsupported experiment metrics CSV schema: {self.csv_path}"
-                )
-            rows = list(reader)
-        temporary_path = self.csv_path.with_suffix(".csv.tmp")
-        with temporary_path.open("w", newline="", encoding="utf-8") as file:
-            writer = csv.DictWriter(file, fieldnames=fieldnames)
-            writer.writeheader()
-            for row in rows:
-                writer.writerow({**row, "evaluation_mode": ""})
-        os.replace(temporary_path, self.csv_path)
 
     def log(
         self,
