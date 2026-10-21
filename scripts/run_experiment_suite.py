@@ -130,7 +130,7 @@ def _deduplication_runs(eval_dedup: bool = True) -> list[dict[str, Any]]:
 
 
 def _image_encoder_runs() -> list[dict[str, Any]]:
-    """Photo encoder initialization: the main runs train from scratch."""
+    """Photo encoder initialization; the main runs use the pretrained, frozen one."""
     return [
         {
             "name": name,
@@ -150,9 +150,9 @@ def _image_source_runs() -> list[dict[str, Any]]:
 
     The main runs' current-pass photo (lag 0) shows the label of the pass being
     forecast. The leak-free alternatives: the previous pass's photo (lag 1), or force
-    spectrograms of the window's own raw input (lag 0; no sample after the input end),
-    from scratch, ImageNet-pretrained and fine-tuned, or pretrained with the backbone
-    frozen (VLT's setting: only the image generator, projection and later layers train).
+    spectrograms of the window's own raw input (lag 0; no sample after the input end).
+    The first two use the main runs' encoder (pretrained, frozen); the spectrogram is
+    repeated with a fine-tuned and a from-scratch encoder, as step 7 does for photos.
     """
     return [
         {
@@ -162,10 +162,10 @@ def _image_source_runs() -> list[dict[str, Any]]:
             "data_overrides": {"image_lag": lag, "image_source": source},
         }
         for name, source, lag, pretrained, frozen in (
-            ("photo-previous-pass", "photo", 1, False, False),
-            ("spectrogram", "spectrogram", 0, False, False),
-            ("spectrogram-pretrained", "spectrogram", 0, True, False),
-            ("spectrogram-pretrained-frozen", "spectrogram", 0, True, True),
+            ("photo-previous-pass", "photo", 1, True, True),
+            ("spectrogram", "spectrogram", 0, True, True),
+            ("spectrogram-finetuned", "spectrogram", 0, True, False),
+            ("spectrogram-from-scratch", "spectrogram", 0, False, False),
         )
     ]
 

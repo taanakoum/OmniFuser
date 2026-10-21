@@ -18,8 +18,12 @@ re-enter the model. Following VLT (Wang et al., arXiv:2607.14510, Sec. III-C), t
   pairs recur. Columns are time, rows are time compressed to the image height.
 
 A learnable convolution (``ModelConfig.image_channels``, VLT Eq. 8) maps these
-``IMAGE_CHANNELS`` maps to the 3 channels EfficientNet-B0 takes; everything after it is
-the paper's image branch, unchanged.
+``IMAGE_CHANNELS`` maps to the 3 channels EfficientNet-B0 takes.
+
+Only this time-to-image construction (VLT Eqs. 5-8) is taken from VLT. Everything
+after it is OmniFuser as implemented here: the EfficientNet-B0 and GAT image branch,
+MRTE, C2F, heads and loss. VLT's Time-MoE, text branch, MAE encoder, attention fusion,
+gradient alignment, consistency loss and two-stage training are not used.
 
 As in the paper, each pass contributes one image, repeated over its steps: a window that
 spans a pass boundary gets one image per pass segment, each built from that pass's

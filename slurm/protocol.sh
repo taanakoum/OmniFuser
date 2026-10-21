@@ -7,5 +7,6 @@ PROTOCOL=(
   --epochs 30 --batch-size 32 --learning-rate 1e-4
   --input-len 96 --horizon 96 --stride 24
   --pool 1000 --image-lag 0 --prediction-head direct
-  --image-encoder efficientnet_b0 --seed 42 --num-workers 4
+  --image-encoder efficientnet_b0 --pretrained --freeze-image-encoder
+  --seed 42 --num-workers 4
 )

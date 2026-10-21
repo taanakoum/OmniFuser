@@ -73,9 +73,10 @@ cross-validations; each one trains 10 models.
 | (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
 
 Every main run uses the paper's same-pass photo (image lag 0), photos as
-the image input and an image encoder trained from scratch, exactly as in the
-Lightning runbook. Step 7 compares that encoder with a pretrained one,
-fine-tuned and frozen. The force spectrograms are an optional experiment
+the image input and an EfficientNet-B0 with ImageNet weights and its backbone
+frozen (`--pretrained --freeze-image-encoder` in `PROTOCOL`), exactly as in
+the Lightning runbook. Step 7 compares it with a fine-tuned and a
+from-scratch encoder. The force spectrograms are an optional experiment
 only (§15). The Lightning runbook's "Main runs and experiments" box, §9, §13
 and §14 explain these choices.
 
@@ -398,8 +399,8 @@ python -c "import torch, torchvision, omnifuser; print(torch.__version__, torchv
 It prints the two versions. CUDA cannot be checked here because the login
 node has no GPU; §10 does that in a GPU job.
 
-**7.4 Download the pretrained image weights once** (for step 7 and the
-optional image-source study, §14-§15). Compute nodes may have no internet access, so do this
+**7.4 Download the pretrained image weights once** (required: every main
+run uses them). Compute nodes may have no internet access, so do this
 on the login node; the file (about 20 MB) is cached in `~/.cache/torch` and
 the jobs find it there:
 
@@ -526,7 +527,7 @@ less experiment_results/logs/step0-checks-*.out
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `127 passed` |
+| `=== tests` | `132 passed` |
 | `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `=== parameter count` | `4,183,600 ... (match)` |
 | `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |
@@ -722,10 +723,10 @@ bash slurm/chain.sh 2 --job-name=image-encoder-encoder-v1 slurm/job.sbatch \
   --output-root experiment_results "${PROTOCOL[@]}"
 ```
 
-Step 7 (`image-encoder`) trains three variants: `from-scratch` (the main-run
-configuration), `pretrained-finetuned` and `pretrained-frozen` (ImageNet
-weights kept fixed, only the projection and the rest of the model train).
-The weights were downloaded in 7.4.
+Step 7 (`image-encoder`) trains three variants: `from-scratch`,
+`pretrained-finetuned` and `pretrained-frozen` (ImageNet weights kept fixed,
+only the projection and the rest of the model train; the main-run
+configuration). The weights were downloaded in 7.4.
 
 - The part counts above are placeholders for about 3 h per 10-fold run;
   use your own from §12.
@@ -745,8 +746,9 @@ runbook §14 explains what each one measures.
 
 **Experimental: image source** (4 runs, images that cannot reveal the
 target): `photo-previous-pass` (image lag 1), and spectrograms of each
-window's own raw 1 kHz input force (image lag 0): `spectrogram`,
-`spectrogram-pretrained` and `spectrogram-pretrained-frozen`. Spectrograms
+window's own raw 1 kHz input force (image lag 0): `spectrogram` (with the
+main runs' frozen ImageNet encoder, like `photo-previous-pass`),
+`spectrogram-finetuned` and `spectrogram-from-scratch`. Spectrograms
 are an optional experiment only. The study sets each variant's image lag
 itself. The Lightning runbook §14 explains how the images are made, why they
 cannot leak the forecast window, and how to read the study. They are

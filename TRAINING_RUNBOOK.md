@@ -50,8 +50,10 @@ needs no extra command.
 > **Main runs and experiments.** Steps 1-6 all use the protocol:
 >
 > - **image lag 0:** each pass is shown its own photo, as in the paper;
-> - **photos as the image input**, through **an EfficientNet-B0 trained from
->   scratch** (no `--pretrained`);
+> - **photos as the image input**, through **an EfficientNet-B0 with ImageNet
+>   weights and its backbone frozen** (`--pretrained --freeze-image-encoder`):
+>   the backbone's weights and BatchNorm statistics stay fixed, and only the
+>   projection after it and the rest of OmniFuser train;
 > - **duplicates merged** (step 3b repeats the full model with them kept).
 >
 > The experiments change one thing at a time, so each compares directly
@@ -59,8 +61,8 @@ needs no extra command.
 >
 > | Experiment | Variants | Differs from step 3a by |
 > |---|---|---|
-> | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen | `--pretrained`, `--freeze-image-encoder` |
-> | Image source, optional (§14) | previous-pass photo; input-window spectrogram from scratch, pretrained fine-tuned, pretrained frozen | `--image-lag 1` (photo); `--image-source spectrogram` (with `--pretrained`, `--freeze-image-encoder`) |
+> | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen (= step 3a) | `--no-pretrained`, `--no-freeze-image-encoder` |
+> | Image source, optional (§14) | previous-pass photo; input-window spectrogram with the main encoder, fine-tuned, from scratch | `--image-lag 1` (photo); `--image-source spectrogram` |
 >
 > The force spectrograms are an optional experiment only: no main run uses
 > them.
@@ -285,7 +287,8 @@ PROTOCOL=(
   --epochs 30 --batch-size 32 --learning-rate 1e-4
   --input-len 96 --horizon 96 --stride 24
   --pool 1000 --image-lag 0 --prediction-head direct
-  --image-encoder efficientnet_b0 --seed 42 --num-workers 4
+  --image-encoder efficientnet_b0 --pretrained --freeze-image-encoder
+  --seed 42 --num-workers 4
 )
 mkdir -p experiment_results/logs
 printf '%s ' "${PROTOCOL[@]}"; echo
@@ -323,11 +326,14 @@ that is how individual steps override it (for example `--epochs 1`).
 | `--image-lag` | 0 | Show each pass its own photo, as the paper does. That photo's label already matches 91 % of the target labels (`EDA.md` §7), so classification partly reads the label off the photo. The previous-pass photo (1) is an experimental run (§14). |
 | `--prediction-head` | `direct` | Separate output weights per forecast step (closest usable reading of Eqs. 21-22) |
 | `--image-encoder` | `efficientnet_b0` | The paper's photo backbone (`compact` is for quick CPU tests) |
+| `--pretrained --freeze-image-encoder` | on | Start EfficientNet-B0 from ImageNet weights and keep its backbone fixed (weights and BatchNorm statistics). The paper does not say whether its EfficientNet was pretrained; with 8 training tools, a frozen ImageNet backbone gives stable photo features, and only the projection to \(d=32\) and the rest of OmniFuser learn. Step 7 compares fine-tuned and from-scratch encoders. |
 | `--seed` | 42 | Random seed. Fold \(i\) uses seed + \(i\). |
 | `--num-workers` | 4 | Background processes preparing batches. Use at most the `nproc` count; 0 loads in the main process. |
 
-`PROTOCOL` has no `--pretrained`, so every main run trains the image
-encoder from scratch; §14 has the pretrained comparison.
+`PROTOCOL` contains `--pretrained --freeze-image-encoder`, so every main
+run uses the frozen ImageNet backbone. Its weights (about 20 MB) are
+downloaded once, in step 0 (§10). Photos are normalized with the ImageNet
+mean and standard deviation in every run, which is what those weights expect.
 
 **Duplicate handling is not in `PROTOCOL`.** You choose it in each command
 instead:
@@ -358,6 +364,7 @@ The architecture defaults equal the paper's values, so they are not in
 
 ```bash
 python -m pytest -o addopts= -q tests
+python -c "from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0; efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1); print('weights cached')"
 python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no CUDA')"
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --input-len 96 --horizon 96 --stride 24
 python scripts/model_summary.py --check
@@ -366,7 +373,8 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 127 tests. `-o addopts=` clears the default options and `-q` keeps the output short. | `127 passed` |
+| `pytest ... tests` | Runs the 132 tests. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use half the CPUs, at most 4 (`OMNIFUSER_TEST_THREADS` changes that). | `132 passed` |
+| `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `model_summary.py --check` | Builds the default model, prints per-block parameter counts and shapes, and checks the total | `4,183,600 ... (match)` |
@@ -655,27 +663,25 @@ tail -f experiment_results/logs/all-paper-v1.log
 ### Step 7: image encoder, 3 runs
 
 The paper does not say whether its EfficientNet was pretrained. The main runs
-train it from scratch; this study measures what ImageNet weights change:
+use ImageNet weights with the backbone frozen; this study measures what that
+choice changes:
 
 | Variant | Encoder weights | What trains |
 |---|---|---|
-| `from-scratch` | Random initialization (the main-run configuration) | Everything |
+| `from-scratch` | Random initialization | Everything |
 | `pretrained-finetuned` | ImageNet (torchvision `IMAGENET1K_V1`) | Everything, including the backbone |
-| `pretrained-frozen` | ImageNet, kept fixed | The projection after the backbone and the rest of the model; the backbone's weights and BatchNorm statistics stay fixed |
+| `pretrained-frozen` | ImageNet, kept fixed (the main-run configuration) | The projection after the backbone and the rest of the model; the backbone's weights and BatchNorm statistics stay fixed |
 
-Photos are normalized with the ImageNet mean and standard deviation in every
-run, which is the input the pretrained weights expect. Download the weights
-(about 20 MB, cached in `~/.cache/torch`) before the long run, so a network
-problem shows up immediately:
+The study sets each variant's encoder itself, whatever `PROTOCOL` says. The
+weights were downloaded in step 0.
 
 ```bash
-python -c "from torchvision.models import EfficientNet_B0_Weights, efficientnet_b0; efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1); print('weights cached')"
 python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1 \
   --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/image-encoder-encoder-v1.log
 ```
 
-`from-scratch` repeats step 3a's configuration inside the study, so the three
+`pretrained-frozen` repeats step 3a's configuration inside the study, so the three
 variants sit side by side in one `suite-summary.csv`. Compare the `full.*`
 columns between rows, and the gap between `full.*` and `image_missing.*`
 within a row: it shows how much each encoder's photo features contribute.
@@ -695,10 +701,10 @@ does the image branch add when it cannot reveal the target? And does the raw
 
 | Variant | Image branch input | Image lag | Encoder |
 |---|---|---|---|
-| `photo-previous-pass` | The previous pass's photo | 1 | From scratch |
-| `spectrogram` | Spectrogram images of the window's own raw input force | 0 | From scratch |
-| `spectrogram-pretrained` | The same | 0 | ImageNet weights, fine-tuned |
-| `spectrogram-pretrained-frozen` | The same | 0 | ImageNet weights, backbone frozen (VLT's setting) |
+| `photo-previous-pass` | The previous pass's photo | 1 | The main runs' (ImageNet, frozen) |
+| `spectrogram` | Spectrogram images of the window's own raw input force | 0 | The main runs' (ImageNet, frozen) |
+| `spectrogram-finetuned` | The same | 0 | ImageNet weights, fine-tuned |
+| `spectrogram-from-scratch` | The same | 0 | Random initialization |
 
 **How a spectrogram is made** (`omnifuser/spectrogram.py`, following VLT,
 Wang et al., arXiv:2607.14510, Sec. III-C). For each window, the raw 1 kHz
@@ -718,9 +724,14 @@ pixels, the photo size:
   the 10 % most similar pairs marked (VLT's recurrence plot).
 
 Each map is standardized on its own. A small learnable convolution (VLT's
-image generator) turns the 7 maps into 3 channels for EfficientNet-B0. It
-always trains, even when the backbone is frozen. The rest of the image
-branch is the paper's.
+image generator, 7 → 16 → 3 channels) turns the 7 maps into the 3 channels
+EfficientNet-B0 takes. It always trains, even when the backbone is frozen.
+
+Only this image construction comes from VLT (its Eqs. 5-8). The rest is
+OmniFuser as in every other run: the EfficientNet-B0 and graph-attention
+image branch, MRTE, C2F, the heads and the loss. VLT's other parts (Time-MoE
+experts, text branch, MAE encoder, gradient alignment, two-stage training)
+are not used.
 
 **Why there is no leakage, and why the lag is 0.** A window's images use
 exactly the raw samples of its input steps. The sensor branch already sees
@@ -773,8 +784,9 @@ How to read it:
 - `spectrogram` against `photo-previous-pass`: whether the current force
   spectrum is more informative than an older photo. Neither can reveal the
   target.
-- `spectrogram-pretrained` and `-frozen` against `spectrogram`: whether
-  ImageNet features transfer to force spectrograms.
+- `spectrogram-finetuned` and `spectrogram-from-scratch` against
+  `spectrogram`: whether frozen ImageNet features suit force spectrograms,
+  or the backbone has to adapt to them.
 - Settings: `--spectrogram-window`, `--spectrogram-hop` (raw samples) and
   `--spectrogram-recurrence-rate`.
 
@@ -1044,8 +1056,8 @@ after the table.
 | `--resume` / `--no-resume` | on | Continue interrupted folds and reuse finished ones |
 | `--ablation` | `none` | One of the 9 Fig. 13 variants (§13) |
 | `--modality-dropout X` | 0 | Training probability of masking one input (half sensor, half photo) |
-| `--pretrained` | off | Start EfficientNet-B0 from ImageNet weights (downloaded once). Off in all main runs (from scratch); step 7 compares. Photos are ImageNet-normalized in every run. |
-| `--freeze-image-encoder` | off | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train (step 7) |
+| `--pretrained`, `--no-pretrained` | off (on in `PROTOCOL`) | Start EfficientNet-B0 from ImageNet weights (downloaded once, step 0). On in every main run; step 7 compares. Photos are ImageNet-normalized in every run. |
+| `--freeze-image-encoder`, `--no-freeze-image-encoder` | off (on in `PROTOCOL`) | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train. On in every main run; refused without `--pretrained`. |
 | `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed while its weights train |
 | `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or spectrograms of each window's raw input force (optional experiment, §14; needs `--image-lag 0`) |
 | `--spectrogram-window N`, `--spectrogram-hop N` | 256, 64 | STFT window and hop in raw samples, for `--image-source spectrogram` |

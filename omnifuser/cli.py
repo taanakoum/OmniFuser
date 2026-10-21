@@ -172,15 +172,20 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         help="use the Eq. 7 projection c*S as the shared part so Z = P + S exactly",
     )
     parser.add_argument("--modality-dropout", type=float, default=0.0)
+    # The main runs' protocol (slurm/protocol.sh, runbook §9) passes --pretrained
+    # --freeze-image-encoder; the --no- forms turn either off for an experiment.
     parser.add_argument(
         "--pretrained",
-        action="store_true",
-        help="start EfficientNet-B0 from ImageNet weights (experiment; main runs train from scratch)",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="start EfficientNet-B0 from ImageNet weights (on in the main runs' protocol)",
     )
     parser.add_argument(
         "--freeze-image-encoder",
-        action="store_true",
-        help="with --pretrained: keep the backbone weights and BatchNorm statistics fixed",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="with --pretrained: keep the backbone weights and BatchNorm statistics fixed "
+        "(on in the main runs' protocol)",
     )
     parser.add_argument("--freeze-bn", action="store_true")
     parser.add_argument(
