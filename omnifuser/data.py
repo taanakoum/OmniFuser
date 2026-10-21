@@ -24,6 +24,7 @@ IMAGE_STD = np.asarray((0.229, 0.224, 0.225), dtype=np.float32)
 # Shown, with image lag 1, for a tool's first pass, which has no previous pass. Its
 # image is all zeros (the mean after normalization) and its label is -1, so neither the
 # model nor the photo-label persistence baseline sees anything from that pass itself.
+# A window whose input reaches into a tool's first pass therefore has blank image steps.
 NO_IMAGE = Path("<no previous image>")
 NO_IMAGE_LABEL = -1
 PASS_TRIM_WINDOW_SAMPLES = 20
@@ -261,7 +262,7 @@ def load_nonastreda(
                     item for item in group if item != retained_id
                 )
 
-    for row in datastore:
+    for row_index, row in enumerate(datastore):
         filename = str(row[0])
         tool, run, block, record_id = _decode_record_id(filename)
         if record_id in seen_ids:
@@ -295,6 +296,10 @@ def load_nonastreda(
             )
         if not np.isfinite(raw_force).all():
             raise ValueError(f"{record_id} force data contains non-finite values")
+        # Release the MATLAB copy as each pass is converted: unpooled loads (the
+        # spectrogram experiment) otherwise hold every pass twice at the peak.
+        datastore[row_index, 3] = None
+        raw_forces.pop(record_id, None)
         if record_id in discarded_duplicate_ids:
             continue
         force = np.ascontiguousarray(raw_force.T.astype(np.float32, copy=False))
@@ -343,8 +348,7 @@ def make_tool_timelines(
     """Build tool streams; lagged images use the preceding record in tool order.
 
     With ``image_lag=1`` a tool's first pass has no preceding record and shows
-    ``NO_IMAGE``: showing its own photo would reveal its label, and its own spectrogram
-    would contain force samples from the forecast window.
+    ``NO_IMAGE``: showing its own photo would reveal its label.
     """
     if image_lag not in (0, 1):
         raise ValueError("image_lag must be 0 or 1")
@@ -471,18 +475,20 @@ class WindowDataset(Dataset[dict[str, Any]]):
     def __len__(self) -> int:
         return self.total
 
-    def __getitem__(self, index: int) -> dict[str, Any]:
+    def locate(self, index: int) -> tuple[int, int]:
+        """(timeline index, first input step) of window ``index``."""
         if index < 0:
             index += self.total
         if not 0 <= index < self.total:
             raise IndexError(index)
         for timeline_index, (start, end) in enumerate(self.offsets):
             if start <= index < end:
-                timeline = self.timelines[timeline_index]
-                window_start = (index - start) * self.stride
-                break
-        else:
-            raise IndexError(index)
+                return timeline_index, (index - start) * self.stride
+        raise IndexError(index)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        timeline_index, window_start = self.locate(index)
+        timeline = self.timelines[timeline_index]
         input_end = window_start + self.input_len
         target_end = input_end + self.horizon
         return {
@@ -560,6 +566,36 @@ def collate_windows(
     width: int = 384,
     bank: PixelSource | None = None,
 ) -> dict[str, Any]:
+    if "images" in samples[0]:
+        # Images built per window (``spectrogram.ForceWindowDataset``); short rows are
+        # padded with their first image, which no step references.
+        most = max(len(sample["images"]) for sample in samples)
+        images = torch.stack(
+            [
+                torch.cat([sample["images"], sample["images"][:1].expand(most - len(sample["images"]), -1, -1, -1)])
+                for sample in samples
+            ]
+        )
+        indices = torch.from_numpy(np.stack([sample["image_index"] for sample in samples]))
+    else:
+        images, indices = _photo_batch(samples, height, width, bank)
+    return {
+        "force": torch.from_numpy(np.stack([sample["force"] for sample in samples])),
+        "force_target": torch.from_numpy(np.stack([sample["force_target"] for sample in samples])),
+        "class_target": torch.from_numpy(np.stack([sample["class_target"] for sample in samples])),
+        "shown_label": torch.from_numpy(np.stack([sample["shown_label"] for sample in samples])),
+        "cycle": torch.from_numpy(np.stack([sample["cycle"] for sample in samples])),
+        "batch": torch.from_numpy(np.stack([sample["batch"] for sample in samples])),
+        "relative": torch.from_numpy(np.stack([sample["relative"] for sample in samples])),
+        "images": images,
+        "image_indices": indices,
+    }
+
+
+def _photo_batch(
+    samples: Sequence[dict[str, Any]], height: int, width: int, bank: PixelSource | None
+) -> tuple[Tensor, Tensor]:
+    """Each window's distinct photos and, per step, the position of its photo."""
     image_paths: list[list[Path]] = []
     image_indices: list[list[int]] = []
     for sample in samples:
@@ -585,14 +621,4 @@ def collate_windows(
         )
         for paths in image_paths
     ]
-    return {
-        "force": torch.from_numpy(np.stack([sample["force"] for sample in samples])),
-        "force_target": torch.from_numpy(np.stack([sample["force_target"] for sample in samples])),
-        "class_target": torch.from_numpy(np.stack([sample["class_target"] for sample in samples])),
-        "shown_label": torch.from_numpy(np.stack([sample["shown_label"] for sample in samples])),
-        "cycle": torch.from_numpy(np.stack([sample["cycle"] for sample in samples])),
-        "batch": torch.from_numpy(np.stack([sample["batch"] for sample in samples])),
-        "relative": torch.from_numpy(np.stack([sample["relative"] for sample in samples])),
-        "images": torch.stack(images),
-        "image_indices": torch.tensor(image_indices, dtype=torch.long),
-    }
+    return torch.stack(images), torch.tensor(image_indices, dtype=torch.long)

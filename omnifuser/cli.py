@@ -187,20 +187,26 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         "--image-source",
         choices=("photo", "spectrogram"),
         default="photo",
-        help="photo: the tool photos (paper, main runs); spectrogram: per-pass STFT images "
-        "of the raw force (experiment; needs --image-lag 1)",
+        help="photo: the tool photos (paper, main runs); spectrogram: VLT-style frequency "
+        "images of the raw force inside each input window (experiment; needs --image-lag 0)",
     )
     parser.add_argument(
         "--spectrogram-window",
         type=int,
-        default=1024,
+        default=256,
         help="STFT window in raw samples for --image-source spectrogram",
     )
     parser.add_argument(
         "--spectrogram-hop",
         type=int,
-        default=256,
+        default=64,
         help="STFT hop in raw samples for --image-source spectrogram",
+    )
+    parser.add_argument(
+        "--spectrogram-recurrence-rate",
+        type=float,
+        default=0.1,
+        help="share of column pairs marked as recurrent in the spectrogram's recurrence map",
     )
     parser.add_argument(
         "--decomp-mode",
@@ -279,12 +285,14 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "num_workers": args.num_workers,
         "resume": args.resume,
         "config_overrides": overrides,
-        "spectrogram": (
-            SpectrogramSettings(args.spectrogram_window, args.spectrogram_hop)
-            if args.image_source == "spectrogram"
-            else None
-        ),
+        "spectrogram": spectrogram_settings(args) if args.image_source == "spectrogram" else None,
     }
+
+
+def spectrogram_settings(args: argparse.Namespace) -> SpectrogramSettings:
+    return SpectrogramSettings(
+        args.spectrogram_window, args.spectrogram_hop, args.spectrogram_recurrence_rate
+    )
 
 
 def _inspect(args: argparse.Namespace) -> None:

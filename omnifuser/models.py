@@ -190,8 +190,20 @@ class ImageFeatureEncoder(nn.Module):
         pretrained: bool = False,
         freeze_bn: bool = False,
         freeze_weights: bool = False,
+        in_channels: int = 3,
     ) -> None:
         super().__init__()
+        # Feature-map stacks with other than 3 channels pass a lightweight learnable
+        # image generator first (VLT Eq. 8). It always trains, even with frozen weights.
+        self.generator: nn.Module = (
+            nn.Identity()
+            if in_channels == 3
+            else nn.Sequential(
+                nn.Conv2d(in_channels, 16, 3, padding=1),
+                nn.GELU(),
+                nn.Conv2d(16, 3, 1),
+            )
+        )
         # Frozen weights only make sense with frozen BatchNorm statistics as well.
         self.freeze_bn = freeze_bn or freeze_weights
         # Photos arrive already ImageNet-normalized (``data.IMAGE_MEAN``/``IMAGE_STD``),
@@ -237,7 +249,7 @@ class ImageFeatureEncoder(nn.Module):
     def forward(self, images: Tensor) -> Tensor:
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
-        flat = images.flatten(0, 1)
+        flat = self.generator(images.flatten(0, 1))
         features = self.features(flat)
         features = self.pool(features).flatten(1)
         return self.projection(features).reshape(images.shape[0], images.shape[1], -1)
@@ -254,6 +266,7 @@ class ImageBranch(nn.Module):
             pretrained=config.pretrained,
             freeze_bn=config.freeze_bn,
             freeze_weights=config.freeze_image_encoder,
+            in_channels=config.image_channels,
         )
         self.register_buffer(
             "position_encoding",

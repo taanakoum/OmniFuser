@@ -34,7 +34,7 @@ experiments as SLURM jobs and refers back here for the explanations.
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
 | 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/<run-id>/` |
-| (opt) | Experimental image source: previous-pass photos versus force spectrograms (all with image lag 1) | 3 | `experiment_results/image-source/<run-id>/` |
+| (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/<run-id>/` |
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
 | (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
@@ -60,7 +60,7 @@ needs no extra command.
 > | Experiment | Variants | Differs from step 3a by |
 > |---|---|---|
 > | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen | `--pretrained`, `--freeze-image-encoder` |
-> | Image source, optional (§14) | previous-pass photo, spectrogram, pretrained spectrogram | `--image-lag 1`, `--image-source spectrogram` |
+> | Image source, optional (§14) | previous-pass photo; input-window spectrogram from scratch, pretrained fine-tuned, pretrained frozen | `--image-lag 1` (photo); `--image-source spectrogram` (with `--pretrained`, `--freeze-image-encoder`) |
 >
 > The force spectrograms are an optional experiment only: no main run uses
 > them.
@@ -682,47 +682,81 @@ within a row: it shows how much each encoder's photo features contribute.
 
 ## 14. Optional runs
 
-### Experimental: image source (previous-pass photos versus force spectrograms)
+### Experimental: image source (leak-free images)
 
 > **An optional experiment, not a main run.** It changes what the image
 > branch sees; everything else is the protocol.
 
-All three variants use **image lag 1**, the previous pass's image, so they
-differ only in the image source:
+The main runs show each pass its own photo (image lag 0), as in the paper.
+That photo's label is the label of most forecast targets: copying it gets
+about 91 % of them right (`EDA.md` §7). This study asks two questions. What
+does the image branch add when it cannot reveal the target? And does the raw
+1 kHz force hold wear information that the 1 s pooling removes?
 
-| Variant | Image branch input | Encoder |
-|---|---|---|
-| `photo-previous-pass` | The previous pass's photo | From scratch |
-| `spectrogram` | A spectrogram of the previous pass's force | From scratch |
-| `spectrogram-pretrained` | The same | ImageNet weights, fine-tuned |
+| Variant | Image branch input | Image lag | Encoder |
+|---|---|---|---|
+| `photo-previous-pass` | The previous pass's photo | 1 | From scratch |
+| `spectrogram` | Spectrogram images of the window's own raw input force | 0 | From scratch |
+| `spectrogram-pretrained` | The same | 0 | ImageNet weights, fine-tuned |
+| `spectrogram-pretrained-frozen` | The same | 0 | ImageNet weights, backbone frozen (VLT's setting) |
 
-How a spectrogram is made (`omnifuser/spectrogram.py`):
+**How a spectrogram is made** (`omnifuser/spectrogram.py`, following VLT,
+Wang et al., arXiv:2607.14510, Sec. III-C). For each window, the raw 1 kHz
+force of its 96 input steps (96,000 samples per axis, before pooling) is
+split at pass boundaries, because the paper shows one image per pass. Each
+pass segment, with its mean removed per axis, becomes 7 maps of 128 × 384
+pixels, the photo size:
 
-- the pass's **raw 1 kHz force** (before the 1 s pooling, which removes
-  everything faster than 1 Hz) has its mean removed per axis;
-- a short-time Fourier transform (Hann window of 1024 samples, hop 256)
-  gives the log power per frequency and time;
-- the three force axes Fx, Fy, Fz become the three image channels, resized
-  to the photo size (128 × 384), so the image branch is unchanged;
-- each image is standardized on its own, so no statistic is fitted across
-  tools.
+- **time-frequency** (3 maps, one per axis): STFT log power, Hann window 256
+  samples, hop 64, so 129 frequency rows of 3.9 Hz from 0 to 500 Hz and one
+  column per 0.25 s. VLT uses a wavelet scalogram here; the STFT is its
+  fixed-window equivalent and about a hundred times cheaper, which keeps it
+  fast enough to compute in the data loader;
+- **global spectrum** (3 maps): the FFT log power of the whole segment, on
+  the same frequency rows and repeated along time;
+- **recurrence** (1 map): which 0.25 s columns have similar spectra, with
+  the 10 % most similar pairs marked (VLT's recurrence plot).
 
-Why image lag 1 is required: a pass's spectrogram covers the whole pass,
-including force samples that fall inside the forecast window of a window
-ending mid-pass. With lag 1 every image comes from a pass that ended before
-the window's input does. A tool's first pass has no previous pass and shows
-no image (zeros) and no label. `--image-source spectrogram` with image lag 0
-is refused.
+Each map is standardized on its own. A small learnable convolution (VLT's
+image generator) turns the 7 maps into 3 channels for EfficientNet-B0. It
+always trains, even when the backbone is frozen. The rest of the image
+branch is the paper's.
+
+**Why there is no leakage, and why the lag is 0.** A window's images use
+exactly the raw samples of its input steps. The sensor branch already sees
+those samples, as 1 s means. No sample after the input end, and no label,
+enters an image. A spectrogram of the whole pass would not be safe: for a
+window that ends mid-pass, it contains force from the forecast window.
+Image lag 1 avoided that only by showing an older pass. `--image-source
+spectrogram` with `--image-lag 1` is refused.
+
+**Why lag-1 photos leave some windows without an image.** With lag 1 each
+step shows the previous pass's photo. A tool's first pass has no previous
+pass, so its steps show no image: zeros, with label -1. On the real data the
+first passes last 76-119 steps. With training stride 24, the 4 windows that
+start at steps 0, 24, 48 and 72 reach into the first pass, so they have
+blank steps. T10's first pass lasts 119 steps, so it has 5 such windows. One
+of them lies entirely inside the first pass: all its steps are blank, and
+its persistence baseline has no label to copy. That is 4-5 of each tool's
+112-275 training windows. The spectrograms have no such windows.
+
+**Cost.** Images are computed per window while the data loads, so keep
+`--num-workers 4` (the protocol). The raw force of every pass stays in
+memory: about 0.45 GB with duplicates merged, about 0.6 GB with them kept.
 
 First a capped one-fold smoke test of the spectrogram path on the real data
 (a few minutes; its numbers are not results), then the study:
 
 ```bash
-omnifuser train "${PROTOCOL[@]}" --image-lag 1 --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
+omnifuser train "${PROTOCOL[@]}" --image-source spectrogram \
+  --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke \
+  --max-train-windows 64 --max-eval-windows 32
 python scripts/run_experiment_suite.py --study image-source --run-id source-v1 \
   --output-root experiment_results "${PROTOCOL[@]}" \
   2>&1 | tee experiment_results/logs/image-source-source-v1.log
 ```
+
+The study sets each variant's image lag itself.
 
 How to read it:
 
@@ -730,13 +764,19 @@ How to read it:
   helps. Copying the photo's label gets about 91 % of targets right at lag 0
   and about 77 % at lag 1 (`EDA.md` §7), so judge each run against its own
   `persistence` baseline in `compare_with_paper.py`.
-- `spectrogram` against `photo-previous-pass`: whether the force spectrum
-  carries more wear information than the photo, at the same timing.
-- `spectrogram-pretrained` against `spectrogram`: whether ImageNet features
-  transfer to spectrograms.
-- STFT settings: `--spectrogram-window` and `--spectrogram-hop` (in raw
-  samples). The force is sampled at 1 kHz, so frequencies up to 500 Hz are
-  visible.
+- `spectrogram` against step 3a's `image_missing` evaluation (the same model
+  with the image branch masked): whether the raw force adds wear
+  information beyond its 1 s means.
+- The spectrogram runs' `persistence` baseline copies the current pass's
+  label (their timelines use lag 0). The model never sees that label, so the
+  baseline is a reference ceiling here, not a shortcut the model can take.
+- `spectrogram` against `photo-previous-pass`: whether the current force
+  spectrum is more informative than an older photo. Neither can reveal the
+  target.
+- `spectrogram-pretrained` and `-frozen` against `spectrogram`: whether
+  ImageNet features transfer to force spectrograms.
+- Settings: `--spectrogram-window`, `--spectrogram-hop` (raw samples) and
+  `--spectrogram-recurrence-rate`.
 
 ### Duplicate handling: merged versus kept
 
@@ -1007,8 +1047,9 @@ after the table.
 | `--pretrained` | off | Start EfficientNet-B0 from ImageNet weights (downloaded once). Off in all main runs (from scratch); step 7 compares. Photos are ImageNet-normalized in every run. |
 | `--freeze-image-encoder` | off | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train (step 7) |
 | `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed while its weights train |
-| `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or force spectrograms (optional experiment, §14; needs `--image-lag 1`) |
-| `--spectrogram-window N`, `--spectrogram-hop N` | 1024, 256 | STFT window and hop in raw samples, for `--image-source spectrogram` |
+| `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or spectrograms of each window's raw input force (optional experiment, §14; needs `--image-lag 0`) |
+| `--spectrogram-window N`, `--spectrogram-hop N` | 256, 64 | STFT window and hop in raw samples, for `--image-source spectrogram` |
+| `--spectrogram-recurrence-rate R` | 0.1 | Share of column pairs marked recurrent in the spectrogram's recurrence map |
 | `--als-mode {k_colnorm,k_sum,time}` | `k_colnorm` | Landmark weighting: printed Eq. 10 normalized / printed sums / softmax over time |
 | `--private-attn {plain,residual_ln}` | `plain` | Private path \(\mathrm{MHA}(P)\) as printed, or with residual + LayerNorm |
 | `--exact-split` | off | Shared part \(cS\) so that \(Z=P+S\) exactly (Eq. 7) |
@@ -1140,11 +1181,32 @@ line-continuation character is a backtick (`` ` ``) instead of `\`.
   --output-root experiment_results\validation `
   --epochs 1 --batch-size 2 --image-encoder compact --device cpu `
   --max-train-windows 4 --max-eval-windows 2
+
+.\.venv\Scripts\python.exe -m omnifuser.cli train `
+  --data-dir Nonastreda_Data --test-tool T10 `
+  --output-dir experiment_results\validation\local-spectrogram `
+  --epochs 1 --batch-size 2 --image-encoder compact --device cpu `
+  --pool 1000 --image-lag 0 --horizon 96 --stride 24 --image-source spectrogram `
+  --max-train-windows 4 --max-eval-windows 2
 ```
 
-The capped suite smoke run takes about 3.5 minutes on CPU. Keep
+The capped suite smoke run takes about 3.5 minutes on an idle laptop. Keep
 `--num-workers 0` on Windows; worker processes there re-copy the photo cache
-and slow loading down.
+(and, for spectrograms, the raw force) and slow loading down.
+
+**CPU and memory on a laptop.** PyTorch otherwise starts one thread per
+core, which oversubscribes a machine that is also doing other work:
+
+- the tests use half the logical CPUs, at most 4. Set
+  `$env:OMNIFUSER_TEST_THREADS = 1` before `pytest` while another job holds
+  every core. On a fully loaded laptop the suite takes 25 minutes or more,
+  instead of a few;
+- training uses at most 4 threads. Set `$env:OMP_NUM_THREADS = 1` (or 2) in
+  the same PowerShell window, before starting, to use fewer;
+- the spectrogram smoke run loads the unpooled force file: about 1.5 GB at
+  the peak while loading, then about 0.5 GB of raw force. Close other
+  memory-heavy programs first, or run this check on the GPU machine instead.
+  A `MemoryError` there means too little free memory, not a code fault.
 
 ## 19. Paper experiments not covered
 

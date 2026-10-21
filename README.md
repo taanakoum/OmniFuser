@@ -34,7 +34,7 @@ scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
                       compare_with_paper.py, model_summary.py
 slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
                       env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
-tests/                131 pytest tests
+tests/                132 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -58,7 +58,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 131 tests
+python -m pytest -o addopts= -q tests                    # 132 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -124,7 +124,7 @@ data choices that `EDA.md` justifies.
 | Time step `--pool` | 1 (1 ms) | 1000 (1 s) | Only 1 s steps match the paper's difficulty (`EDA.md` §6) |
 | Photo `--image-lag` | 0 (same pass, paper) | 0 (same pass, paper); 1 is an experimental run | The paper's association. Its photo label already matches 91 % of target labels (`EDA.md` §7), so lag 1 is run as an experiment to measure that |
 | Image encoder `--pretrained`, `--freeze-image-encoder` | off (from scratch) | off (from scratch); step 7 compares pretrained fine-tuned and pretrained frozen | The paper does not say its EfficientNet was pretrained. Photos are normalized with the ImageNet mean and standard deviation in every run, which the pretrained weights expect. |
-| Image source `--image-source` | `photo` | `photo`; force spectrograms are an optional experiment (with image lag 1) | The paper uses tool photos. Spectrograms of the raw 1 kHz force add the sub-second dynamics that 1 s pooling removes; they need image lag 1, because a pass's spectrogram covers samples inside the forecast window. |
+| Image source `--image-source` | `photo` | `photo`; force spectrograms are an optional experiment (with image lag 0) | The paper uses tool photos. Spectrograms add the sub-second force dynamics that 1 s pooling removes. Following VLT (arXiv:2607.14510), each is a stack of STFT, FFT and recurrence maps of the raw 1 kHz force inside the window's own input, so it never contains a forecast-window sample and needs no lag. |
 | Horizon / input | 96 / 96 | 96 / 96 | Paper horizons go up to 96 |
 | Training stride | input + horizon (192) | 24 | More training windows at 1 s steps |
 | Duplicates `--dedup-identical-forces` | True (378 passes); `train_lightning.py` requires it | True (step 3b: False) | 134 records are exact copies, 24 groups with conflicting labels (`EDA.md` §3). Compare with `--study deduplication`, which scores both on the same deduplicated test data (`--eval-dedup-identical-forces`). |

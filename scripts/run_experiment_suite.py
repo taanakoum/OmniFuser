@@ -14,10 +14,10 @@ from omnifuser.cli import (
     add_eval_dedup_argument,
     add_protocol_arguments,
     protocol_kwargs,
+    spectrogram_settings,
 )
 from omnifuser.config import ModelConfig
 from omnifuser.cross_validation import EVALUATION_MODES, run_cross_validation
-from omnifuser.spectrogram import SpectrogramSettings
 
 # Paper Figs. 7-8 axes: (run-name prefix, ModelConfig field, paper symbol, values).
 SENSITIVITY_AXES = (
@@ -146,22 +146,26 @@ def _image_encoder_runs() -> list[dict[str, Any]]:
 
 
 def _image_source_runs() -> list[dict[str, Any]]:
-    """What the image branch sees, all with the previous pass's image (lag 1).
+    """What the image branch sees when it must not reveal the target.
 
-    Spectrograms need lag 1 (no future force), so the photo arm uses lag 1 as well
-    and the three variants differ only in the image source and its initialization.
+    The main runs' current-pass photo (lag 0) shows the label of the pass being
+    forecast. The leak-free alternatives: the previous pass's photo (lag 1), or force
+    spectrograms of the window's own raw input (lag 0; no sample after the input end),
+    from scratch, ImageNet-pretrained and fine-tuned, or pretrained with the backbone
+    frozen (VLT's setting: only the image generator, projection and later layers train).
     """
     return [
         {
             "name": name,
             "group": "image-source",
-            "overrides": {"pretrained": pretrained, "freeze_image_encoder": False},
-            "data_overrides": {"image_lag": 1, "image_source": source},
+            "overrides": {"pretrained": pretrained, "freeze_image_encoder": frozen},
+            "data_overrides": {"image_lag": lag, "image_source": source},
         }
-        for name, source, pretrained in (
-            ("photo-previous-pass", "photo", False),
-            ("spectrogram", "spectrogram", False),
-            ("spectrogram-pretrained", "spectrogram", True),
+        for name, source, lag, pretrained, frozen in (
+            ("photo-previous-pass", "photo", 1, False, False),
+            ("spectrogram", "spectrogram", 0, False, False),
+            ("spectrogram-pretrained", "spectrogram", 0, True, False),
+            ("spectrogram-pretrained-frozen", "spectrogram", 0, True, True),
         )
     ]
 
@@ -275,7 +279,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "'all' runs the three paper studies; 'image-encoder' compares a from-scratch, "
             "a fine-tuned and a frozen pretrained photo encoder; 'image-source' compares "
-            "previous-pass photos with force spectrograms; 'deduplication' compares "
+            "leak-free images: previous-pass photos and spectrograms of each window's raw "
+            "input force; 'deduplication' compares "
             "--dedup-identical-forces True and False"
         ),
     )
@@ -430,11 +435,7 @@ def main(argv: list[str] | None = None) -> Path:
         data_overrides = dict(spec.get("data_overrides", {}))
         image_lag = int(data_overrides.get("image_lag", args.image_lag))
         image_source = str(data_overrides.get("image_source", args.image_source))
-        spectrogram = (
-            SpectrogramSettings(args.spectrogram_window, args.spectrogram_hop)
-            if image_source == "spectrogram"
-            else None
-        )
+        spectrogram = spectrogram_settings(args) if image_source == "spectrogram" else None
         dedup_identical_forces = bool(
             data_overrides.get("dedup_identical_forces", args.dedup_identical_forces)
         )

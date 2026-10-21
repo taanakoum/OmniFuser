@@ -24,7 +24,6 @@ from omnifuser.data import (
     PASS_TRIM_WINDOW_SAMPLES,
     ForceNormalizer,
     ImageBank,
-    Record,
     ToolTimeline,
     WindowDataset,
     collate_windows,
@@ -42,7 +41,12 @@ from omnifuser.evaluation import (
     softmax_probabilities,
 )
 from omnifuser.models import OmniFuser, multitask_loss
-from omnifuser.spectrogram import SpectrogramBank, SpectrogramSettings
+from omnifuser.spectrogram import (
+    IMAGE_CHANNELS,
+    ForceWindowDataset,
+    SpectrogramSettings,
+    raw_passes_by_tool,
+)
 from omnifuser.tracking import ExperimentTracker
 
 
@@ -369,10 +373,11 @@ def train_fold(
 ) -> dict[str, Any]:
     if epochs < 1 or batch_size < 1 or accumulation_steps < 1:
         raise ValueError("epochs, batch_size and accumulation_steps must be positive")
-    if spectrogram is not None and image_lag != 1:
+    if spectrogram is not None and image_lag != 0:
         raise ValueError(
-            "spectrogram images need --image-lag 1: a pass's spectrogram covers the whole "
-            "pass, including force samples inside the forecast window"
+            "spectrogram images need --image-lag 0: each image is built from the raw force "
+            "of the window's own input steps, so it never covers the forecast window and "
+            "needs no lag"
         )
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
@@ -397,7 +402,7 @@ def train_fold(
     if eval_dedup_identical_forces is None:
         eval_dedup_identical_forces = dedup_identical_forces
 
-    def load_timelines(dedup: bool) -> tuple[list[ToolTimeline], int, list[Record]]:
+    def load_timelines(dedup: bool) -> tuple[list[ToolTimeline], int, dict[str, Any]]:
         # Spectrograms need the raw passes, so they are loaded unpooled and pooled here;
         # pool_records gives exactly the pooling load_nonastreda would apply.
         records = load_nonastreda(
@@ -408,19 +413,20 @@ def train_fold(
             trim_pass=trim_pass,
             pool=1 if spectrogram is not None else pool,
         )
-        raw_records = records if spectrogram is not None else []
+        raw_passes: dict[str, Any] = {}
         if spectrogram is not None:
+            raw_passes = raw_passes_by_tool(records, pool)
             records = pool_records(records, pool)
-        return make_tool_timelines(records, image_lag=image_lag), len(records), raw_records
+        return make_tool_timelines(records, image_lag=image_lag), len(records), raw_passes
 
-    timelines, retained_records, raw_records = load_timelines(dedup_identical_forces)
+    timelines, retained_records, raw_passes = load_timelines(dedup_identical_forces)
     if eval_dedup_identical_forces == dedup_identical_forces:
         eval_timelines, evaluation_retained_records = timelines, retained_records
+        eval_raw_passes = raw_passes
     else:
-        eval_timelines, evaluation_retained_records, eval_raw_records = load_timelines(
+        eval_timelines, evaluation_retained_records, eval_raw_passes = load_timelines(
             eval_dedup_identical_forces
         )
-        raw_records = [*raw_records, *eval_raw_records]
     source_signature = nonastreda_source_signature(data_dir)
     train_stride = stride if stride is not None else input_len + horizon
     eval_stride = max(train_stride, horizon)
@@ -434,15 +440,6 @@ def train_fold(
     validation_timelines = [eval_timeline_by_tool[tool] for tool in fold.validation_tools]
     test_timelines = [eval_timeline_by_tool[tool] for tool in fold.test_tools]
     normalizer = ForceNormalizer.fit(train_timelines)
-    train_data = WindowDataset(train_timelines, normalizer, input_len, horizon, train_stride)
-    validation_data = WindowDataset(
-        validation_timelines, normalizer, input_len, horizon, eval_stride
-    )
-    test_data = WindowDataset(test_timelines, normalizer, input_len, horizon, eval_stride)
-    train_data = _limit_dataset(train_data, max_train_windows, seed)
-    validation_data = _limit_dataset(validation_data, max_eval_windows, seed + 1)
-    test_data = _limit_dataset(test_data, max_eval_windows, seed + 2)
-
     config = ModelConfig(
         d_model=d_model,
         input_len=input_len,
@@ -450,17 +447,31 @@ def train_fold(
         image_encoder=image_encoder,
         prediction_head=prediction_head,
         **(config_overrides or {}),
+        **({"image_channels": IMAGE_CHANNELS} if spectrogram is not None else {}),
     )
-    image_bank: ImageBank | SpectrogramBank
-    if spectrogram is None:
-        image_bank = ImageBank.from_timelines(
-            [*timelines, *eval_timelines], config.image_height, config.image_width
+
+    def windows(
+        split: list[ToolTimeline], split_stride: int, passes: dict[str, Any]
+    ) -> WindowDataset:
+        if spectrogram is None:
+            return WindowDataset(split, normalizer, input_len, horizon, split_stride)
+        return ForceWindowDataset(
+            split, normalizer, passes, pool, spectrogram, config.image_height,
+            config.image_width, input_len, horizon, split_stride,
         )
-    else:
-        image_bank = SpectrogramBank(
-            raw_records, spectrogram, config.image_height, config.image_width
-        )
-        del raw_records
+
+    train_data = _limit_dataset(windows(train_timelines, train_stride, raw_passes), max_train_windows, seed)
+    validation_data = _limit_dataset(
+        windows(validation_timelines, eval_stride, eval_raw_passes), max_eval_windows, seed + 1
+    )
+    test_data = _limit_dataset(windows(test_timelines, eval_stride, eval_raw_passes), max_eval_windows, seed + 2)
+
+    # Spectrogram windows carry their own images; only photo runs need the bank.
+    image_bank = (
+        ImageBank.from_timelines([*timelines, *eval_timelines], config.image_height, config.image_width)
+        if spectrogram is None
+        else None
+    )
     collate = partial(
         collate_windows,
         height=config.image_height,

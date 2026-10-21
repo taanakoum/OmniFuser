@@ -67,7 +67,7 @@ cross-validations; each one trains 10 models.
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/paper-v1/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/paper-v1/` |
 | 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/encoder-v1/` |
-| (opt) | Experimental image source: previous-pass photos versus force spectrograms (image lag 1) | 3 | `experiment_results/image-source/source-v1/` |
+| (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/source-v1/` |
 | (opt) | Duplicate handling study | 2 | `experiment_results/deduplication/dedup-v1/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
 | (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
@@ -743,18 +743,25 @@ your GPU limit; additional jobs simply wait. Each is one 10-fold run unless
 stated, so it needs the same number of parts as step 3a. The Lightning
 runbook §14 explains what each one measures.
 
-**Experimental: image source** (3 runs, all with image lag 1):
-`photo-previous-pass`, `spectrogram` (an STFT image of the previous pass's
-raw 1 kHz force) and `spectrogram-pretrained`. Spectrograms are an optional
-experiment only and require image lag 1, which the study sets itself; the
-Lightning runbook §14 explains how they are made and how to read the study.
+**Experimental: image source** (4 runs, images that cannot reveal the
+target): `photo-previous-pass` (image lag 1), and spectrograms of each
+window's own raw 1 kHz input force (image lag 0): `spectrogram`,
+`spectrogram-pretrained` and `spectrogram-pretrained-frozen`. Spectrograms
+are an optional experiment only. The study sets each variant's image lag
+itself. The Lightning runbook §14 explains how the images are made, why they
+cannot leak the forecast window, and how to read the study. They are
+computed while the data loads, from about 0.5 GB of raw force held in
+memory; `slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose
+the number of parts from §12 for 4 runs, but measure first: the smoke test's
+log shows its epoch time, and image building can make spectrogram epochs
+slower than the photo pilot's.
 
 First a capped one-fold smoke test of the spectrogram path on the real data
 (a few minutes on `gpu_test`; its numbers are not results). When its log ends
 with `finished`, submit the study:
 
 ```bash
-sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch   omnifuser train "${PROTOCOL[@]}" --image-lag 1 --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
+sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch   omnifuser train "${PROTOCOL[@]}" --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
 ```
 
 ```bash

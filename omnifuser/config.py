@@ -25,6 +25,9 @@ class ModelConfig:
     image_encoder: str = "efficientnet_b0"
     image_height: int = 128
     image_width: int = 384
+    # 3 for photos. More (the spectrogram experiment's 7 feature maps) adds a learnable
+    # convolution that maps them to the 3 channels the image encoder takes (VLT Eq. 8).
+    image_channels: int = 3
     dropout: float = 0.1
     pre_attn: bool = False
     # Eq. 10 per-token softmax over k, then each landmark normalized to a weighted mean.
@@ -87,6 +90,8 @@ class ModelConfig:
             "moving_average",
         }:
             raise ValueError(f"unsupported ablation: {self.ablation}")
+        if self.image_channels < 1:
+            raise ValueError("image_channels must be positive")
         if self.fusion_rank < 1 or self.num_landmarks < 1:
             raise ValueError("fusion_rank and num_landmarks must be positive")
         if self.num_fusion_layers < 1:

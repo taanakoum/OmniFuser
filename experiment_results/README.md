@@ -16,7 +16,7 @@ experiment_results/
   main/full-model/              step 3a: main 10-fold run, duplicates merged
   main/full-model-no-dedup/     step 3b: the same with duplicates kept (train and test)
   image-encoder/<run-id>/       step 7: from scratch, pretrained fine-tuned, pretrained frozen
-  image-source/<run-id>/        optional: previous-pass photo vs force spectrograms (image lag 1)
+  image-source/<run-id>/        optional: leak-free images: previous-pass photo vs input-window force spectrograms
   heads/<head>/                 optional prediction-head comparison
   ablations/<run-id>/           paper Fig. 13 component ablations
   missing-modality/<run-id>/    modality-dropout robustness study
