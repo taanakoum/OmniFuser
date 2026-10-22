@@ -12,10 +12,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import omnifuser  # noqa: F401  # before torch: guards against a stuck Windows WMI service
+
+# isort: split
 import numpy as np
 import torch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from omnifuser.config import ModelConfig
 from omnifuser.models import OmniFuser

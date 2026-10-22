@@ -33,7 +33,7 @@ experiments as SLURM jobs and refers back here for the explanations.
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/<run-id>/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
-| 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/<run-id>/` |
+| 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting) | 3 | `experiment_results/image-encoder/<run-id>/` |
 | (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/<run-id>/` |
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
@@ -373,11 +373,11 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 132 tests. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use half the CPUs, at most 4 (`OMNIFUSER_TEST_THREADS` changes that). | `132 passed` |
+| `pytest ... tests` | Runs the 137 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `137 passed` |
 | `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
-| `model_summary.py --check` | Builds the default model, prints per-block parameter counts and shapes, and checks the total | `4,183,600 ... (match)` |
+| `model_summary.py --check` | Builds the default model, prints per-block parameter counts and shapes, and checks the total. With the protocol's frozen backbone, 176,052 of these parameters train; the other 4,007,548 are the fixed EfficientNet-B0 features. Spectrogram runs add a 1,075-parameter image generator. | `4,183,600 ... (match)` |
 | `eda.py` | The exploratory data analysis: tables, a JSON summary and 12 figures in `experiment_results/eda/`. It takes several minutes and about 3 GB of RAM. | Explained in `EDA.md` |
 
 ## 11. Steps 1-2: GPU smoke test and timing pilot
@@ -428,6 +428,14 @@ One 10-fold run costs about `epoch_seconds × 30 × 10`, plus about one epoch
 per fold for the final evaluations. Multiply by the run counts in the
 overview to estimate a study.
 
+The pilot uses the protocol's frozen ImageNet backbone. With a frozen
+backbone each photo's features are computed once per fold and reused, so
+these runs are much faster than runs that train the backbone: step 7's
+`pretrained-finetuned` and `from-scratch` variants, and the spectrogram
+variants (their images differ in every window), can take several times
+longer per epoch. Plan their time from their own first epochs (the
+`epoch ... s` lines in the log).
+
 If you get `CUDA out of memory`, add `--batch-size 16 --accumulation-steps 2`.
 That gives the same effective batch of 32, using half the memory per step.
 
@@ -455,14 +463,15 @@ That gives the same effective batch of 32, using half the memory per step.
 > and run the commands unchanged.
 
 > **Results from earlier code versions cannot be continued.** Runs started
-> before 2026-10-21 used different settings (image lag 1 before 2026-10-18;
-> no `freeze_image_encoder` field before 2026-10-21). Rerunning into such a
-> folder is refused (`different configuration`), so move it aside first,
-> for example:
+> before 2026-10-22 used different settings: image lag 1 before 2026-10-18,
+> no `freeze_image_encoder` field before 2026-10-21, and before 2026-10-22 no
+> `image_channels` field and an image encoder trained from scratch. Rerunning
+> into such a folder is refused (`different configuration`), so move it aside
+> first, for example:
 >
 > ```bash
 > mkdir -p experiment_results/archive
-> mv experiment_results/main experiment_results/archive/main-before-2026-10-21
+> mv experiment_results/main experiment_results/archive/main-before-2026-10-22
 > ```
 >
 > For older suites, use a new `--run-id` such as `paper-v2`, or move their
@@ -554,10 +563,14 @@ own arguments:
 | `--output-root` | Parent folder. The suite writes to `<output-root>/<study>/<run-id>/`. |
 | `--modality-dropout-rates` | Training dropout rates for the missing-modality study (default `0.2`) |
 
-All training flags from §9 and §16 apply to every variant. The suite's own
-defaults already equal the protocol (`--pool 1000 --image-lag 0`, 30 epochs,
-stride 24, CUDA, `--dedup-identical-forces True`), so the protocol is passed
-only for uniformity. Every variant is therefore comparable with step 3a.
+All training flags from §9 and §16 apply to every variant. **Always pass
+`"${PROTOCOL[@]}"`.** The suite's own defaults match most of the protocol
+(`--pool 1000 --image-lag 0`, 30 epochs, stride 24, CUDA,
+`--dedup-identical-forces True`) but not all of it: without the protocol it
+would train the image encoder from scratch (no `--pretrained
+--freeze-image-encoder`) and load data in the main process
+(`--num-workers 0`). With the protocol, every variant is comparable with
+step 3a.
 
 ### Step 4: component ablations (paper Fig. 13), 9 runs
 
@@ -751,9 +764,10 @@ of them lies entirely inside the first pass: all its steps are blank, and
 its persistence baseline has no label to copy. That is 4-5 of each tool's
 112-275 training windows. The spectrograms have no such windows.
 
-**Cost.** Images are computed per window while the data loads, so keep
-`--num-workers 4` (the protocol). The raw force of every pass stays in
-memory: about 0.45 GB with duplicates merged, about 0.6 GB with them kept.
+**Cost.** Images are computed per window while the batches load, about
+12 ms per 96 s window image on a laptop CPU, so keep `--num-workers 4` (the
+protocol). The raw force of every pass stays in memory: 0.41 GB with
+duplicates merged, 0.56 GB with them kept. Loading peaks at about 1.4 GB.
 
 First a capped one-fold smoke test of the spectrogram path on the real data
 (a few minutes; its numbers are not results), then the study:
@@ -953,8 +967,10 @@ Two other variants are available:
   watch -n 5 nvidia-smi
   ```
 
-  - `tail -f` follows a log: one `Fold k/10` line per fold, and one
-    `=== group/variant ===` line per suite variant. Ctrl+C stops following,
+  - `tail -f` follows a log: one `Fold k/10` line per fold, one
+    `=== group/variant ===` line per suite variant, and one
+    `Tn epoch k/30: train loss ..., validation loss ..., N s` line per epoch,
+    whose last number is the epoch's duration. Ctrl+C stops following,
     not the run. Use the log name from your command's `tee` or `nohup`.
   - `watch -n 5 nvidia-smi` refreshes GPU use and memory every 5 s.
   - The `python -c` line prints a suite's overall status and each variant
@@ -1017,6 +1033,8 @@ Two other variants are available:
 | `10-fold tool CV requires 10 tools; found 0` or `No such file or directory: ...labels.csv` | Wrong data folder, or the data was not unpacked | Run from `OmniFuser/`; `ls Nonastreda_Data/tool \| wc -l` must print 512 (§5) |
 | `ModuleNotFoundError: No module named 'omnifuser'` or `omnifuser: command not found` | The project is not installed in this environment | Rerun §6 from inside `OmniFuser/` |
 | `DataLoader worker ... killed`, `Bus error`, or a shared-memory error | The data-loading worker processes ran out of shared memory | Add `--num-workers 0` (slower loading, same results); a new output folder is then needed, see the first row |
+| `warning: --num-workers 4 exceeds the N CPUs available` | The machine has fewer CPUs than the protocol's loader workers | Harmless but slower. On a small machine, choose one with at least 4 CPUs (`nproc`), or rerun with fewer workers into a new output folder |
+| `omnifuser: the Windows WMI service did not answer within 5 s` (laptop only) | Windows' WMI service is stuck; torch's import would otherwise hang forever | The run continues normally. To repair Windows, run `Restart-Service winmgmt -Force` in an administrator PowerShell, or restart (§18) |
 | `Killed` with no Python error during `eda.py` or training | The machine ran out of RAM (the EDA needs about 3 GB) | Choose a machine with more memory, or close other processes |
 | The log stops growing for a long time | Each epoch prints one line (`T1 epoch 3/30: ...`), so a pause much longer than one epoch time is unusual | `tail experiment_results/<run>/cross-validation-progress.json` and `nvidia-smi`; the process is alive if `ps aux \| grep python` lists it |
 
@@ -1052,12 +1070,12 @@ after the table.
 | `--max-train-windows N`, `--max-eval-windows N` | none | Random caps for smoke tests only |
 | `--select-best` / `--no-select-best` | on | Test the lowest-validation-loss epoch, or the last epoch |
 | `--accumulation-steps N` | 1 | Sum gradients over N batches per optimizer step |
-| `--num-workers N` | 0 | Background data-loading processes (use 0 on Windows) |
+| `--num-workers N` | 0 | Background data-loading processes (use 0 on Windows). More than the CPUs available prints a warning. |
 | `--resume` / `--no-resume` | on | Continue interrupted folds and reuse finished ones |
 | `--ablation` | `none` | One of the 9 Fig. 13 variants (§13) |
 | `--modality-dropout X` | 0 | Training probability of masking one input (half sensor, half photo) |
 | `--pretrained`, `--no-pretrained` | off (on in `PROTOCOL`) | Start EfficientNet-B0 from ImageNet weights (downloaded once, step 0). On in every main run; step 7 compares. Photos are ImageNet-normalized in every run. |
-| `--freeze-image-encoder`, `--no-freeze-image-encoder` | off (on in `PROTOCOL`) | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train. On in every main run; refused without `--pretrained`. |
+| `--freeze-image-encoder`, `--no-freeze-image-encoder` | off (on in `PROTOCOL`) | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train. The backbone then always runs in eval mode (also no stochastic depth), so each photo's features are computed once per fold and reused, which makes these runs much faster (`"cached_image_features": true` in `fold-Tn.json`). On in every main run; refused without `--pretrained`. |
 | `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed while its weights train |
 | `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or spectrograms of each window's raw input force (optional experiment, §14; needs `--image-lag 0`) |
 | `--spectrogram-window N`, `--spectrogram-hop N` | 256, 64 | STFT window and hop in raw samples, for `--image-source spectrogram` |
@@ -1085,7 +1103,7 @@ Differences per entry point:
 | `omnifuser train` | Adds `--test-tool` (default `T10`) and `--output-dir` (default `experiment_results/train`). Duplicate handling: `--dedup-identical-forces {True,False}` as in the table above. |
 | `scripts/train_lightning.py` | `--data-dir`, `--output-dir` and `--dedup-identical-forces {True,False}` are **required**; `--device` defaults to `cuda`. `--eval-dedup-identical-forces` is optional and follows the training setting. |
 | `scripts/train_local.py` | Defaults: `--epochs 1`, `--batch-size 1`, `--device cpu`, output `experiment_results/validation/local-smoke`. Windows are capped at 2/1 unless `--full`. It does not expose `--learning-rate`, `--input-len`, `--decimation`, `--label-column`, `--d-model` or `--seed` (library defaults apply). |
-| `scripts/run_experiment_suite.py` | Defaults to the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 0 --device cuda`. It also takes `--study` (`ablations`, `sensitivity`, `missing-modality`, `all`, `image-encoder`, `image-source`, `deduplication`), `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). The study `deduplication` compares both duplicate settings (§14). |
+| `scripts/run_experiment_suite.py` | Defaults to most of the protocol: `--epochs 30 --stride 24 --pool 1000 --image-lag 0 --device cuda`, but not `--pretrained --freeze-image-encoder` or `--num-workers 4`, so always pass `"${PROTOCOL[@]}"`. It also takes `--study` (`ablations`, `sensitivity`, `missing-modality`, `all`, `image-encoder`, `image-source`, `deduplication`), `--run-id`, `--output-root` and `--modality-dropout-rates` (§13). The study `deduplication` compares both duplicate settings (§14). |
 
 Invalid combinations stop before training with a clear error. Examples: a
 head count that does not divide the width, dropout ≥ 1, or `--pretrained`
@@ -1207,18 +1225,41 @@ The capped suite smoke run takes about 3.5 minutes on an idle laptop. Keep
 (and, for spectrograms, the raw force) and slow loading down.
 
 **CPU and memory on a laptop.** PyTorch otherwise starts one thread per
-core, which oversubscribes a machine that is also doing other work:
+core, which oversubscribes a machine that is also doing other work. Check
+what is free first:
 
-- the tests use half the logical CPUs, at most 4. Set
-  `$env:OMNIFUSER_TEST_THREADS = 1` before `pytest` while another job holds
-  every core. On a fully loaded laptop the suite takes 25 minutes or more,
-  instead of a few;
-- training uses at most 4 threads. Set `$env:OMP_NUM_THREADS = 1` (or 2) in
-  the same PowerShell window, before starting, to use fewer;
-- the spectrogram smoke run loads the unpooled force file: about 1.5 GB at
-  the peak while loading, then about 0.5 GB of raw force. Close other
-  memory-heavy programs first, or run this check on the GPU machine instead.
-  A `MemoryError` there means too little free memory, not a code fault.
+```powershell
+[Environment]::ProcessorCount                                  # logical CPUs
+typeperf "\Processor(_Total)\% Processor Time" "\Memory\Available MBytes" -sc 3
+```
+
+The second command prints three samples of the total CPU load (%) and the
+free memory (MB). Then:
+
+- the tests and CPU training choose their thread count themselves: at most
+  4, and no more than the CPUs idle when they start (measured over a quarter
+  of a second), so they do not compete with another program that holds the
+  cores. To set the number yourself, run `$env:OMNIFUSER_TEST_THREADS = 2`
+  (tests) or `$env:OMNIFUSER_CPU_THREADS = 2` (training) in the same window
+  first. The suite takes about a minute on a laptop;
+- `--num-workers` larger than the number of CPUs prints a warning: the data
+  loaders would then compete with training;
+- **a stuck Windows WMI service.** On import, torch asks Python's `platform`
+  module for the machine type, which queries WMI. When the service hangs, that
+  call never returns, and anything importing torch stalls at 0 % CPU (this
+  made one test run take 24 minutes). The project now detects it: if WMI does
+  not answer within 5 s, it prints `omnifuser: the Windows WMI service did not
+  answer ...` and continues with Python's fallback. Tools outside the
+  project (Pyright, a bare `python -c "import torch"`) can still hang. Check
+  with `.\.venv\Scripts\python.exe -c "import platform; print(platform.machine())"`,
+  which should print `AMD64` at once; if it hangs, restart the service in an
+  administrator PowerShell (`Restart-Service winmgmt -Force`) or restart
+  Windows. Linux GPU machines are not affected;
+- the spectrogram smoke run loads the unpooled force file: about 1.4 GB at
+  the peak while loading, then 0.41 GB of raw force. It takes under a minute.
+  Check that about 2 GB are free (the `typeperf` line above), or run this
+  check on the GPU machine instead. A `MemoryError` there means too little
+  free memory, not a code fault.
 
 ## 19. Paper experiments not covered
 

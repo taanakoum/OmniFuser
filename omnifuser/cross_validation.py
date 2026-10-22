@@ -10,7 +10,6 @@ from typing import Any
 import numpy as np
 import torch
 
-from omnifuser.config import ModelConfig
 from omnifuser.data import (
     CLASS_NAMES,
     leave_one_tool_out_folds,
@@ -18,7 +17,7 @@ from omnifuser.data import (
 )
 from omnifuser.spectrogram import SpectrogramSettings
 from omnifuser.tracking import ExperimentTracker
-from omnifuser.train import save_arrays, train_fold
+from omnifuser.train import model_config, save_arrays, train_fold
 
 RECORD_IMAGE = re.compile(r"^T(?P<tool>\d+)R\d+B\d+$")
 EVALUATION_MODES = ("full", "sensor_missing", "image_missing")
@@ -418,14 +417,16 @@ def run_cross_validation(
     results: list[dict[str, Any]] = []
     train_stride = stride if stride is not None else input_len + horizon
     eval_stride = max(train_stride, horizon)
+    # The same builder as train_fold, so spectrogram runs (image_channels 7) match too.
     expected_config = asdict(
-        ModelConfig(
+        model_config(
             d_model=d_model,
             input_len=input_len,
             horizon=horizon,
             image_encoder=image_encoder,
             prediction_head=prediction_head,
-            **(config_overrides or {}),
+            config_overrides=config_overrides,
+            spectrogram=spectrogram,
         )
     )
     tracker = ExperimentTracker(

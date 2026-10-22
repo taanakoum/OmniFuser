@@ -66,7 +66,7 @@ cross-validations; each one trains 10 models.
 | 4 | Paper Fig. 13 component ablations | 9 | `experiment_results/ablations/paper-v1/` |
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/paper-v1/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/paper-v1/` |
-| 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen | 3 | `experiment_results/image-encoder/encoder-v1/` |
+| 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting) | 3 | `experiment_results/image-encoder/encoder-v1/` |
 | (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/source-v1/` |
 | (opt) | Duplicate handling study | 2 | `experiment_results/deduplication/dedup-v1/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
@@ -527,7 +527,7 @@ less experiment_results/logs/step0-checks-*.out
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `132 passed` |
+| `=== tests` | `137 passed` |
 | `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `=== parameter count` | `4,183,600 ... (match)` |
 | `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |
@@ -600,6 +600,13 @@ parts = round up( hours per 10-fold run × number of 10-fold runs ÷ 22 ) + 1
   minutes.
 - Example: 3 h per run gives `3 × 1 / 22 → 1, + 1 = 2` parts for step 3a,
   and `3 × 22 / 22 = 3, + 1 = 4` parts for the 22-run sensitivity study.
+- The pilot measures the protocol's frozen ImageNet backbone, whose photo
+  features are computed once per fold and reused. Variants that train the
+  backbone (step 7's `pretrained-finetuned` and `from-scratch`) or build new
+  images in every window (the spectrogram variants) take several times
+  longer per epoch. For the `image-encoder` and `image-source` studies, read
+  the `epoch ... s` lines of their first variant's log after an hour and
+  resubmit `chain.sh` if more parts are needed.
 
 `bash slurm/chain.sh PARTS [sbatch options] slurm/job.sbatch COMMAND ...`
 submits the parts. Each part waits for the previous one to end, whether it
@@ -752,8 +759,8 @@ main runs' frozen ImageNet encoder, like `photo-previous-pass`),
 are an optional experiment only. The study sets each variant's image lag
 itself. The Lightning runbook §14 explains how the images are made, why they
 cannot leak the forecast window, and how to read the study. They are
-computed while the data loads, from about 0.5 GB of raw force held in
-memory; `slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose
+computed while the batches load (about 12 ms per window image), from
+0.41 GB of raw force held in memory (0.56 GB with duplicates kept); `slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose
 the number of parts from §12 for 4 runs, but measure first: the smoke test's
 log shows its epoch time, and image building can make spectrogram epochs
 slower than the photo pilot's.

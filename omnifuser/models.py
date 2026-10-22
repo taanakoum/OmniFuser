@@ -206,6 +206,10 @@ class ImageFeatureEncoder(nn.Module):
         )
         # Frozen weights only make sense with frozen BatchNorm statistics as well.
         self.freeze_bn = freeze_bn or freeze_weights
+        # A frozen backbone is a fixed function: eval mode also turns off the stochastic
+        # depth inside torchvision's EfficientNet blocks, so a photo's features never
+        # change and can be computed once per fold (``train.FrozenFeatureBank``).
+        self.freeze_weights = freeze_weights
         # Photos arrive already ImageNet-normalized (``data.IMAGE_MEAN``/``IMAGE_STD``),
         # which is what pretrained weights expect; no further scaling happens here.
         if name not in {"efficientnet_b0", "compact"}:
@@ -234,24 +238,36 @@ class ImageFeatureEncoder(nn.Module):
             )
             self.pool = nn.Identity()
             input_width = 96
+        self.feature_width = input_width
         self.projection = nn.Linear(input_width, d_model)
         if freeze_weights:
             self.features.requires_grad_(False)
 
     def train(self, mode: bool = True) -> ImageFeatureEncoder:
         super().train(mode)
-        if mode and self.freeze_bn:
+        if mode and self.freeze_weights:
+            self.features.eval()
+        elif mode and self.freeze_bn:
             for module in self.modules():
                 if isinstance(module, nn.modules.batchnorm._BatchNorm):
                     module.eval()
         return self
 
+    def backbone_features(self, images: Tensor) -> Tensor:
+        """(N, C, H, W) images -> (N, feature_width) pooled backbone features."""
+        return self.pool(self.features(self.generator(images))).flatten(1)
+
     def forward(self, images: Tensor) -> Tensor:
+        """(B, N, C, H, W) images, or (B, N, feature_width) precomputed features."""
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
-        flat = self.generator(images.flatten(0, 1))
-        features = self.features(flat)
-        features = self.pool(features).flatten(1)
+        if images.ndim == 3:
+            if images.shape[-1] != self.feature_width:
+                raise ValueError(
+                    f"precomputed image features must have width {self.feature_width}"
+                )
+            return self.projection(images)
+        features = self.backbone_features(images.flatten(0, 1))
         return self.projection(features).reshape(images.shape[0], images.shape[1], -1)
 
 
@@ -566,8 +582,11 @@ class OmniFuser(nn.Module):
     ) -> dict[str, Any]:
         if force.ndim != 3 or force.shape[1] != self.config.input_len:
             raise ValueError(f"force must have shape (batch, {self.config.input_len}, channels)")
-        if images.ndim != 5 or images.shape[0] != force.shape[0]:
-            raise ValueError("images must have shape (batch, images, 3, height, width)")
+        if images.ndim not in (3, 5) or images.shape[0] != force.shape[0]:
+            raise ValueError(
+                "images must have shape (batch, images, channels, height, width), or "
+                "(batch, images, features) for precomputed frozen-backbone features"
+            )
         sensor = self.temporal_encoder(
             self.temporal_embedding(force, cycle, batch_code, relative)
         )

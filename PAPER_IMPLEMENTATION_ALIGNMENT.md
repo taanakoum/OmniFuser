@@ -280,5 +280,5 @@ Lightning AI Studio, run one uncapped fold using the intended EfficientNet
 settings and persistent storage, inspect epoch time/peak memory and validation
 metrics, and only then launch the ten-fold run. The executable commands are in
 [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). The complete record of what was
-verified (static checks, 132 tests, real-data runs of every
+verified (static checks, 137 tests, real-data runs of every
 entry point and flag) is in `IMPLEMENTATION_AUDIT.md` §10.

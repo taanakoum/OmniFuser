@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader, Subset
 
 from omnifuser.config import ModelConfig
 from omnifuser.data import (
+    NO_IMAGE,
     PASS_TRIM_REFERENCE_FRACTION,
     PASS_TRIM_THRESHOLD_FRACTION,
     PASS_TRIM_WINDOW_SAMPLES,
@@ -40,7 +41,8 @@ from omnifuser.evaluation import (
     regression_report,
     softmax_probabilities,
 )
-from omnifuser.models import OmniFuser, multitask_loss
+from omnifuser.models import ImageFeatureEncoder, OmniFuser, multitask_loss
+from omnifuser.resources import available_cpus, cpu_threads
 from omnifuser.spectrogram import (
     IMAGE_CHANNELS,
     ForceWindowDataset,
@@ -48,6 +50,65 @@ from omnifuser.spectrogram import (
     raw_passes_by_tool,
 )
 from omnifuser.tracking import ExperimentTracker
+
+
+def model_config(
+    *,
+    d_model: int,
+    input_len: int,
+    horizon: int,
+    image_encoder: str,
+    prediction_head: str,
+    config_overrides: dict[str, Any] | None = None,
+    spectrogram: SpectrogramSettings | None = None,
+) -> ModelConfig:
+    """The configuration a fold trains with; fold reuse compares against the same."""
+    overrides: dict[str, Any] = dict(config_overrides or {})
+    if spectrogram is not None:
+        overrides["image_channels"] = IMAGE_CHANNELS
+    return ModelConfig(
+        d_model=d_model,
+        input_len=input_len,
+        horizon=horizon,
+        image_encoder=image_encoder,
+        prediction_head=prediction_head,
+        **overrides,
+    )
+
+
+class FrozenFeatureBank:
+    """Pooled frozen-backbone features of every photo, computed once per fold.
+
+    A frozen backbone (fixed weights, eval mode) gives a photo the same features in
+    every batch and epoch, so they are computed once here and the model receives them
+    instead of pixels. The model's outputs are those of computing them per batch;
+    only the repeated EfficientNet forward passes are saved.
+    """
+
+    def __init__(
+        self,
+        bank: ImageBank,
+        encoder: ImageFeatureEncoder,
+        device: torch.device,
+        batch_size: int = 64,
+    ) -> None:
+        paths = [NO_IMAGE, *bank.index]
+        was_training = encoder.training
+        encoder.eval()
+        parts: list[torch.Tensor] = []
+        with torch.no_grad():
+            for start in range(0, len(paths), batch_size):
+                pixels = torch.stack([bank.tensor(path) for path in paths[start : start + batch_size]])
+                parts.append(encoder.backbone_features(pixels.to(device)).float().cpu())
+        encoder.train(was_training)
+        self.features = torch.cat(parts)
+        self.index = {path: position for position, path in enumerate(paths)}
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def tensor(self, path: Path) -> torch.Tensor:
+        return self.features[self.index[Path(path)]]
 
 
 def _temporary_path(path: Path) -> Path:
@@ -149,22 +210,28 @@ def _run_epoch(
         raise ValueError("accumulation_steps must be positive")
     training = optimizer is not None
     model.train(training)
-    totals: dict[str, float] = {}
-    correct = 0
+    # Running sums stay on the device and are copied to the CPU once per epoch: a
+    # float() or .cpu() per step would stall the GPU queue at every batch.
+    horizon, channels = model.config.horizon, model.config.force_channels
+
+    def zeros(*shape: int) -> torch.Tensor:
+        return torch.zeros(shape, dtype=torch.float64, device=device)
+
+    totals: dict[str, torch.Tensor] = {}
+    correct = torch.zeros((), dtype=torch.long, device=device)
     count = 0
-    force_squared_error = 0.0
-    force_absolute_error = 0.0
     force_elements = 0
-    normalized_abs_by_channel = np.zeros(3, dtype=np.float64)
-    normalized_squared_by_channel = np.zeros(3, dtype=np.float64)
-    physical_abs_by_channel = np.zeros(3, dtype=np.float64)
-    physical_squared_by_channel = np.zeros(3, dtype=np.float64)
-    normalized_abs_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
-    normalized_squared_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
-    physical_abs_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
-    physical_squared_by_horizon = np.zeros(model.config.horizon, dtype=np.float64)
     channel_elements = 0
     horizon_elements = 0
+    sums = {
+        name: zeros(channels) if "channel" in name else zeros(horizon)
+        for name in (
+            "normalized_abs_by_channel", "normalized_squared_by_channel",
+            "physical_abs_by_channel", "physical_squared_by_channel",
+            "normalized_abs_by_horizon", "normalized_squared_by_horizon",
+            "physical_abs_by_horizon", "physical_squared_by_horizon",
+        )
+    }
     confusion_logits: list[torch.Tensor] = []
     confusion_targets: list[torch.Tensor] = []
     force_predictions: list[torch.Tensor] = []
@@ -172,9 +239,7 @@ def _run_epoch(
     last_input_forces: list[torch.Tensor] = []
     shown_labels: list[torch.Tensor] = []
     grad_context = torch.enable_grad() if training else torch.no_grad()
-    force_scale = torch.as_tensor(
-        normalizer.scale, device=device, dtype=torch.float32
-    )
+    force_scale = torch.as_tensor(normalizer.scale, device=device, dtype=torch.float64)
     with grad_context:
         batches = len(loader)
         if training:
@@ -211,40 +276,54 @@ def _run_epoch(
                     optimizer.zero_grad(set_to_none=True)
             batch_size = tensors["force"].shape[0]
             for key, value in components.items():
-                totals[key] = totals.get(key, 0.0) + float(value) * batch_size
-            predicted = outputs["class_logits"].argmax(dim=-1)
-            correct += int((predicted == tensors["class_target"]).sum())
+                totals[key] = totals.get(key, zeros()) + value.double() * batch_size
+            logits = outputs["class_logits"].detach()
+            correct += (logits.argmax(dim=-1) == tensors["class_target"]).sum()
             count += tensors["class_target"].numel()
-            confusion_logits.append(outputs["class_logits"].detach().cpu())
-            confusion_targets.append(tensors["class_target"].detach().cpu())
+            confusion_logits.append(logits)
+            confusion_targets.append(tensors["class_target"])
             if collect_predictions:
-                force_predictions.append(outputs["force"].detach().cpu())
-                force_targets.append(tensors["force_target"].detach().cpu())
-                last_input_forces.append(tensors["force"][:, -1].detach().cpu())
-                shown_labels.append(tensors["shown_label"].detach().cpu())
-            difference = outputs["force"] - tensors["force_target"]
-            physical_difference = difference * force_scale.to(dtype=difference.dtype)[
-                None, None, :
-            ]
-            force_squared_error += float(difference.detach().square().sum())
-            force_absolute_error += float(difference.detach().abs().sum())
+                force_predictions.append(outputs["force"].detach())
+                force_targets.append(tensors["force_target"])
+                last_input_forces.append(tensors["force"][:, -1])
+                shown_labels.append(tensors["shown_label"])
+            difference = (outputs["force"].detach() - tensors["force_target"]).double()
+            physical_difference = difference * force_scale[None, None, :]
+            for kind, values in (("normalized", difference), ("physical", physical_difference)):
+                sums[f"{kind}_abs_by_channel"] += values.abs().sum(dim=(0, 1))
+                sums[f"{kind}_squared_by_channel"] += values.square().sum(dim=(0, 1))
+                sums[f"{kind}_abs_by_horizon"] += values.abs().sum(dim=(0, 2))
+                sums[f"{kind}_squared_by_horizon"] += values.square().sum(dim=(0, 2))
             force_elements += difference.numel()
-            normalized_abs_by_channel += difference.detach().abs().sum(dim=(0, 1)).cpu().numpy()
-            normalized_squared_by_channel += difference.detach().square().sum(dim=(0, 1)).cpu().numpy()
-            normalized_abs_by_horizon += difference.detach().abs().sum(dim=(0, 2)).cpu().numpy()
-            normalized_squared_by_horizon += difference.detach().square().sum(dim=(0, 2)).cpu().numpy()
-            physical_abs_by_channel += physical_difference.detach().abs().sum(dim=(0, 1)).cpu().numpy()
-            physical_squared_by_channel += physical_difference.detach().square().sum(dim=(0, 1)).cpu().numpy()
-            physical_abs_by_horizon += physical_difference.detach().abs().sum(dim=(0, 2)).cpu().numpy()
-            physical_squared_by_horizon += physical_difference.detach().square().sum(dim=(0, 2)).cpu().numpy()
-            channel_elements += tensors["force"].shape[0] * model.config.horizon
-            horizon_elements += tensors["force"].shape[0] * model.config.force_channels
+            channel_elements += batch_size * horizon
+            horizon_elements += batch_size * channels
+    # One copy to the CPU per epoch.
+    totals_cpu = {key: float(value) for key, value in totals.items()}
+    correct_count = int(correct)
+    host = {name: value.cpu().numpy() for name, value in sums.items()}
+    normalized_abs_by_channel = host["normalized_abs_by_channel"]
+    normalized_squared_by_channel = host["normalized_squared_by_channel"]
+    physical_abs_by_channel = host["physical_abs_by_channel"]
+    physical_squared_by_channel = host["physical_squared_by_channel"]
+    normalized_abs_by_horizon = host["normalized_abs_by_horizon"]
+    normalized_squared_by_horizon = host["normalized_squared_by_horizon"]
+    physical_abs_by_horizon = host["physical_abs_by_horizon"]
+    physical_squared_by_horizon = host["physical_squared_by_horizon"]
+    force_absolute_error = float(normalized_abs_by_channel.sum())
+    force_squared_error = float(normalized_squared_by_channel.sum())
+    confusion_logits = [torch.cat(confusion_logits).cpu()] if confusion_logits else []
+    confusion_targets = [torch.cat(confusion_targets).cpu()] if confusion_targets else []
+    if collect_predictions:
+        force_predictions = [torch.cat(force_predictions).cpu()]
+        force_targets = [torch.cat(force_targets).cpu()]
+        last_input_forces = [torch.cat(last_input_forces).cpu()]
+        shown_labels = [torch.cat(shown_labels).cpu()]
     if not count:
         raise ValueError("the selected data split produced no evaluation batches")
     result: dict[str, Any] = {
-        key: value / _dataset_size(loader) for key, value in totals.items()
+        key: value / _dataset_size(loader) for key, value in totals_cpu.items()
     }
-    result["classification_accuracy"] = correct / count
+    result["classification_accuracy"] = correct_count / count
     result["force_mse_normalized"] = force_squared_error / force_elements
     result["force_mae_normalized"] = force_absolute_error / force_elements
     result["force_rmse_normalized"] = float(np.sqrt(result["force_mse_normalized"]))
@@ -395,7 +474,14 @@ def train_fold(
             )
     device = torch.device(device_name)
     if device.type == "cpu":
-        torch.set_num_threads(max(1, min(torch.get_num_threads(), 4)))
+        # Leave the CPUs other programs are using alone (omnifuser.resources).
+        torch.set_num_threads(cpu_threads(limit=4))
+    if num_workers > available_cpus():
+        print(
+            f"warning: --num-workers {num_workers} exceeds the {available_cpus()} CPUs "
+            "available; data loading will compete with training",
+            flush=True,
+        )
 
     # Training and evaluation may handle duplicate recordings differently, so a
     # comparison of the two settings can be scored on identical test windows.
@@ -440,14 +526,14 @@ def train_fold(
     validation_timelines = [eval_timeline_by_tool[tool] for tool in fold.validation_tools]
     test_timelines = [eval_timeline_by_tool[tool] for tool in fold.test_tools]
     normalizer = ForceNormalizer.fit(train_timelines)
-    config = ModelConfig(
+    config = model_config(
         d_model=d_model,
         input_len=input_len,
         horizon=horizon,
         image_encoder=image_encoder,
         prediction_head=prediction_head,
-        **(config_overrides or {}),
-        **({"image_channels": IMAGE_CHANNELS} if spectrogram is not None else {}),
+        config_overrides=config_overrides,
+        spectrogram=spectrogram,
     )
 
     def windows(
@@ -466,12 +552,16 @@ def train_fold(
     )
     test_data = _limit_dataset(windows(test_timelines, eval_stride, eval_raw_passes), max_eval_windows, seed + 2)
 
-    # Spectrogram windows carry their own images; only photo runs need the bank.
-    image_bank = (
-        ImageBank.from_timelines([*timelines, *eval_timelines], config.image_height, config.image_width)
-        if spectrogram is None
-        else None
-    )
+    model = OmniFuser(config).to(device)
+    # Spectrogram windows carry their own images; only photo runs need a bank. With a
+    # frozen backbone, the bank holds each photo's features instead of its pixels.
+    image_bank: ImageBank | FrozenFeatureBank | None = None
+    if spectrogram is None:
+        image_bank = ImageBank.from_timelines(
+            [*timelines, *eval_timelines], config.image_height, config.image_width
+        )
+        if config.freeze_image_encoder:
+            image_bank = FrozenFeatureBank(image_bank, model.image_branch.encoder, device)
     collate = partial(
         collate_windows,
         height=config.image_height,
@@ -493,7 +583,6 @@ def train_fold(
     test_loader = DataLoader(
         test_data, batch_size=batch_size, shuffle=False, **loader_options
     )
-    model = OmniFuser(config).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -865,6 +954,7 @@ def train_fold(
             "seed": seed,
             "device": str(device),
             "num_workers": num_workers,
+            "cached_image_features": isinstance(image_bank, FrozenFeatureBank),
         },
         "normalizer_mean": normalizer.mean.tolist(),
         "normalizer_scale": normalizer.scale.tolist(),

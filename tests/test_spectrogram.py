@@ -1,6 +1,7 @@
 """Optional image inputs: force-window spectrograms and a frozen pretrained photo encoder."""
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -23,7 +24,7 @@ from omnifuser.spectrogram import (
     force_window_image,
     raw_passes_by_tool,
 )
-from omnifuser.train import train_fold
+from omnifuser.train import model_config, train_fold
 
 SMALL = SpectrogramSettings(window=64, hop=16)
 TINY = {"num_rtd_layers": 2, "num_gat_layers": 1, "image_height": 32, "image_width": 96}
@@ -53,13 +54,13 @@ def test_window_image_maps_share_frequency_rows_and_are_standardized() -> None:
         SpectrogramSettings(recurrence_rate=1.0)
 
 
-def _force_windows(tmp_path: Path, pool: int = 4) -> tuple[ForceWindowDataset, list]:
+def _force_windows(tmp_path: Path, pool: int = 4, input_len: int = 40) -> tuple[ForceWindowDataset, list]:
     root = make_nonastreda(tmp_path / "data", tools=(1,), runs=(1, 2), length=120)
     raw = load_nonastreda(root, trim_pass=False)
     timelines = make_tool_timelines(pool_records(raw, pool))
     data = ForceWindowDataset(
         timelines, ForceNormalizer.fit(timelines), raw_passes_by_tool(raw, pool), pool,
-        SMALL, 32, 96, input_len=40, horizon=8, stride=8,
+        SMALL, 32, 96, input_len=input_len, horizon=8, stride=8,
     )
     return data, raw
 
@@ -100,7 +101,7 @@ def test_window_images_use_only_the_input_samples_one_image_per_pass_segment(tmp
 
 
 def test_window_images_collate_with_padding(tmp_path: Path) -> None:
-    data, _ = _force_windows(tmp_path)
+    data, _ = _force_windows(tmp_path, input_len=16)  # shorter than a pass (~32 steps)
     counts = [len(data.segments(0, data.locate(i)[1])) for i in range(len(data))]
     fewest, most = counts.index(min(counts)), counts.index(max(counts))
     assert counts[fewest] < counts[most]
@@ -140,7 +141,12 @@ def test_spectrogram_runs_use_lag_zero_and_never_reuse_photo_folds(tmp_path: Pat
     assert result["spectrogram"] == {"window": 64, "hop": 16, "recurrence_rate": 0.1}
     assert result["config"]["image_channels"] == IMAGE_CHANNELS
     assert np.isfinite(result["test"]["loss"])
-    config = result["config"]
+    # cross-validation builds the expected config the same way, so it reuses this fold
+    config = asdict(model_config(
+        d_model=32, input_len=24, horizon=12, image_encoder="compact", prediction_head="direct",
+        config_overrides=TINY, spectrogram=SMALL,
+    ))
+    assert config == result["config"]
     # a photo run (no spectrogram) must not reuse this fold; the same spectrogram run may
     assert _load_finished_fold(out, "T1", config, {}, 1, 2) is None
     spectrogram = {"window": 64, "hop": 16, "recurrence_rate": 0.1}
