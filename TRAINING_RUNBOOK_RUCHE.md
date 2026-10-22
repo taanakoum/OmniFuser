@@ -88,7 +88,7 @@ and §14 explain these choices.
 | Windows 10/11 with PowerShell | `ssh`, `scp` and `tar` are built in |
 | Git on your laptop, and this repository | The branch `Ruche-OmniFuser-Training` must be pushed (§2) |
 | The `Nonastreda_Data/` folder in your local repository | `forces_xyz_raw.mat`, `labels.csv`, `labels_reg.csv` and `tool/` with 512 photos |
-| About 20 GB free in `$WORKDIR` | The conda environment takes about 5 GB, the data 0.4 GB, and the results with checkpoints about 10-15 GB |
+| About 40 GB free in `$WORKDIR` | The conda environment takes about 5 GB and the data 0.4 GB. Each 10-fold run stores about 0.4 GB (0.24 GB of metrics and logs, 0.17 GB of checkpoints), so every run in this runbook (about 50) adds up to about 20 GB, plus the download archives of §17 |
 
 How the time splits up:
 
@@ -106,8 +106,8 @@ How the time splits up:
    your password.
 3. **Prepare storage** (§4), **clone** the branch (§5), **upload** the data
    (§6).
-4. **Install** the Python environment and enter its names in
-   `slurm/env.sh` (§7).
+4. **Install** the Python environment, enter its names in `slurm/env.sh`,
+   and download the ImageNet weights every main run needs (§7).
 5. **Every session:** the §9 block.
 6. **Check** the installation: step 0 and the GPU check (§10).
 7. **Smoke test, then pilot** (§11).
@@ -504,8 +504,10 @@ Then `bash slurm/status.sh` shows where everything stands (§16).
 Enter, so the job receives the full list of arguments. Type it exactly so,
 with the quotes, the braces and `[@]`. The settings themselves are explained
 in §9 of the Lightning runbook; the most important are 30 epochs, 1 s steps
-(`--pool 1000`), the paper's same-pass photo (`--image-lag 0`) and windows of
-96 input and 96 forecast steps.
+(`--pool 1000`), the paper's same-pass photo (`--image-lag 0`), windows of
+96 input and 96 forecast steps, and the EfficientNet-B0 with frozen ImageNet
+weights (`--pretrained --freeze-image-encoder`, whose weights 7.4
+downloaded).
 
 ## 10. Step 0: checks
 
@@ -758,19 +760,24 @@ main runs' frozen ImageNet encoder, like `photo-previous-pass`),
 `spectrogram-finetuned` and `spectrogram-from-scratch`. Spectrograms
 are an optional experiment only. The study sets each variant's image lag
 itself. The Lightning runbook §14 explains how the images are made, why they
-cannot leak the forecast window, and how to read the study. They are
-computed while the batches load (about 12 ms per window image), from
-0.41 GB of raw force held in memory (0.56 GB with duplicates kept); `slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose
-the number of parts from §12 for 4 runs, but measure first: the smoke test's
-log shows its epoch time, and image building can make spectrogram epochs
-slower than the photo pilot's.
+cannot leak the forecast window, and how to read the study. The images are
+computed while the batches load (about 12 ms per window image), from 0.41 GB
+of raw force held in memory (0.56 GB with duplicates kept);
+`slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose the
+number of parts from §12 for 4 runs, and follow the note there on
+spectrogram variants: their epochs can be slower than the photo pilot's, so
+read the `epoch ... s` lines of the study's log after an hour.
 
 First a capped one-fold smoke test of the spectrogram path on the real data
-(a few minutes on `gpu_test`; its numbers are not results). When its log ends
-with `finished`, submit the study:
+(a few minutes on `gpu_test`; its numbers are not results, and its epoch time
+says nothing about a full epoch). When its log ends with `finished`, submit
+the study:
 
 ```bash
-sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch   omnifuser train "${PROTOCOL[@]}" --image-source spectrogram   --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke   --max-train-windows 64 --max-eval-windows 32
+sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch \
+  omnifuser train "${PROTOCOL[@]}" --image-source spectrogram \
+  --epochs 1 --test-tool T10 --output-dir experiment_results/validation/spectrogram-smoke \
+  --max-train-windows 64 --max-eval-windows 32
 ```
 
 ```bash
@@ -936,7 +943,7 @@ Once or twice a day, about 10 minutes:
    `compare_with_paper.py` on it (§13), or wait for the finishing
    checklist (§17).
 6. **Disk:** `ruche-quota` now and then; the results grow by about
-   250 MB per 10-fold run.
+   0.4 GB per 10-fold run (about 20 GB for every run in this runbook).
 
 ## 17. Download the results
 
@@ -969,8 +976,9 @@ Once or twice a day, about 10 minutes:
 ### Pack and download
 
 When everything has finished, pack the results on Ruche. The first archive
-(metrics, predictions, logs, figures; everything the report needs) is small
-and quick to pack on the login node:
+(metrics, predictions, logs, figures; everything the report needs) holds
+about 12 GB of text that compresses to about 1-2 GB, and is quick enough to
+pack on the login node:
 
 ```bash
 cd "$WORKDIR/OmniFuser"
@@ -1007,7 +1015,8 @@ closes.
 | The job ends at once and no log file exists | `experiment_results/logs` did not exist when the job started | Run `mkdir -p experiment_results/logs` (§9), then resubmit |
 | `module: command not found` or `Lmod has detected the following error` in a log | Wrong module name in `slurm/env.sh` | Check `module avail anaconda miniconda` and correct `CONDA_MODULE` (7.3) |
 | `activate: No such file or directory`, or `ModuleNotFoundError: No module named 'omnifuser'` | Wrong environment name in `slurm/env.sh`, or the installation in 7.2 did not finish | Check `conda env list` and `CONDA_ENV`; repeat 7.2 |
-| `CUDA was requested but is not available`, or `False` in the GPU check | The PyTorch build needs a newer GPU driver than the cluster has. The `CUDA Version` in the `nvidia-smi` line of any GPU job log shows what the driver supports. | Install the CUDA 11.8 build: `source slurm/env.sh`, then `python -m pip install --no-cache-dir --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu118`; repeat the GPU check |
+| `CUDA was requested but is not available`, or `False` in the GPU check | The PyTorch build needs a newer GPU driver than the cluster has. The `CUDA Version` in the `nvidia-smi` line of any GPU job log shows what the driver supports. | Install a build for that CUDA version: `source slurm/env.sh`, then `python -m pip install --no-cache-dir --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126` (driver CUDA 12.6 or newer) or `.../whl/cu118` (older drivers). pip installs the newest PyTorch that has a build for it, possibly an older release, which this project accepts (torch 2.2 or newer). Repeat the GPU check. |
+| `warning: --num-workers 4 exceeds the N CPUs available` | The job got fewer CPUs than the protocol's 4 loader workers (a changed `--cpus-per-task`) | Keep `slurm/job.sbatch`'s 8 CPUs; the run still works, only slower |
 | `CUDA out of memory` | Not expected on 32-40 GB GPUs; possible for the widest sensitivity variants | Add `--batch-size 16 --accumulation-steps 2` (same effective batch) in a new output folder |
 | `DUE TO TIME LIMIT` / state `TIMEOUT` | The 24 h walltime ran out | Normal; the next part resumes. If no part is left, submit the chain again (§16). |
 | `oom-kill`, `Exceeded job memory limit`, or `Killed` | The job used more than its 32 GB of RAM | Add `--mem=64G` before `slurm/job.sbatch` |

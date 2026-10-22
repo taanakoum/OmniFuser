@@ -20,7 +20,10 @@ import json
 import os
 
 ROOT = "experiment_results"
-SUITE_SIZES = {"ablations": 9, "sensitivity": 22, "missing-modality": 2, "deduplication": 2, "all": 31}
+SUITE_SIZES = {
+    "ablations": 9, "sensitivity": 22, "missing-modality": 2, "all": 31,
+    "image-encoder": 3, "image-source": 4, "deduplication": 2,
+}
 
 
 def run_state(path):
