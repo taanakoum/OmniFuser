@@ -66,7 +66,7 @@ cross-validations; each one trains 10 models.
 | 4 | Paper Fig. 13 component ablations | 9 | `experiment_results/ablations/paper-v1/` |
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/paper-v1/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/paper-v1/` |
-| 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting) | 3 | `experiment_results/image-encoder/encoder-v1/` |
+| 7 | Image encoder: from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting), pretrained and frozen without the image GAT | 4 | `experiment_results/image-encoder/encoder-v1/` |
 | (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/source-v1/` |
 | (opt) | Duplicate handling study | 2 | `experiment_results/deduplication/dedup-v1/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
@@ -75,9 +75,10 @@ cross-validations; each one trains 10 models.
 Every main run uses the paper's same-pass photo (image lag 0), photos as
 the image input and an EfficientNet-B0 with ImageNet weights and its backbone
 frozen (`--pretrained --freeze-image-encoder` in `PROTOCOL`), exactly as in
-the Lightning runbook. Step 7 compares it with a fine-tuned and a
-from-scratch encoder. The force spectrograms are an optional experiment
-only (§15). The Lightning runbook's "Main runs and experiments" box, §9, §13
+the Lightning runbook. The photo features then pass through the paper's
+image GAT before fusion. Step 7 compares this encoder with a fine-tuned one,
+a from-scratch one, and the same frozen one without the GAT. The force
+spectrograms are an optional experiment only (§15). The Lightning runbook's "Main runs and experiments" box, §9, §13
 and §14 explain these choices.
 
 ### Before you start
@@ -502,12 +503,18 @@ Then `bash slurm/status.sh` shows where everything stands (§16).
 
 `"${PROTOCOL[@]}"` in a command is replaced by the settings when you press
 Enter, so the job receives the full list of arguments. Type it exactly so,
-with the quotes, the braces and `[@]`. The settings themselves are explained
-in §9 of the Lightning runbook; the most important are 30 epochs, 1 s steps
-(`--pool 1000`), the paper's same-pass photo (`--image-lag 0`), windows of
-96 input and 96 forecast steps, and the EfficientNet-B0 with frozen ImageNet
-weights (`--pretrained --freeze-image-encoder`, whose weights 7.4
-downloaded).
+with the quotes, the braces and `[@]`.
+
+The settings are explained in §9 of the Lightning runbook. The most
+important:
+
+- 30 epochs per fold;
+- 1 s time steps (`--pool 1000`);
+- windows of 96 input and 96 forecast steps;
+- each pass shown its own photo, as in the paper (`--image-lag 0`);
+- EfficientNet-B0 with frozen ImageNet weights
+  (`--pretrained --freeze-image-encoder`; the weights were downloaded in 7.4),
+  followed by the paper's image GAT.
 
 ## 10. Step 0: checks
 
@@ -529,7 +536,7 @@ less experiment_results/logs/step0-checks-*.out
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `137 passed` |
+| `=== tests` | `139 passed` |
 | `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `=== parameter count` | `4,183,600 ... (match)` |
 | `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |
@@ -603,12 +610,13 @@ parts = round up( hours per 10-fold run × number of 10-fold runs ÷ 22 ) + 1
 - Example: 3 h per run gives `3 × 1 / 22 → 1, + 1 = 2` parts for step 3a,
   and `3 × 22 / 22 = 3, + 1 = 4` parts for the 22-run sensitivity study.
 - The pilot measures the protocol's frozen ImageNet backbone, whose photo
-  features are computed once per fold and reused. Variants that train the
-  backbone (step 7's `pretrained-finetuned` and `from-scratch`) or build new
-  images in every window (the spectrogram variants) take several times
-  longer per epoch. For the `image-encoder` and `image-source` studies, read
-  the `epoch ... s` lines of their first variant's log after an hour and
-  resubmit `chain.sh` if more parts are needed.
+  features are computed once per fold and reused (step 7's
+  `pretrained-frozen-no-gat` is as fast). Variants that train the backbone
+  (step 7's `pretrained-finetuned` and `from-scratch`) or build new images in
+  every window (the spectrogram variants) take several times longer per
+  epoch. For the `image-encoder` and `image-source` studies, read the
+  `epoch ... s` lines of their logs after an hour and resubmit `chain.sh` if
+  more parts are needed.
 
 `bash slurm/chain.sh PARTS [sbatch options] slurm/job.sbatch COMMAND ...`
 submits the parts. Each part waits for the previous one to end, whether it
@@ -712,7 +720,7 @@ variants one after another and writes `suite.json` and `suite-summary.csv`.
 A rerun with the same `--run-id` skips finished variants and resumes the
 interrupted one, so a suite is a chain like any other run. The four suites
 are independent and can run at the same time, up to your 4 A100 GPUs.
-Choose their number of parts from §12 (9, 2, 22 and 3 runs).
+Choose their number of parts from §12 (9, 2, 22 and 4 runs).
 
 ```bash
 bash slurm/chain.sh 3 --job-name=ablations-paper-v1 slurm/job.sbatch \
@@ -732,10 +740,20 @@ bash slurm/chain.sh 2 --job-name=image-encoder-encoder-v1 slurm/job.sbatch \
   --output-root experiment_results "${PROTOCOL[@]}"
 ```
 
-Step 7 (`image-encoder`) trains three variants: `from-scratch`,
-`pretrained-finetuned` and `pretrained-frozen` (ImageNet weights kept fixed,
-only the projection and the rest of the model train; the main-run
-configuration). The weights were downloaded in 7.4.
+Step 7 (`image-encoder`) trains four variants of the photo encoder:
+
+| Variant | Encoder | Image GAT |
+|---|---|---|
+| `from-scratch` | Random weights, all trained | yes |
+| `pretrained-finetuned` | ImageNet weights, all trained | yes |
+| `pretrained-frozen` | ImageNet weights, kept fixed (the main-run setting) | yes |
+| `pretrained-frozen-no-gat` | ImageNet weights, kept fixed | **no** |
+
+The image GAT is the paper's 4 graph-attention layers over the 96 steps'
+photo features, between the encoder and the fusion. Every main run keeps it.
+The last variant removes it (`--no-image-gat`), so the encoder's photo
+features go straight to fusion; it shows what the GAT adds. The ImageNet
+weights were downloaded in 7.4.
 
 - The part counts above are placeholders for about 3 h per 10-fold run;
   use your own from §12.
@@ -753,25 +771,30 @@ your GPU limit; additional jobs simply wait. Each is one 10-fold run unless
 stated, so it needs the same number of parts as step 3a. The Lightning
 runbook §14 explains what each one measures.
 
-**Experimental: image source** (4 runs, images that cannot reveal the
-target): `photo-previous-pass` (image lag 1), and spectrograms of each
-window's own raw 1 kHz input force (image lag 0): `spectrogram` (with the
-main runs' frozen ImageNet encoder, like `photo-previous-pass`),
-`spectrogram-finetuned` and `spectrogram-from-scratch`. Spectrograms
-are an optional experiment only. The study sets each variant's image lag
-itself. The Lightning runbook §14 explains how the images are made, why they
-cannot leak the forecast window, and how to read the study. The images are
-computed while the batches load (about 12 ms per window image), from 0.41 GB
-of raw force held in memory (0.56 GB with duplicates kept);
-`slurm/job.sbatch`'s 8 cores and 4 loader workers cover that. Choose the
-number of parts from §12 for 4 runs, and follow the note there on
-spectrogram variants: their epochs can be slower than the photo pilot's, so
-read the `epoch ... s` lines of the study's log after an hour.
+**Experimental: image source** (4 runs). Images that cannot reveal the
+target, instead of the main runs' photo of the same pass:
 
-First a capped one-fold smoke test of the spectrogram path on the real data
-(a few minutes on `gpu_test`; its numbers are not results, and its epoch time
-says nothing about a full epoch). When its log ends with `finished`, submit
-the study:
+| Variant | Image input | Encoder |
+|---|---|---|
+| `photo-previous-pass` | The previous pass's photo (image lag 1) | ImageNet, frozen (as the main runs) |
+| `spectrogram` | Spectrograms of the window's own raw 1 kHz force (image lag 0) | ImageNet, frozen |
+| `spectrogram-finetuned` | The same | ImageNet, fine-tuned |
+| `spectrogram-from-scratch` | The same | Random weights |
+
+- The study sets each variant's image lag itself; no main run uses
+  spectrograms.
+- How the spectrograms are made, why they cannot leak the forecast window,
+  and how to read the study: Lightning runbook §14.
+- The spectrograms are computed while the batches load, from 0.41 GB of raw
+  force held in memory (0.56 GB with duplicates kept). `slurm/job.sbatch`'s
+  8 cores and 4 loader workers are enough.
+- Choose the number of parts from §12 for 4 runs. Spectrogram epochs can be
+  slower than the photo pilot's (§12 note), so read the `epoch ... s` lines of
+  the study's log after an hour.
+
+First, a capped one-fold smoke test of the spectrogram path (a few minutes on
+`gpu_test`). Its numbers are not results, and its epoch time says nothing
+about a full epoch. When its log ends with `finished`, submit the study:
 
 ```bash
 sbatch --job-name=spectrogram-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch \

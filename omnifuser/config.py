@@ -43,6 +43,9 @@ class ModelConfig:
     # Keep the pretrained backbone's weights (and BatchNorm statistics) fixed; only the
     # projection to d_model and everything after it train.
     freeze_image_encoder: bool = False
+    # The paper's temporal GAT over the image nodes (Sec. V-B). False (an experiment,
+    # not the paper) sends the projected encoder features straight to fusion.
+    image_gat: bool = True
     ablation: str = "none"
 
     def __post_init__(self) -> None:

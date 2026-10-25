@@ -46,7 +46,7 @@ the maintained code. Verdicts:
 | A4 | Eq. 3: \(T=\hat H PQ\), \(S=\hat H-T\), \(U=T+S\) | `decomp_mode=branch`: separate trend/seasonal FFNs, then sum (Fig. 5) | Deviation (flag `--decomp-mode literal`). As printed, \(U=T+S=\hat H\), so the low-rank split does nothing. Fig. 5 draws one FFN per component. Fig. 13's re-LR-MA ablation changes the MSE, which also implies the split matters. |
 | A5 | FFD restores length \(T_l\to T\) | Linear over time + channel MLP | Match + choice |
 | A6 | Eq. 4: lightweight EfficientNet (Fig. 4 lists the B0 stages) | torchvision EfficientNet-B0, 128×384 input; every main run uses ImageNet weights with the backbone frozen (`--pretrained --freeze-image-encoder`), and step 7 compares fine-tuned and from-scratch encoders; photos are ImageNet-normalized in every run | Match + choice |
-| A7 | GAT over the \(T\) frame features, fully connected temporal graph | `GraphAttentionLayer` ×4, 4 heads, residual + LayerNorm + ELU | Match + choice |
+| A7 | GAT over the \(T\) frame features, fully connected temporal graph | `GraphAttentionLayer` ×4, 4 heads, residual + LayerNorm + ELU; on in every main run. `--no-image-gat` removes it for one step-7 experiment arm | Match + choice |
 | A8 | Positional and periodic embeddings added after the GAT | `ImageBranch.forward` | Match |
 | A9 | Eq. 5: \(S=ZW'\), Frobenius-orthogonal \(P\) | `_decompose` | Match |
 | A10 | Text after Eq. 5: "\(Z=P+S\), \(P\perp S\)"; Eq. 7 defines \(S=\Pi(Z)\) | Eq. 5 gives \(Z=P+cS\) with \(c=\langle Z,S\rangle_F/\lVert S\rVert_F^2\) | Forced. `--exact-split` uses \(cS\) so that \(Z=P+S\) holds exactly (Eq. 7 reading); off by default. |
@@ -280,5 +280,5 @@ Lightning AI Studio, run one uncapped fold using the intended EfficientNet
 settings and persistent storage, inspect epoch time/peak memory and validation
 metrics, and only then launch the ten-fold run. The executable commands are in
 [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). The complete record of what was
-verified (static checks, 137 tests, real-data runs of every
+verified (static checks, 139 tests, real-data runs of every
 entry point and flag) is in `IMPLEMENTATION_AUDIT.md` §10.

@@ -15,7 +15,7 @@ experiment_results/
   pilot/                        uncapped one-fold timing runs
   main/full-model/              step 3a: main 10-fold run, duplicates merged
   main/full-model-no-dedup/     step 3b: the same with duplicates kept (train and test)
-  image-encoder/<run-id>/       step 7: from scratch, pretrained fine-tuned, pretrained frozen
+  image-encoder/<run-id>/       step 7: from scratch, pretrained fine-tuned, pretrained frozen (with and without the image GAT)
   image-source/<run-id>/        optional: leak-free images: previous-pass photo vs input-window force spectrograms
   heads/<head>/                 optional prediction-head comparison
   ablations/<run-id>/           paper Fig. 13 component ablations

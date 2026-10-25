@@ -38,7 +38,7 @@ scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
 docs/end_to_end/      figures of END_TO_END_SIM.md
 slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
                       env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
-tests/                137 pytest tests
+tests/                139 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -62,7 +62,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 137 tests
+python -m pytest -o addopts= -q tests                    # 139 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -127,7 +127,7 @@ data choices that `EDA.md` justifies.
 |---|---|---|---|
 | Time step `--pool` | 1 (1 ms) | 1000 (1 s) | Only 1 s steps match the paper's difficulty (`EDA.md` §6) |
 | Photo `--image-lag` | 0 (same pass, paper) | 0 (same pass, paper); 1 is an experimental run | The paper's association. Its photo label already matches 91 % of target labels (`EDA.md` §7), so lag 1 is run as an experiment to measure that |
-| Image encoder `--pretrained`, `--freeze-image-encoder` | off | on: ImageNet weights, backbone frozen; step 7 compares fine-tuned and from scratch | The paper does not say its EfficientNet was pretrained. A frozen ImageNet backbone gives stable photo features from 8 training tools; the projection and the rest of OmniFuser train. Photos are normalized with the ImageNet mean and standard deviation in every run, which the pretrained weights expect. |
+| Image encoder `--pretrained`, `--freeze-image-encoder` | off | on: ImageNet weights, backbone frozen; step 7 compares fine-tuned, from scratch, and frozen without the image GAT | The paper does not say its EfficientNet was pretrained. A frozen ImageNet backbone gives stable photo features from 8 training tools; the projection and the rest of OmniFuser train. Photos are normalized with the ImageNet mean and standard deviation in every run, which the pretrained weights expect. |
 | Image source `--image-source` | `photo` | `photo`; force spectrograms are an optional experiment (with image lag 0) | The paper uses tool photos. Spectrograms add the sub-second force dynamics that 1 s pooling removes. Following VLT (arXiv:2607.14510), each is a stack of STFT, FFT and recurrence maps of the raw 1 kHz force inside the window's own input, so it never contains a forecast-window sample and needs no lag. |
 | Horizon / input | 96 / 96 | 96 / 96 | Paper horizons go up to 96 |
 | Training stride | input + horizon (192) | 24 | More training windows at 1 s steps |

@@ -187,6 +187,13 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         help="with --pretrained: keep the backbone weights and BatchNorm statistics fixed "
         "(on in the main runs' protocol)",
     )
+    parser.add_argument(
+        "--image-gat",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="the paper's temporal GAT over the image features (default); --no-image-gat "
+        "sends the projected encoder features straight to fusion (experiment)",
+    )
     parser.add_argument("--freeze-bn", action="store_true")
     parser.add_argument(
         "--image-source",
@@ -277,6 +284,7 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "pretrained": args.pretrained,
         "freeze_bn": args.freeze_bn,
         "freeze_image_encoder": args.freeze_image_encoder,
+        "image_gat": args.image_gat,
     }
     for attribute, field in ARCHITECTURE_OPTIONS.items():
         value = getattr(args, attribute, None)

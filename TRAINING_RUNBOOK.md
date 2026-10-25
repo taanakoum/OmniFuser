@@ -33,7 +33,7 @@ experiments as SLURM jobs and refers back here for the explanations.
 | 5 | Missing-modality robustness | 2 | `experiment_results/missing-modality/<run-id>/` |
 | 6 | Paper Figs. 7-8 parameter sensitivity | 22 | `experiment_results/sensitivity/<run-id>/` |
 | (alt) | Steps 4-6 in one unattended suite | 31 | `experiment_results/all/<run-id>/` |
-| 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting) | 3 | `experiment_results/image-encoder/<run-id>/` |
+| 7 | Image encoder: trained from scratch, pretrained and fine-tuned, pretrained and frozen (the main-run setting), pretrained and frozen without the image GAT | 4 | `experiment_results/image-encoder/<run-id>/` |
 | (opt) | Experimental image source: leak-free images, previous-pass photos versus spectrograms of each window's raw input force | 4 | `experiment_results/image-source/<run-id>/` |
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
@@ -61,7 +61,7 @@ needs no extra command.
 >
 > | Experiment | Variants | Differs from step 3a by |
 > |---|---|---|
-> | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen (= step 3a) | `--no-pretrained`, `--no-freeze-image-encoder` |
+> | Step 7, image encoder (§13) | from scratch, pretrained and fine-tuned, pretrained and frozen (= step 3a), pretrained and frozen without the image GAT | `--no-pretrained`, `--no-freeze-image-encoder`, `--no-image-gat` |
 > | Image source, optional (§14) | previous-pass photo; input-window spectrogram with the main encoder, fine-tuned, from scratch | `--image-lag 1` (photo); `--image-source spectrogram` |
 >
 > The force spectrograms are an optional experiment only: no main run uses
@@ -373,7 +373,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 137 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `137 passed` |
+| `pytest ... tests` | Runs the 139 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `139 passed` |
 | `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
@@ -673,7 +673,7 @@ nohup python scripts/run_experiment_suite.py --study all --run-id paper-v1 \
 tail -f experiment_results/logs/all-paper-v1.log
 ```
 
-### Step 7: image encoder, 3 runs
+### Step 7: image encoder, 4 runs
 
 The paper does not say whether its EfficientNet was pretrained. The main runs
 use ImageNet weights with the backbone frozen; this study measures what that
@@ -684,6 +684,12 @@ choice changes:
 | `from-scratch` | Random initialization | Everything |
 | `pretrained-finetuned` | ImageNet (torchvision `IMAGENET1K_V1`) | Everything, including the backbone |
 | `pretrained-frozen` | ImageNet, kept fixed (the main-run configuration) | The projection after the backbone and the rest of the model; the backbone's weights and BatchNorm statistics stay fixed |
+| `pretrained-frozen-no-gat` | ImageNet, kept fixed | As `pretrained-frozen`, but without the paper's image GAT (`--no-image-gat`): the projected photo features go straight to fusion |
+
+In every variant except the last, the photo features pass through the
+paper's image GAT (4 graph-attention layers over the 96 steps) before fusion.
+`pretrained-frozen-no-gat` measures what that GAT adds on top of frozen
+ImageNet features; it is an experiment, not the paper's architecture.
 
 The study sets each variant's encoder itself, whatever `PROTOCOL` says. The
 weights were downloaded in step 0.
@@ -694,7 +700,7 @@ python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1
   2>&1 | tee experiment_results/logs/image-encoder-encoder-v1.log
 ```
 
-`pretrained-frozen` repeats step 3a's configuration inside the study, so the three
+`pretrained-frozen` repeats step 3a's configuration inside the study, so the four
 variants sit side by side in one `suite-summary.csv`. Compare the `full.*`
 columns between rows, and the gap between `full.*` and `image_missing.*`
 within a row: it shows how much each encoder's photo features contribute.
@@ -1077,6 +1083,7 @@ after the table.
 | `--pretrained`, `--no-pretrained` | off (on in `PROTOCOL`) | Start EfficientNet-B0 from ImageNet weights (downloaded once, step 0). On in every main run; step 7 compares. Photos are ImageNet-normalized in every run. |
 | `--freeze-image-encoder`, `--no-freeze-image-encoder` | off (on in `PROTOCOL`) | With `--pretrained`: keep the backbone's weights and BatchNorm statistics fixed; only the projection and the rest of the model train. The backbone then always runs in eval mode (also no stochastic depth), so each photo's features are computed once per fold and reused, which makes these runs much faster (`"cached_image_features": true` in `fold-Tn.json`). On in every main run; refused without `--pretrained`. |
 | `--freeze-bn` | off | Keep EfficientNet's BatchNorm statistics fixed while its weights train |
+| `--image-gat`, `--no-image-gat` | on | The paper's temporal GAT over the photo features (4 layers). `--no-image-gat` (an experiment, step 7) sends the projected encoder features straight to fusion; `fold-Tn.json` records `"image_gat_layers": 0`. |
 | `--image-source {photo,spectrogram}` | `photo` | Photos (paper, every main run) or spectrograms of each window's raw input force (optional experiment, §14; needs `--image-lag 0`) |
 | `--spectrogram-window N`, `--spectrogram-hop N` | 256, 64 | STFT window and hop in raw samples, for `--image-source spectrogram` |
 | `--spectrogram-recurrence-rate R` | 0.1 | Share of column pairs marked recurrent in the spectrogram's recurrence map |

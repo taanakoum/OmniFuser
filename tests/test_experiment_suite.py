@@ -192,3 +192,11 @@ def test_deduplication_study_compares_both_settings_with_everything_else_shared(
                     "--device", "cpu", "--eval-dedup-identical-forces", "False"])
     assert [call["eval_dedup_identical_forces"] for call in calls] == [False, False]
     assert len(_experiment_runs("all")) == 31  # the comparison is not part of the paper studies
+
+
+def test_image_encoder_study_adds_a_frozen_arm_without_the_image_gat() -> None:
+    runs = {run["name"]: run["overrides"] for run in suite._experiment_runs("image-encoder")}
+    assert list(runs) == ["from-scratch", "pretrained-finetuned", "pretrained-frozen", "pretrained-frozen-no-gat"]
+    assert runs["pretrained-frozen-no-gat"] == {"pretrained": True, "freeze_image_encoder": True, "image_gat": False}
+    # every other arm keeps the paper's GAT, so only the GAT differs from pretrained-frozen
+    assert all(overrides["image_gat"] for name, overrides in runs.items() if name != "pretrained-frozen-no-gat")

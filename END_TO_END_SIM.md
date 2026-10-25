@@ -19,8 +19,8 @@ shapes and scales, not results.
 model or the training loop, rerun the trace script and update this document
 (§20).
 
-Last verified: 2026-10-22, against the code after the final pre-training
-review (137 tests).
+Last verified: 2026-10-25, against the code after the final pre-training
+review and the image-GAT switch (139 tests).
 
 ---
 
@@ -666,6 +666,12 @@ Parameters after the encoder: 4 × 1,152 (GAT + LayerNorm) + 4,864 (tables) =
 **9,472**. Example: the encoder output is $(2,2,32)$; $Z^i$ has mean 0.54
 and std 2.19.
 
+**Variant:** `--no-image-gat` (`ModelConfig.image_gat=False`; an experiment,
+step 7's `pretrained-frozen-no-gat` arm) builds no GAT layers. Step 3 is then
+skipped, and $Z^i=V+\mathrm{PE}+e^{\text{cyc}}+e^{\text{blk}}+e^{\text{rel}}$
+with $V$ the gathered, projected encoder features (4,608 fewer parameters).
+`fold-Tn.json` records `"image_gat_layers": 0`.
+
 ### 10.4 Modality masking
 
 **Method:** `OmniFuser._mask_modalities(sensor, image, drop_modality)`, applied to $Z^r$ and $Z^i$ before fusion.
@@ -968,7 +974,7 @@ ROC files. The resume file is then deleted.
 | `sensitivity` | 22 | 1 baseline + 21 off-baseline values of $K, d, H$, $r$, GAT layers, $s_l$, $L$, $n$ |
 | `missing-modality` | 2 | `modality_dropout` 0 and 0.2 |
 | `all` | 31 | the three above, sharing the ablation full model |
-| `image-encoder` | 3 | from scratch / pretrained fine-tuned / pretrained frozen |
+| `image-encoder` | 4 | from scratch / pretrained fine-tuned / pretrained frozen / pretrained frozen without the image GAT |
 | `image-source` | 4 | previous-pass photo (lag 1), spectrogram with the main encoder, fine-tuned, from scratch |
 | `deduplication` | 2 | training with duplicates merged / kept, scored on the same deduplicated test data |
 
@@ -1013,6 +1019,7 @@ settings are refused.
 | `--pretrained` | off / on | `ImageFeatureEncoder` | ImageNet weights |
 | `--freeze-image-encoder` | off / on | `ImageFeatureEncoder`, `FrozenFeatureBank` | fixed eval-mode trunk; cached features |
 | `--freeze-bn` | off | `ImageFeatureEncoder.train` | BatchNorm statistics fixed |
+| `--image-gat` | on | `ImageBranch` | paper's image GAT; `--no-image-gat` skips it (experiment) |
 | `--d-model`, `--rtd-*`, `--gat-*`, `--fusion-layers`, `--landmarks`, `--fusion-rank`, `--dropout` | paper values | `ModelConfig` | dimensions |
 | `--decomp-mode` | `branch` | `RTDBlock` | Fig. 5 or printed Eq. 3 |
 | `--als-mode` | `k_colnorm` | `_landmarks` | landmark weighting |

@@ -164,3 +164,29 @@ def test_dedup_argument_accepts_explicit_true_false_and_old_spellings(
 def test_dedup_argument_rejects_ambiguous_values() -> None:
     with pytest.raises(SystemExit):
         build_parser().parse_args(["train", "--dedup-identical-forces", "maybe"])
+
+
+def test_image_gat_switch_sends_encoder_features_straight_to_fusion() -> None:
+    """--no-image-gat (an experiment) removes the paper's image GAT; the default keeps it."""
+    parser = build_parser()
+    base = ["train", "--data-dir", "unused"]
+    assert protocol_kwargs(parser.parse_args(base))["config_overrides"]["image_gat"] is True
+    assert protocol_kwargs(parser.parse_args([*base, "--no-image-gat"]))["config_overrides"]["image_gat"] is False
+
+    common = {"input_len": 24, "horizon": 12, "num_rtd_layers": 2, "image_encoder": "compact",
+              "image_height": 32, "image_width": 96, "dropout": 0.0}
+    assert len(OmniFuser(ModelConfig(**common)).image_branch.layers) == 4
+    torch.manual_seed(0)
+    model = OmniFuser(ModelConfig(**common, image_gat=False)).eval()
+    branch = model.image_branch
+    assert len(branch.layers) == 0
+    images = torch.randn(2, 2, 3, 32, 96)
+    indices = torch.cat([torch.zeros(2, 10, dtype=torch.long), torch.ones(2, 14, dtype=torch.long)], 1)
+    with torch.no_grad():
+        encoded = branch.encoder(images)
+        gathered = torch.gather(encoded, 1, indices.unsqueeze(-1).expand(-1, -1, encoded.shape[-1]))
+        expected = (gathered + branch.position_encoding[:24][None]
+                    + branch.cycle.weight[0] + branch.batch.weight[0] + branch.relative.weight[0])
+        assert torch.allclose(branch(images, indices), expected, atol=1e-6)
+        outputs = model(torch.randn(2, 24, 3), images, indices)
+    assert outputs["force"].shape == (2, 12, 3)

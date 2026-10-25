@@ -292,9 +292,11 @@ class ImageBranch(nn.Module):
         self.cycle = nn.Embedding(128, config.d_model)
         self.batch = nn.Embedding(8, config.d_model)
         self.relative = nn.Embedding(16, config.d_model)
+        # With image_gat=False (an experiment) there are no GAT layers: the projected
+        # encoder features go to fusion with only the position and metadata codes added.
         self.layers = nn.ModuleList(
             GraphAttentionLayer(config.d_model, config.num_gat_heads, config.dropout)
-            for _ in range(config.num_gat_layers)
+            for _ in range(config.num_gat_layers if config.image_gat else 0)
         )
         self.norms = nn.ModuleList(nn.LayerNorm(config.d_model) for _ in self.layers)
         self.dropout = nn.Dropout(config.dropout)

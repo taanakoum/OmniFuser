@@ -130,17 +130,22 @@ def _deduplication_runs(eval_dedup: bool = True) -> list[dict[str, Any]]:
 
 
 def _image_encoder_runs() -> list[dict[str, Any]]:
-    """Photo encoder initialization; the main runs use the pretrained, frozen one."""
+    """Photo encoder initialization; the main runs use the pretrained, frozen one.
+
+    The fourth arm repeats the main runs' encoder without the paper's image GAT, so the
+    projected ImageNet features go straight to fusion.
+    """
     return [
         {
             "name": name,
             "group": "image-encoder",
-            "overrides": {"pretrained": pretrained, "freeze_image_encoder": frozen},
+            "overrides": {"pretrained": pretrained, "freeze_image_encoder": frozen, "image_gat": gat},
         }
-        for name, pretrained, frozen in (
-            ("from-scratch", False, False),
-            ("pretrained-finetuned", True, False),
-            ("pretrained-frozen", True, True),
+        for name, pretrained, frozen, gat in (
+            ("from-scratch", False, False, True),
+            ("pretrained-finetuned", True, False, True),
+            ("pretrained-frozen", True, True, True),
+            ("pretrained-frozen-no-gat", True, True, False),
         )
     ]
 
@@ -278,7 +283,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="ablations",
         help=(
             "'all' runs the three paper studies; 'image-encoder' compares a from-scratch, "
-            "a fine-tuned and a frozen pretrained photo encoder; 'image-source' compares "
+            "a fine-tuned and a frozen pretrained photo encoder, and the frozen one without "
+            "the image GAT; 'image-source' compares "
             "leak-free images: previous-pass photos and spectrograms of each window's raw "
             "input force; 'deduplication' compares "
             "--dedup-identical-forces True and False"

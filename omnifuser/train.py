@@ -971,6 +971,7 @@ def train_fold(
                 else "identity"
             ),
             "rtd_layers": len(getattr(model.temporal_encoder, "layers", ())),
+            "image_gat_layers": len(model.image_branch.layers),
             "c2f_rounds": len(model.fusion_layers),
         },
         "history": history,
