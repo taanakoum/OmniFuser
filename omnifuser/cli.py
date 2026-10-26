@@ -16,6 +16,7 @@ from omnifuser.data import (
     load_nonastreda,
     make_tool_timelines,
 )
+from omnifuser.model_bundle import export_model, predict
 from omnifuser.spectrogram import SpectrogramSettings
 from omnifuser.train import train_fold
 
@@ -510,7 +511,66 @@ def build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--device", default="cpu")
     train_parser.add_argument("--seed", type=int, default=42)
     train_parser.set_defaults(handler=_train)
+
+    export_parser = subparsers.add_parser(
+        "export",
+        help="save a trained fold as one portable model file (weights, config, normalizer, data settings)",
+    )
+    export_parser.add_argument(
+        "source", type=Path,
+        help="a run folder with fold-Tn.pt checkpoints, or one fold-Tn.pt file",
+    )
+    export_parser.add_argument("--fold", help="which fold to export, e.g. T10 (needed when the folder holds several)")
+    export_parser.add_argument("--output", type=Path, required=True, help="the model file to write, e.g. models/full-model-T10.pt")
+    export_parser.set_defaults(handler=_export)
+
+    predict_parser = subparsers.add_parser(
+        "predict", help="forecast one tool's windows with a saved model file, without training"
+    )
+    predict_parser.add_argument("--model", type=Path, required=True, help="a file written by 'omnifuser export'")
+    predict_parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
+    predict_parser.add_argument("--tool", required=True, help="the tool to forecast, e.g. T10")
+    predict_parser.add_argument("--output-dir", type=Path, required=True)
+    predict_parser.add_argument("--device", default="cpu")
+    predict_parser.add_argument("--batch-size", type=int, default=32)
+    predict_parser.add_argument("--num-workers", type=int, default=0)
+    predict_parser.add_argument(
+        "--drop-modality", choices=("sensor", "image"),
+        help="mask one input, as in the missing-modality evaluation",
+    )
+    predict_parser.add_argument("--max-windows", type=int, help="only the first N windows (quick checks)")
+    predict_parser.set_defaults(handler=_predict)
     return parser
+
+
+def _export(args: argparse.Namespace) -> None:
+    print(json.dumps(export_model(args.source, args.output, args.fold), indent=2))
+
+
+def _predict(args: argparse.Namespace) -> None:
+    metrics = predict(
+        args.model,
+        args.data_dir,
+        args.tool,
+        args.output_dir,
+        device_name=args.device,
+        batch_size=args.batch_size,
+        drop_modality=args.drop_modality,
+        max_windows=args.max_windows,
+        num_workers=args.num_workers,
+    )
+    info = metrics["prediction"]
+    if "warning" in info:
+        print("warning: " + info["warning"], flush=True)
+    print(json.dumps({
+        "tool": info["tool"],
+        "tool_role": info["tool_role"],
+        "windows": info["windows"],
+        "loss": metrics["loss"],
+        "classification_accuracy": metrics["classification_accuracy"],
+        "force_mse_normalized": metrics["force_mse_normalized"],
+        "output_dir": str(args.output_dir),
+    }, indent=2))
 
 
 def _train(args: argparse.Namespace) -> None:

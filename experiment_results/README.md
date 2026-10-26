@@ -43,7 +43,7 @@ Each 10-fold run folder contains:
 | `cross-validation-results.json` | Fold mean/std, paper-horizon summaries, per-mode summaries, pooled out-of-fold metrics |
 | `cross-validation-mean-roc[-<mode>].npz` | Fold-averaged ROC curves |
 | `fold-Tn.json` | Per-fold settings, epoch history, test and missing-modality metrics |
-| `fold-Tn.pt` | Selected checkpoint with config and normalizer (large) |
+| `fold-Tn.pt` | The fold's trained model (selected weights, settings, normalizer, data settings; about 16 MB). Reuse with `omnifuser predict --model`. |
 | `fold-Tn-predictions[-<mode>].npz` | Test forecasts, targets, and class probabilities |
 | `fold-Tn-roc[-<mode>].npz` | Per-class ROC coordinates |
 

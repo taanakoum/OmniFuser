@@ -35,7 +35,8 @@ reproduce the paper's scores.
 | `evaluation.py` | Classification, ROC, regression, cumulative paper-horizon, and baseline metrics. It also holds the paper's Table IV/V OmniFuser values (`PAPER_OMNIFUSER_RESULTS`) (§6). |
 | `cross_validation.py` | `run_cross_validation`: the 10-fold leave-one-tool-out driver with fold reuse, summaries, and pooled out-of-fold metrics per input mode (§7). |
 | `tracking.py` | `ExperimentTracker`: a dependency-free manifest plus JSONL and CSV metric logs (§8). |
-| `cli.py` | The `omnifuser inspect` and `omnifuser train` commands, and the shared protocol/architecture arguments (`add_protocol_arguments`, the typed `protocol_kwargs`). |
+| `model_bundle.py` | Trained models as portable files: `make_bundle` (the format every finished fold saves as `fold-Tn.pt`), `export_model` (copy one out; converts older checkpoints), `load_model` (safe loader, no weight download) and `predict` (forecast a tool without training). |
+| `cli.py` | The `omnifuser inspect`, `train`, `export` and `predict` commands, and the shared protocol/architecture arguments (`add_protocol_arguments`, the typed `protocol_kwargs`). |
 
 ### Scripts `scripts/`
 
@@ -49,7 +50,7 @@ reproduce the paper's scores.
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `end_to_end_trace.py` | Runs the pipeline on fold T10 of the real data with an untrained model and prints every number quoted in `END_TO_END_SIM.md` (also as JSON); redraws `docs/end_to_end/*.png`. |
 
-### Tests `tests/`: 139 tests
+### Tests `tests/`: 146 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
@@ -61,6 +62,7 @@ reproduce the paper's scores.
 | `test_interruption.py` | 2 | A truncated resume checkpoint is ignored and the fold restarts. A job killed while saving the final checkpoint leaves no fold JSON, so the fold is not reused, and the rerun continues from the per-epoch resume file. No `.tmp` files remain. |
 | `test_spectrogram.py` | 6 | Window images: the STFT and global-spectrum maps share frequency rows (a sine lands on its row in both), every map is standardized, a segment shorter than one STFT frame still works; each step points at the image of its pass segment; changing any raw sample outside a window's input leaves its images unchanged, changing one inside changes them; collation pads unreferenced image slots; raw passes must match the pooled timeline, and pooling after loading equals the loader's; spectrogram runs refuse image lag 1, train end to end with `image_channels` 7 and never reuse photo folds; a frozen pretrained encoder keeps its weights and BatchNorm statistics while the image generator trains, and photos get no generator. |
 | `test_runtime.py` | 5 | The CPU-thread rule (override, SLURM allocation, `OMP_NUM_THREADS`, idle CPUs, never zero); the idle-CPU measurement is bounded; the WMI guard switches `platform` to its fallback when a (simulated) WMI call never returns and leaves it alone otherwise; a frozen backbone gives identical features in training mode, and cached features give the same model outputs as pixels; a frozen photo fold trains end to end on cached features. |
+| `test_model_bundle.py` | 7 | Every finished fold's `fold-Tn.pt` loads with the safe loader and `predict` on it reproduces the fold's test scores; the same for exported photo, frozen-feature (loading never downloads weights) and spectrogram models; older checkpoints are refused by `load_model` and converted by `export`; folds must be chosen in multi-fold folders; the `export` and `predict` commands. |
 | `test_tracking.py` | 4 | JSONL/CSV logging; corrupt manifest; refusal of mixed settings; resume on different hardware. |
 | `test_alignment_fixes.py` | 3 | Sample-weighted partial gradient accumulation; strict completed-fold reuse (including retraining folds without missing-modality results); dataset signatures. |
 | `test_cross_validation.py` | 4 | Pooled out-of-fold metrics and mean ROC; missing-AUC folds; weighted and paper-horizon summaries; per-mode summaries. |
@@ -401,7 +403,7 @@ photos, against the paper's ~\(10^{11}\).
    | File | Contents |
    |---|---|
    | `fold-Tn.json` | Settings (including `dedup_identical_forces`, `eval_dedup_identical_forces`, `retained_records` and `evaluation_retained_records`), history, test metrics, `modality_evaluations`, effective architecture, artifact names |
-   | `fold-Tn.pt` | Weights, config, normalizer, result |
+   | `fold-Tn.pt` | The trained model file (`model_bundle` format): weights, config, normalizer, data settings, fold tools, test scores |
    | `fold-Tn-predictions[-<mode>].npz` | Test predictions |
    | `fold-Tn-roc[-<mode>].npz` | ROC curves |
 
@@ -516,7 +518,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 139 tests. Three deliberately injected defects each make a
+`pytest` passes all 146 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 
@@ -547,6 +549,7 @@ Final pre-training check (2026-10-15, commit `f6ca3db` on `Lightning-AI-training
 | Final review before training (2026-10-22) | Every module and script reread. **Fixed.** (1) `run_cross_validation` built its expected configuration without `image_channels` 7, so a resumed spectrogram study would never have reused its finished folds and retrained them all; both now use `train.model_config`. (2) A frozen backbone still ran torchvision's stochastic depth in training mode (random residual drops in a "fixed" feature extractor); it now stays in eval mode. **Faster.** (3) With the frozen backbone (all main runs), each photo's features are computed once per fold (`FrozenFeatureBank`, identical outputs, tested): a CPU training step went from 417 to 108 ms (batch 8). (4) `_run_epoch` keeps its running sums on the device and copies them once per epoch, instead of about 15 GPU synchronizations per step. **Runtime.** (5) `omnifuser.resources.cpu_threads` picks CPU threads from the SLURM allocation, `OMP_NUM_THREADS` and the CPUs idle now (measured without WMI), for training on CPU and for the tests; `--num-workers` above the available CPUs prints a warning. (6) The package guards against a stuck Windows WMI service, which had made `import torch` block forever (the cause of 24-minute local test runs). 137 tests (about a minute), Ruff and Pyright pass. |
 | Final check before the Ruche runs (2026-10-22) | Commit `2b869d5` checked as Ruche will run it: a fresh clone passes Ruff, Pyright and all 137 tests; all code byte-compiles with Python 3.11, Pyright reports no Python 3.11 API problems, and the full suite passes in a Python 3.11 environment (the version `TRAINING_RUNBOOK_RUCHE.md` installs). On the real data: a capped 10-fold `train_lightning.py` run with the protocol's frozen ImageNet encoder completes, and its rerun reuses all 10 folds; capped folds of the spectrogram path (frozen encoder, 7 channels) and of the lag-1 photo path complete. Fixed: `slurm/status.sh` now knows the `image-encoder` (3) and `image-source` (4) suite sizes. Ruche runbook: storage (about 0.4 GB per 10-fold run, about 20 GB in total, logs compress about 10×), the ImageNet download in the setup path, the frozen encoder among the protocol's key settings, the spectrogram smoke command reflowed, CUDA-build advice for newer PyTorch, and a row for the `--num-workers` warning. |
 | Image GAT switch (2026-10-25) | Checked: with a pretrained (frozen) encoder, the photo features pass through the paper's 4 image GAT layers (confirmed with forward hooks). Added `--image-gat` / `--no-image-gat` (`ModelConfig.image_gat`, default on, the paper): without it no GAT layers are built and the projected encoder features go straight to fusion with the position and metadata codes. Step 7 gains a fourth arm, `pretrained-frozen-no-gat`; main runs are unchanged. `fold-Tn.json` records `image_gat_layers`; `slurm/status.sh` counts 4 image-encoder variants. 2 tests added (139). |
+| Saved models (2026-10-26) | Every finished fold now saves its final model as `fold-Tn.pt` in a portable format (`model_bundle.make_bundle`): selected weights (with the frozen ImageNet backbone), config, the fold's normalizer, the data settings, fold tools and test scores; it loads with `torch.load(weights_only=True)`. `omnifuser predict` reuses it without training (verified on the real data: identical test loss and accuracy to training); `omnifuser export` copies one out and converts older checkpoints. Training's data loading, windowing and image cache moved into shared functions (`load_timelines`, `window_dataset`, `image_bank_for`) so prediction prepares inputs exactly as training. `OmniFuser(config, load_pretrained=False)` skips the ImageNet download when saved weights replace it. 7 tests added (146). |
 | Runbook steps 0-1 on real data (CPU, EfficientNet) | `inspect` (378 passes, 10 tools, 147/118/113 per class, 0 duplicates), `model_summary.py --check` (4,183,600, match), one-fold smoke writing all 9 artifacts |
 | Every study variant | All 33 (31 in `--study all` plus 2 deduplication arms) build and train a step with finite loss |
 | Full ablation suite on real data | `--study ablations`, 9 variants × 10 folds (capped, compact encoder): all completed, `suite-summary.csv` complete |

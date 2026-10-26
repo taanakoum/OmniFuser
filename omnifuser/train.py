@@ -41,6 +41,7 @@ from omnifuser.evaluation import (
     regression_report,
     softmax_probabilities,
 )
+from omnifuser.model_bundle import make_bundle
 from omnifuser.models import ImageFeatureEncoder, OmniFuser, multitask_loss
 from omnifuser.resources import available_cpus, cpu_threads
 from omnifuser.spectrogram import (
@@ -109,6 +110,76 @@ class FrozenFeatureBank:
 
     def tensor(self, path: Path) -> torch.Tensor:
         return self.features[self.index[Path(path)]]
+
+
+def load_timelines(
+    data_dir: str | Path,
+    *,
+    label_column: str,
+    decimation: int,
+    dedup_identical_forces: bool,
+    trim_pass: bool,
+    pool: int,
+    image_lag: int,
+    spectrogram: SpectrogramSettings | None = None,
+) -> tuple[list[ToolTimeline], int, dict[str, Any]]:
+    """Tool timelines, the retained pass count, and (for spectrograms) the raw passes.
+
+    Training and ``model_bundle.predict`` both build their inputs here, so a saved model
+    sees exactly the preprocessing it was trained with.
+    """
+    # Spectrograms need the raw passes, so they are loaded unpooled and pooled here;
+    # pool_records gives exactly the pooling load_nonastreda would apply.
+    records = load_nonastreda(
+        data_dir,
+        label_column=label_column,
+        decimation=decimation,
+        dedup_identical_forces=dedup_identical_forces,
+        trim_pass=trim_pass,
+        pool=1 if spectrogram is not None else pool,
+    )
+    raw_passes: dict[str, Any] = {}
+    if spectrogram is not None:
+        raw_passes = raw_passes_by_tool(records, pool)
+        records = pool_records(records, pool)
+    return make_tool_timelines(records, image_lag=image_lag), len(records), raw_passes
+
+
+def window_dataset(
+    timelines: list[ToolTimeline],
+    normalizer: ForceNormalizer,
+    config: ModelConfig,
+    stride: int,
+    *,
+    spectrogram: SpectrogramSettings | None = None,
+    raw_passes: dict[str, Any] | None = None,
+    pool: int = 1,
+) -> WindowDataset:
+    """Windows over ``timelines``: photo windows, or windows with spectrogram images."""
+    if spectrogram is None:
+        return WindowDataset(timelines, normalizer, config.input_len, config.horizon, stride)
+    return ForceWindowDataset(
+        timelines, normalizer, raw_passes or {}, pool, spectrogram, config.image_height,
+        config.image_width, config.input_len, config.horizon, stride,
+    )
+
+
+def image_bank_for(
+    timelines: list[ToolTimeline],
+    config: ModelConfig,
+    model: OmniFuser,
+    device: torch.device,
+    spectrogram: SpectrogramSettings | None = None,
+) -> ImageBank | FrozenFeatureBank | None:
+    """The photo cache for ``timelines``; frozen-backbone features instead of pixels."""
+    # Spectrogram windows carry their own images; only photo runs need a bank. With a
+    # frozen backbone, the bank holds each photo's features instead of its pixels.
+    if spectrogram is not None:
+        return None
+    bank = ImageBank.from_timelines(timelines, config.image_height, config.image_width)
+    if config.freeze_image_encoder:
+        return FrozenFeatureBank(bank, model.image_branch.encoder, device)
+    return bank
 
 
 def _temporary_path(path: Path) -> Path:
@@ -488,30 +559,17 @@ def train_fold(
     if eval_dedup_identical_forces is None:
         eval_dedup_identical_forces = dedup_identical_forces
 
-    def load_timelines(dedup: bool) -> tuple[list[ToolTimeline], int, dict[str, Any]]:
-        # Spectrograms need the raw passes, so they are loaded unpooled and pooled here;
-        # pool_records gives exactly the pooling load_nonastreda would apply.
-        records = load_nonastreda(
-            data_dir,
-            label_column=label_column,
-            decimation=decimation,
-            dedup_identical_forces=dedup,
-            trim_pass=trim_pass,
-            pool=1 if spectrogram is not None else pool,
-        )
-        raw_passes: dict[str, Any] = {}
-        if spectrogram is not None:
-            raw_passes = raw_passes_by_tool(records, pool)
-            records = pool_records(records, pool)
-        return make_tool_timelines(records, image_lag=image_lag), len(records), raw_passes
-
-    timelines, retained_records, raw_passes = load_timelines(dedup_identical_forces)
+    load = partial(
+        load_timelines, data_dir, label_column=label_column, decimation=decimation,
+        trim_pass=trim_pass, pool=pool, image_lag=image_lag, spectrogram=spectrogram,
+    )
+    timelines, retained_records, raw_passes = load(dedup_identical_forces=dedup_identical_forces)
     if eval_dedup_identical_forces == dedup_identical_forces:
         eval_timelines, evaluation_retained_records = timelines, retained_records
         eval_raw_passes = raw_passes
     else:
-        eval_timelines, evaluation_retained_records, eval_raw_passes = load_timelines(
-            eval_dedup_identical_forces
+        eval_timelines, evaluation_retained_records, eval_raw_passes = load(
+            dedup_identical_forces=eval_dedup_identical_forces
         )
     source_signature = nonastreda_source_signature(data_dir)
     train_stride = stride if stride is not None else input_len + horizon
@@ -539,11 +597,9 @@ def train_fold(
     def windows(
         split: list[ToolTimeline], split_stride: int, passes: dict[str, Any]
     ) -> WindowDataset:
-        if spectrogram is None:
-            return WindowDataset(split, normalizer, input_len, horizon, split_stride)
-        return ForceWindowDataset(
-            split, normalizer, passes, pool, spectrogram, config.image_height,
-            config.image_width, input_len, horizon, split_stride,
+        return window_dataset(
+            split, normalizer, config, split_stride,
+            spectrogram=spectrogram, raw_passes=passes, pool=pool,
         )
 
     train_data = _limit_dataset(windows(train_timelines, train_stride, raw_passes), max_train_windows, seed)
@@ -553,15 +609,7 @@ def train_fold(
     test_data = _limit_dataset(windows(test_timelines, eval_stride, eval_raw_passes), max_eval_windows, seed + 2)
 
     model = OmniFuser(config).to(device)
-    # Spectrogram windows carry their own images; only photo runs need a bank. With a
-    # frozen backbone, the bank holds each photo's features instead of its pixels.
-    image_bank: ImageBank | FrozenFeatureBank | None = None
-    if spectrogram is None:
-        image_bank = ImageBank.from_timelines(
-            [*timelines, *eval_timelines], config.image_height, config.image_width
-        )
-        if config.freeze_image_encoder:
-            image_bank = FrozenFeatureBank(image_bank, model.image_branch.encoder, device)
+    image_bank = image_bank_for([*timelines, *eval_timelines], config, model, device, spectrogram)
     collate = partial(
         collate_windows,
         height=config.image_height,
@@ -987,14 +1035,10 @@ def train_fold(
     }
     save_arrays(output_path / f"{stem}-predictions.npz", test_predictions)
     save_roc_curves(output_path / f"{stem}-roc.npz", roc_curves)
+    # The fold's final model (the selected epoch's weights) as a portable model file:
+    # reusable without training via model_bundle.load_model / 'omnifuser predict'.
     _atomic_torch_save(
-        {
-            "model_state": model.state_dict(),
-            "config": asdict(config),
-            "normalizer_mean": normalizer.mean,
-            "normalizer_scale": normalizer.scale,
-            "result": result,
-        },
+        make_bundle(asdict(config), model.state_dict(), normalizer.mean, normalizer.scale, result),
         output_path / f"{stem}.pt",
     )
     # The fold JSON is the completion marker that fold reuse looks for, so it is

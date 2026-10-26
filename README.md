@@ -38,7 +38,7 @@ scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
 docs/end_to_end/      figures of END_TO_END_SIM.md
 slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
                       env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
-tests/                139 pytest tests
+tests/                146 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -62,12 +62,17 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 139 tests
+python -m pytest -o addopts= -q tests                    # 146 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
   --pool 1000 --image-lag 0 --stride 24                  # one capped fold
 ```
+
+Every finished fold saves its trained model as `fold-Tn.pt`. Reuse it without
+training: `omnifuser predict --model <run>/fold-T10.pt --data-dir Nonastreda_Data
+--tool T10 --output-dir <folder>` (or copy it out first with `omnifuser export`;
+`TRAINING_RUNBOOK_RUCHE.md` §17).
 
 For GPU training on Lightning AI, follow
 [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md) from the top. On the Ruche

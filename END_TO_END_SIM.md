@@ -19,8 +19,8 @@ shapes and scales, not results.
 model or the training loop, rerun the trace script and update this document
 (§20).
 
-Last verified: 2026-10-25, against the code after the final pre-training
-review and the image-GAT switch (139 tests).
+Last verified: 2026-10-26, against the code after the image-GAT switch and
+the saved-model files (146 tests).
 
 ---
 
@@ -128,6 +128,8 @@ flowchart TD
 |---|---|---|
 | `omnifuser inspect` | `cli.main` → `cli._inspect` → `load_nonastreda`, `make_tool_timelines` | Data report (JSON) without training |
 | `omnifuser train` | `cli.main` → `cli._train` → `train.train_fold` | One fold (smoke test, pilot) |
+| `omnifuser export` | `cli._export` → `model_bundle.export_model` | Copy one fold's trained model to a portable file |
+| `omnifuser predict` | `cli._predict` → `model_bundle.predict` → `load_model`, `train.load_timelines`, `window_dataset`, `image_bank_for`, `_run_epoch` | Forecast a tool with a saved model, without training |
 | `scripts/train_lightning.py` | `main` → `cross_validation.run_cross_validation` → `train.train_fold` × 10 | Full 10-fold run (steps 3a, 3b, single runs) |
 | `scripts/run_experiment_suite.py` | `main` → `run_cross_validation` per variant | Studies (ablations, sensitivity, ...) |
 | `scripts/train_local.py` | `main` → `train.train_fold` | Local CPU smoke test (2/1 windows) |
@@ -938,9 +940,22 @@ pairs, with confusion matrix $\mathbf{C}$ (rows = true class):
 
 **Saved per fold** (`output_dir/`): `fold-Tn.json` (settings, normalizer,
 window counts, config, history, all metrics; written last as the completion
-marker), `fold-Tn.pt` (selected weights, config, normalizer), the 3 prediction
-files (forecasts and targets in N, class probabilities and targets) and the 3
-ROC files. The resume file is then deleted.
+marker), `fold-Tn.pt`, the 3 prediction files (forecasts and targets in N,
+class probabilities and targets) and the 3 ROC files. The resume file is then
+deleted.
+
+**The trained model.** `fold-Tn.pt` is written by `model_bundle.make_bundle`:
+a portable model file holding the selected weights (with the frozen ImageNet
+backbone), the model configuration, the force normalizer $(\mu,\sigma)$ of the
+fold's training tools, the data settings (pool, image lag, strides,
+duplicates, trimming, spectrogram settings), the fold's tools, the selected
+epoch and the test scores. It loads with PyTorch's safe loader.
+`model_bundle.predict` reuses it without training: it rebuilds the tool's
+timeline and windows with the same shared functions as training
+(`train.load_timelines`, `train.window_dataset`, `train.image_bank_for`),
+z-scores with the saved $(\mu,\sigma)$, and runs `_run_epoch` without an
+optimizer. On fold T10 of the real data it reproduces training's test loss
+exactly.
 
 ---
 
@@ -1090,7 +1105,14 @@ settings are refused.
 | `train._limit_dataset` | dataset, cap, seed | random subset | dataset or `Subset` |
 | `train._accumulation_group_sample_count` | sizes, step, $G$ | samples in the step's group | int |
 | `train._run_epoch` | model, loader, optimizer, ... | forward, loss, backward/step, device-side sums | metrics (+ predictions) |
+| `train.load_timelines` | data folder, data settings | load, pool (raw passes for spectrograms), timelines | timelines, pass count, raw passes |
+| `train.window_dataset` | timelines, normalizer, config, stride | photo or spectrogram windows | dataset |
+| `train.image_bank_for` | timelines, config, model | photo cache, or frozen features | bank or None |
 | `train.train_fold` | all settings | §12-§13 | fold result dict + files |
+| `model_bundle.make_bundle` | config, weights, normalizer, result | collect into the model-file format | dict (saved as `fold-Tn.pt`) |
+| `model_bundle.export_model` | run folder or file, fold, output | read (or convert an older checkpoint), write a copy | model file + summary |
+| `model_bundle.load_model` | model file | safe load, build the model without downloading, load weights | `LoadedModel` (model, config, normalizer, data settings) |
+| `model_bundle.predict` | model file, data folder, tool | rebuild inputs as in training, forecast without training | metrics + `predictions-Tn.npz`, `metrics-Tn.json` |
 | `evaluation.classification_report` | probabilities, targets | §13 | report, ROC curves |
 | `evaluation._binary_roc_curve` | binary targets, scores | thresholds, TPR/FPR, trapezoid AUC | fpr, tpr, thresholds, auc |
 | `evaluation.regression_report` | z-scored predictions, targets, $\mu,\sigma$ | physical and z-scored errors | report |
@@ -1103,7 +1125,7 @@ settings are refused.
 | `tracking.ExperimentTracker` (`log`) | folder, metadata / events | manifest, JSONL, CSV | files |
 | `resources.available_cpus`, `idle_cpus`, `cpu_threads` | none | §18 | counts |
 | `cli.add_protocol_arguments`, `protocol_kwargs`, `spectrogram_settings` | parser / args | shared flags → keyword arguments | kwargs |
-| `cli._inspect`, `cli._train` | args | data report / one fold | JSON on stdout |
+| `cli._inspect`, `cli._train`, `cli._export`, `cli._predict` | args | data report / one fold / model export / prediction | JSON on stdout |
 
 ---
 

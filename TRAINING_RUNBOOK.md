@@ -373,7 +373,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 139 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `139 passed` |
+| `pytest ... tests` | Runs the 146 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `146 passed` |
 | `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
@@ -1018,6 +1018,14 @@ Two other variants are available:
   - The second holds only the checkpoints (`find` lists them, and `-T -`
     makes `tar` read that list). Each EfficientNet checkpoint is about
     17 MB, so one 10-fold run is about 170 MB.
+  - **The checkpoints are the trained models.** Every finished fold saves its
+    final model (the selected epoch's weights, the model settings, the force
+    normalizer and the data settings) as `fold-Tn.pt`, a self-contained file
+    that needs no internet access. Reuse one without training:
+    `omnifuser predict --model experiment_results/main/full-model/fold-T10.pt --data-dir Nonastreda_Data --tool T10 --output-dir experiment_results/predictions/full-model-T10`.
+    `omnifuser export RUN_FOLDER --fold T10 --output models/full-model-T10.pt`
+    copies one out under a clear name. `TRAINING_RUNBOOK_RUCHE.md` §17 has
+    the details.
   - On Windows, unpack with `tar -xzf results-no-checkpoints.tar.gz` in
     PowerShell.
 - **Write up the results.** Follow [`REPORT_PLAN.md`](REPORT_PLAN.md): its §1 lists what to download
@@ -1122,6 +1130,8 @@ with `compact`.
 |---|---|
 | `omnifuser inspect` | `--data-dir`, `--label-column`, `--decimation`, `--pool`, `--input-len` (96), `--horizon` (96), `--stride` (input + horizon), `--trim-pass`/`--no-trim-pass`, `--dedup-identical-forces {True,False}`. It prints passes, classes, lengths, trimming, duplicates and window counts as JSON. |
 | `scripts/eda.py` | `--data-dir`, `--out` (default `experiment_results/eda`), `--fs` sampling rate in Hz (1000), `--pool` (1000), `--input-len` (96), `--horizon` (96), `--stride` (24), `--difficulty-pools` (1 10 100 300 1000), `--windows-per-tool` (5000, a cap for the difficulty table), `--no-figures` |
+| `omnifuser export SOURCE` | `SOURCE` is a run folder or a `fold-Tn.pt`; `--fold Tn` (needed when the folder holds several), `--output FILE` (required). Copies one fold's trained model to a portable model file; also converts checkpoints from before 2026-10-26. |
+| `omnifuser predict` | `--model FILE` (a `fold-Tn.pt` or an export), `--data-dir`, `--tool Tn`, `--output-dir` (required), `--device` (`cpu`), `--batch-size` (32), `--num-workers` (0), `--drop-modality {sensor,image}`, `--max-windows N`. Forecasts every evaluation window of one tool with a saved model, without training; writes `predictions-Tn.npz` and `metrics-Tn.json`, and warns if the model trained or validated on that tool. |
 | `scripts/compare_with_paper.py RUN_DIR` | `--by {mean_over_folds,pooled_by_windows}`, `--average {macro,weighted}`, `--json FILE` |
 | `scripts/model_summary.py` | `--image-encoder`, `--input-len` (96), `--horizon` (96), `--d-model` (32), `--rounds` (2), `--prediction-head` (`direct`), `--share-c2f`, `--batch-size` (2, for the shape probe), `--check` (verify the parameter total) |
 | `python -m pytest -o addopts= -q tests` | Runs all tests. Add `-k <name>` to run matching tests only. |
@@ -1148,7 +1158,7 @@ experiment_results/
   tracking/metrics.jsonl                  every event: setup, per-epoch train/validation, final evaluations
   tracking/metrics.csv                    the same numbers in long form (fold, epoch, split, evaluation_mode, metric, value)
   fold-Tn.json                            fold settings (incl. both duplicate settings and pass counts), epoch history, test and missing-modality metrics
-  fold-Tn.pt                              selected checkpoint with config and normalizer
+  fold-Tn.pt                              the fold's trained model: weights, settings, normalizer (omnifuser predict)
   fold-Tn-predictions[-<mode>].npz        test forecasts, targets, class probabilities (original units)
   fold-Tn-roc[-<mode>].npz                one-vs-rest ROC coordinates per class
   cross-validation-results.json           fold mean/std, paper horizons, per-mode summaries, pooled results

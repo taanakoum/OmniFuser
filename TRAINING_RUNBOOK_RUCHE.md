@@ -116,8 +116,8 @@ How the time splits up:
 9. **Submit** 3a first, check it after about an hour, then submit the rest
    in the recommended order (§12-§15).
 10. **Check once or twice a day** with `bash slurm/status.sh` (§16).
-11. **When everything is complete:** run the finishing checklist, pack and
-    download the results (§17).
+11. **When everything is complete:** run the finishing checklist, collect
+    the trained models, pack and download the results (§17).
 
 ---
 
@@ -536,7 +536,7 @@ less experiment_results/logs/step0-checks-*.out
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `139 passed` |
+| `=== tests` | `146 passed` |
 | `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `=== parameter count` | `4,183,600 ... (match)` |
 | `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |
@@ -996,6 +996,77 @@ Once or twice a day, about 10 minutes:
    loop runs the comparison on each and saves the printed table.
 3. Note in your record the commit (`git log -1 --oneline`) and the GPU type.
 
+### Save the trained models (final weights)
+
+You do not need to retrain to use a trained model again. **Every finished fold
+has already saved its final model** in its run folder, as `fold-Tn.pt`, where
+`Tn` is the tool that fold held out for testing. For example,
+`experiment_results/main/full-model/fold-T10.pt` is step 3a's model tested on
+T10.
+
+Each `fold-Tn.pt` is a complete, self-contained model file (about 16 MB):
+
+- the weights of the selected epoch (the one with the lowest validation loss);
+- the model settings and the force normalizer of its 8 training tools;
+- the data settings that prepare its inputs (time step, windows, image lag);
+- the frozen ImageNet weights, so it works without internet access.
+
+A 10-fold run therefore has 10 models, one per held-out tool. No single model
+saw all 10 tools: each one's honest test tool is the one in its name.
+
+**Collect the models you want under clear names.** This only copies files
+and takes seconds, so it may run on the login node:
+
+```bash
+source slurm/env.sh
+mkdir -p experiment_results/models
+omnifuser export experiment_results/main/full-model --fold T10 \
+  --output experiment_results/models/full-model-T10.pt
+```
+
+| Part | Meaning |
+|---|---|
+| `omnifuser export RUN_FOLDER` | The run folder that holds the `fold-Tn.pt` files |
+| `--fold T10` | Which fold's model to copy (needed when the folder holds several) |
+| `--output FILE` | Where to write the copy; the folder is created if needed |
+
+To copy all 10 models of a run at once:
+
+```bash
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  omnifuser export experiment_results/main/full-model --fold T$n \
+    --output experiment_results/models/full-model-T$n.pt
+done
+```
+
+The copies in `experiment_results/models/` are optional: the checkpoint
+archive below already contains every `fold-Tn.pt`.
+
+**Use a saved model later, on any machine** (your laptop, or a later Ruche
+job), without training:
+
+```bash
+omnifuser predict --model experiment_results/models/full-model-T10.pt \
+  --data-dir Nonastreda_Data --tool T10 --output-dir experiment_results/predictions/full-model-T10
+```
+
+It forecasts every evaluation window of T10 and writes
+`predictions-T10.npz` (forecasts and targets in newtons, class
+probabilities) and `metrics-T10.json` (the same metrics as training reports).
+`--model` also accepts a `fold-Tn.pt` straight from a run folder. For another
+tool it prints a warning if the model was trained or validated on that tool.
+`--drop-modality image` (or `sensor`) masks one input. It needs a few seconds
+to minutes on a CPU; on Ruche, run it in a short `srun` job (§18), not on the
+login node. From Python:
+
+```python
+from omnifuser.model_bundle import load_model
+loaded = load_model("experiment_results/models/full-model-T10.pt")
+loaded.model        # the OmniFuser model, in evaluation mode
+loaded.normalizer   # the force normalizer of its training tools
+loaded.data         # its data settings (pool, image lag, windows, ...)
+```
+
 ### Pack and download
 
 When everything has finished, pack the results on Ruche. The first archive
@@ -1009,8 +1080,9 @@ tar -czf results-no-checkpoints.tar.gz --exclude='*.pt' experiment_results
 ls -lh results-no-checkpoints.tar.gz
 ```
 
-The model checkpoints are larger (about 170 MB per 10-fold run). Pack them
-in a short CPU job instead of on the login node:
+The trained models, every `fold-Tn.pt` plus any copies in
+`experiment_results/models/`, are larger (about 170 MB per 10-fold run). Pack
+them in a short CPU job instead of on the login node:
 
 ```bash
 srun --partition=cpu_short --time=00:30:00 bash -c "find experiment_results -name '*.pt' | tar -czf results-checkpoints.tar.gz -T -"
@@ -1023,7 +1095,11 @@ Then download to your laptop, in PowerShell (with `$Ruche` and
 scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-no-checkpoints.tar.gz" .
 scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-checkpoints.tar.gz" .
 tar -xzf results-no-checkpoints.tar.gz
+tar -xzf results-checkpoints.tar.gz
 ```
+
+The second `tar` puts every `fold-Tn.pt` back into its run folder on your
+laptop, ready for `omnifuser predict` (above).
 
 Then follow [`REPORT_PLAN.md`](REPORT_PLAN.md). Keep the archives: Ruche's
 directories are not backed up, and they are deleted when your account
@@ -1102,6 +1178,13 @@ from §12.
 | 6 | `bash slurm/chain.sh N --job-name=sensitivity-paper-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study sensitivity --run-id paper-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
 | 7 | `bash slurm/chain.sh N --job-name=image-encoder-encoder-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study image-encoder --run-id encoder-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
 | Image source (optional) | `bash slurm/chain.sh N --job-name=image-source-source-v1 slurm/job.sbatch python scripts/run_experiment_suite.py --study image-source --run-id source-v1 --output-root experiment_results "${PROTOCOL[@]}"` |
+
+After training (§17):
+
+| Task | Command |
+|---|---|
+| Copy a trained model out | `omnifuser export experiment_results/main/full-model --fold T10 --output experiment_results/models/full-model-T10.pt` |
+| Use a saved model without training | `omnifuser predict --model experiment_results/models/full-model-T10.pt --data-dir Nonastreda_Data --tool T10 --output-dir experiment_results/predictions/full-model-T10` |
 
 The optional runs are in §15. Every long command can be split over several
 lines with a `\` at the end of each line except the last, as in the

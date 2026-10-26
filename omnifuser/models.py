@@ -274,12 +274,12 @@ class ImageFeatureEncoder(nn.Module):
 class ImageBranch(nn.Module):
     position_encoding: Tensor  # registered buffer; declared for type checkers
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, load_pretrained: bool = True) -> None:
         super().__init__()
         self.encoder = ImageFeatureEncoder(
             config.image_encoder,
             config.d_model,
-            pretrained=config.pretrained,
+            pretrained=config.pretrained and load_pretrained,
             freeze_bn=config.freeze_bn,
             freeze_weights=config.freeze_image_encoder,
             in_channels=config.image_channels,
@@ -495,7 +495,9 @@ class ConcatenationFusionLayer(nn.Module):
 
 
 class OmniFuser(nn.Module):
-    def __init__(self, config: ModelConfig | None = None) -> None:
+    def __init__(self, config: ModelConfig | None = None, load_pretrained: bool = True) -> None:
+        """``load_pretrained=False`` skips downloading ImageNet weights that a saved state
+        will replace anyway (``model_bundle.load_model``)."""
         super().__init__()
         self.config = config or ModelConfig()
         self.temporal_embedding = TemporalEmbedding(self.config)
@@ -503,7 +505,7 @@ class OmniFuser(nn.Module):
             self.temporal_encoder = nn.Identity()
         else:
             self.temporal_encoder = MultiResolutionTemporalExtractor(self.config)
-        self.image_branch = ImageBranch(self.config)
+        self.image_branch = ImageBranch(self.config, load_pretrained)
         if self.config.ablation == "without_c2f":
             self.fusion_layers = nn.ModuleList()
         elif self.config.ablation in {"without_rr", "without_rr_mrte"}:
