@@ -348,11 +348,11 @@ module avail anaconda miniconda
 ```
 
 This lists the conda versions installed on Ruche, such as
-`anaconda3/2020.02/gcc-9.2.0`. Choose the newest `anaconda3` or
+`anaconda3/2023.09-0/none-none`. Choose the newest `anaconda3` or
 `miniconda3` entry and load it:
 
 ```bash
-module load anaconda3/2020.02/gcc-9.2.0
+module load anaconda3/2023.09-0/none-none
 ```
 
 Replace the name with the one you chose.
@@ -384,7 +384,7 @@ not know Python 3.11), add `-c conda-forge`:
 (`nano slurm/env.sh`; save with Ctrl+O, Enter, quit with Ctrl+X) and set:
 
 ```bash
-CONDA_MODULE="anaconda3/2020.02/gcc-9.2.0"
+CONDA_MODULE="anaconda3/2023.09-0/none-none"
 CONDA_ENV="omnifuser"
 ```
 
