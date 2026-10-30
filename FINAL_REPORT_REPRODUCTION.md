@@ -71,7 +71,7 @@ All values are means over the 10 folds and over the paper's 8 horizons
 | Image encoder | EfficientNet-B0, ImageNet-pretrained and frozen, then the image GAT |
 | Model | Temporal embedding; MRTE (4 RTD blocks); C2F fusion (2 rounds) with refinement; direct heads. 4.18 M parameters, 176 k of them trained. |
 | Training | MSE + cross-entropy, Adam, learning rate 1e-4, batch 32, 30 epochs, the best validation epoch selected, one seed per fold |
-| Runs | 49 finished runs on Ruche (NVIDIA A100): main runs, ablations, image encoder, image source, prediction heads, paper-literal arms, deduplication, missing modality, sensitivity |
+| Runs | 51 finished runs on Ruche (NVIDIA A100): main runs, ablations, image encoder, image source, prediction heads, paper-literal arms, deduplication, missing modality, sensitivity |
 | Source of the numbers | Each run's `paper-comparison.json`, plus `fold-T*.json`, `cross-validation-results.json` and the prediction files of the main run |
 
 The paper reports on "Mudestreda", whose reference is the Nonastreda data
@@ -320,6 +320,9 @@ forecasting effect.
    label.
 
 ## 5. Steps to rectify classification
+
+The fixes started from this plan, and their validation, are recorded in
+[`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md).
 
 Each step lists the change, where to make it, the expected effect, and how to
 verify it. Items marked (F) are specified in detail in
@@ -573,7 +576,7 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
 
 ## 7. Conclusions
 
-1. OmniFuser was implemented faithfully: 35 audited items, 146 tests, and 49
+1. OmniFuser was implemented faithfully: 35 audited items, 146 tests, and 51
    cluster runs. It trains stably on Nonastreda.
 2. **Forecasting reaches the paper's level** (MAE 0.595 against 0.597).
    - The falling cumulative MSE is an artefact of two things: evaluation

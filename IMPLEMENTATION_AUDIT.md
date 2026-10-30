@@ -36,6 +36,7 @@ reproduce the paper's scores.
 | `cross_validation.py` | `run_cross_validation`: the 10-fold leave-one-tool-out driver with fold reuse, summaries, and pooled out-of-fold metrics per input mode (§7). |
 | `tracking.py` | `ExperimentTracker`: a dependency-free manifest plus JSONL and CSV metric logs (§8). |
 | `model_bundle.py` | Trained models as portable files: `make_bundle` (the format every finished fold saves as `fold-Tn.pt`), `export_model` (copy one out; converts older checkpoints), `load_model` (safe loader, no weight download) and `predict` (forecast a tool without training). |
+| `decision.py` | Post-hoc wear-class decision rules on saved probabilities: `ordinal_median`, `monotone_decode` (most probable non-decreasing sequence), `monotone_ordinal_decode`, validation-fitted `fit_class_offsets`, and `decision_scores`. Used by `scripts/decision_study.py`; the training pipeline does not call it. |
 | `cli.py` | The `omnifuser inspect`, `train`, `export` and `predict` commands, and the shared protocol/architecture arguments (`add_protocol_arguments`, the typed `protocol_kwargs`). |
 
 ### Scripts `scripts/`
@@ -50,7 +51,7 @@ reproduce the paper's scores.
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `end_to_end_trace.py` | Runs the pipeline on fold T10 of the real data with an untrained model and prints every number quoted in `END_TO_END_SIM.md` (also as JSON); redraws `docs/end_to_end/*.png`. |
 
-### Tests `tests/`: 146 tests
+### Tests `tests/`: 153 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
@@ -63,6 +64,7 @@ reproduce the paper's scores.
 | `test_spectrogram.py` | 6 | Window images: the STFT and global-spectrum maps share frequency rows (a sine lands on its row in both), every map is standardized, a segment shorter than one STFT frame still works; each step points at the image of its pass segment; changing any raw sample outside a window's input leaves its images unchanged, changing one inside changes them; collation pads unreferenced image slots; raw passes must match the pooled timeline, and pooling after loading equals the loader's; spectrogram runs refuse image lag 1, train end to end with `image_channels` 7 and never reuse photo folds; a frozen pretrained encoder keeps its weights and BatchNorm statistics while the image generator trains, and photos get no generator. |
 | `test_runtime.py` | 5 | The CPU-thread rule (override, SLURM allocation, `OMP_NUM_THREADS`, idle CPUs, never zero); the idle-CPU measurement is bounded; the WMI guard switches `platform` to its fallback when a (simulated) WMI call never returns and leaves it alone otherwise; a frozen backbone gives identical features in training mode, and cached features give the same model outputs as pixels; a frozen photo fold trains end to end on cached features. |
 | `test_model_bundle.py` | 7 | Every finished fold's `fold-Tn.pt` loads with the safe loader and `predict` on it reproduces the fold's test scores; the same for exported photo, frozen-feature (loading never downloads weights) and spectrogram models; older checkpoints are refused by `load_model` and converted by `export`; folds must be chosen in multi-fold folders; the `export` and `predict` commands. |
+| `test_decision.py` | 7 | Monotone and monotone-ordinal decoding equal brute force over all non-decreasing sequences; flicker removal; the ordinal median; validation offsets recover a biased boundary and stay zero without gain; counting of changing and decreasing windows. |
 | `test_tracking.py` | 4 | JSONL/CSV logging; corrupt manifest; refusal of mixed settings; resume on different hardware. |
 | `test_alignment_fixes.py` | 3 | Sample-weighted partial gradient accumulation; strict completed-fold reuse (including retraining folds without missing-modality results); dataset signatures. |
 | `test_cross_validation.py` | 4 | Pooled out-of-fold metrics and mean ROC; missing-AUC folds; weighted and paper-horizon summaries; per-mode summaries. |
@@ -518,7 +520,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 146 tests. Three deliberately injected defects each make a
+`pytest` passes all 153 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 
