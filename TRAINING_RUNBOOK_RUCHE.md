@@ -366,6 +366,7 @@ conda create -n omnifuser python=3.11 -y
 source activate omnifuser
 python --version
 python -m pip install --no-cache-dir --upgrade pip
+python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
 python -m pip install --no-cache-dir -e ".[test,eda]"
 ```
 
@@ -374,7 +375,8 @@ python -m pip install --no-cache-dir -e ".[test,eda]"
 | `conda create -n omnifuser python=3.11 -y` | Creates an environment named `omnifuser` with Python 3.11 (the project needs 3.10 or newer); `-y` answers yes to the confirmation |
 | `source activate omnifuser` | Switches to it; the prompt starts with `(omnifuser)`. Ruche asks for `source activate`: do **not** use `conda activate` or `conda init`, which edit `~/.bashrc`. |
 | `python --version` | Must print 3.11.x |
-| `pip install --no-cache-dir -e ".[test,eda]"` | Installs PyTorch, torchvision, the other dependencies, pytest and matplotlib, and this project in editable mode (creates the `omnifuser` command). `--no-cache-dir` keeps the download cache out of your home quota. |
+| `pip install ... torch torchvision --index-url .../cu126` | Installs PyTorch built for CUDA 12.6, which runs on both GPU types of Ruche: the V100s (`gpu_test`, `gpu`) and the A100s (`gpua100`). The default PyTorch from `pip` no longer includes code for the V100s. |
+| `pip install --no-cache-dir -e ".[test,eda]"` | Installs the other dependencies, pytest and matplotlib, and this project in editable mode (creates the `omnifuser` command); it keeps the PyTorch installed above. `--no-cache-dir` keeps the download cache out of your home quota. |
 
 If `conda create` fails with "PackagesNotFoundError" (an old conda that does
 not know Python 3.11), add `-c conda-forge`:
@@ -546,13 +548,15 @@ less experiment_results/logs/step0-checks-*.out
 
 ```bash
 sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch \
-  python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no CUDA')"
+  python -c "import torch; x = torch.randn(256, 256, device='cuda'); print(torch.__version__, torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0), 'matmul ok', float((x @ x).sum()))"
 ```
 
-The log `experiment_results/logs/gpu-check-<job id>.out` must contain
-`True` and a GPU name such as `Tesla V100-SXM2-32GB`. If it prints `False`,
-the installed PyTorch build does not match the cluster's GPU driver; §18
-explains the fix.
+It runs a small computation on the GPU, so it also proves that the installed
+PyTorch has code for this GPU (seeing the GPU is not enough). The log
+`experiment_results/logs/gpu-check-<job id>.out` must end with one line
+such as `2.14.1+cu126 Tesla V100-PCIE-32GB (7, 0) matmul ok 123.4`, with no
+warning above it. If it shows a `UserWarning` saying the PyTorch build "does
+not include kernels for this GPU", or an error, §18 explains the fix.
 
 ## 11. Steps 1-2: smoke test and pilot
 
@@ -636,7 +640,9 @@ command would write into the same files.
 2. **The pilot** (§11), once all three logs are fine.
 3. **Plan the parts** (above) from the pilot's epoch time.
 4. **Step 3a alone first** (§13). After about an hour, run
-   `bash slurm/status.sh` and `tail -20` on its log. You should see the line
+   `bash slurm/status.sh` and
+   `tail -n 20 $(ls -t experiment_results/logs/main-full-model-[0-9]*.out | head -1)`
+   (the newest log of step 3a). You should see the line
    `Fold 1/10: train=8 tools, validation=T2, test=T1`, then one line per
    epoch such as `T1 epoch 3/30: train loss 1.2345, validation loss
    1.3456, 98 s`, and no `Traceback`. This first hour catches a wrong setting
@@ -875,7 +881,7 @@ Example output:
   ablations/paper-v1/                            running      1/9 variants
       now: paper-ablation/without-rr (1/10 folds)
 
-== Logs with an error (time-limit stops are expected and not listed; read a log's end with: tail -40 FILE)
+== Logs with an error (time-limit stops are expected and not listed; read a log's end with: tail -n 40 FILE)
   none
 
 == Disk use of the results: 1.2G
@@ -955,7 +961,7 @@ Once or twice a day, about 10 minutes:
 
 1. Connect (§3) and run the §9 block.
 2. `bash slurm/status.sh`.
-3. **Errors listed?** Read the end of that log (`tail -40 FILE`), find the
+3. **Errors listed?** Read the end of that log (`tail -n 40 FILE`), find the
    message in §18, cancel the rest of that chain (the `scancel` line
    `chain.sh` printed), fix the cause, and submit the chain again. Finished
    folds and variants are kept.
@@ -1088,18 +1094,38 @@ them in a short CPU job instead of on the login node:
 srun --partition=cpu_short --time=00:30:00 bash -c "find experiment_results -name '*.pt' | tar -czf results-checkpoints.tar.gz -T -"
 ```
 
-Then download to your laptop, in PowerShell (with `$Ruche` and
-`$RucheLogin` from §3):
+Then download to your laptop. Run this in PowerShell **from your local
+repository folder**, the one that holds `README.md` and `experiment_results/`.
+`scp` saves into the current folder, and `tar` unpacks into the
+`experiment_results/` below it, which is where `REPORT_PLAN.md`'s snippets
+look for the results. In a new PowerShell window, set `$Ruche` and
+`$RucheLogin` again first (§3).
 
 ```powershell
+cd C:\path\to\OmniFuser   # your local repository folder
 scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-no-checkpoints.tar.gz" .
 scp "${Ruche}:/workdir/$RucheLogin/OmniFuser/results-checkpoints.tar.gz" .
 tar -xzf results-no-checkpoints.tar.gz
 tar -xzf results-checkpoints.tar.gz
 ```
 
-The second `tar` puts every `fold-Tn.pt` back into its run folder on your
-laptop, ready for `omnifuser predict` (above).
+- **Where things land.** Every run folder appears with the same path as on
+  Ruche, for example `experiment_results\main\full-model\` and
+  `experiment_results\ablations\<run-id>\`. The job logs land in
+  `experiment_results\logs\`. The second `tar` puts every `fold-Tn.pt` back
+  into its run folder, ready for `omnifuser predict` (above).
+- **Merging.** Unpacking adds to the existing `experiment_results/`. A file
+  with the same name is replaced by Ruche's copy. If `git status` then lists
+  `experiment_results/README.md` as modified, run
+  `git restore experiment_results/README.md`. Git ignores everything else
+  there, and the archives too, so nothing gets committed by accident.
+- **Space.** About 12 GB unpacked from the first archive and about 8 GB of
+  models, plus the archives themselves. If the repository is inside a
+  OneDrive folder, OneDrive will upload all of it. Pause syncing first
+  (OneDrive icon → **Pause syncing**), or check that your OneDrive storage
+  has room for it.
+- **Not in the archives:** the commit and GPU type (checklist step 3) and
+  your record table (§12). Keep them with the archives.
 
 Then follow [`REPORT_PLAN.md`](REPORT_PLAN.md). Keep the archives: Ruche's
 directories are not backed up, and they are deleted when your account
@@ -1115,6 +1141,7 @@ closes.
 | `module: command not found` or `Lmod has detected the following error` in a log | Wrong module name in `slurm/env.sh` | Check `module avail anaconda miniconda` and correct `CONDA_MODULE` (7.3) |
 | `activate: No such file or directory`, or `ModuleNotFoundError: No module named 'omnifuser'` | Wrong environment name in `slurm/env.sh`, or the installation in 7.2 did not finish | Check `conda env list` and `CONDA_ENV`; repeat 7.2 |
 | `CUDA was requested but is not available`, or `False` in the GPU check | The PyTorch build needs a newer GPU driver than the cluster has. The `CUDA Version` in the `nvidia-smi` line of any GPU job log shows what the driver supports. | Install a build for that CUDA version: `source slurm/env.sh`, then `python -m pip install --no-cache-dir --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu126` (driver CUDA 12.6 or newer) or `.../whl/cu118` (older drivers). pip installs the newest PyTorch that has a build for it, possibly an older release, which this project accepts (torch 2.2 or newer). Repeat the GPU check. |
+| `UserWarning: Found GPU0 Tesla V100 ... which is of compute capability (CC) 7.0` and "does not include kernels for this GPU", or `no kernel image is available for execution on the device` | The default PyTorch from `pip` (for example `2.15.0+cu132`) has no code for the V100s of `gpu_test` and `gpu`. It still works on the A100s of `gpua100`. | Reinstall a build for CUDA 12.6 on the login node: `source slurm/env.sh`, then `python -m pip uninstall -y torch torchvision`, then `python -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126`. pip installs the newest version built for CUDA 12.6 (2.14.1 in October 2026), which may be older than the one your warning names; the project accepts torch 2.2 or newer. Check with `python -c "import torch; print(torch.__version__)"` (must end in `+cu126`), then repeat the GPU check (10.2). |
 | `warning: --num-workers 4 exceeds the N CPUs available` | The job got fewer CPUs than the protocol's 4 loader workers (a changed `--cpus-per-task`) | Keep `slurm/job.sbatch`'s 8 CPUs; the run still works, only slower |
 | `CUDA out of memory` | Not expected on 32-40 GB GPUs; possible for the widest sensitivity variants | Add `--batch-size 16 --accumulation-steps 2` (same effective batch) in a new output folder |
 | `DUE TO TIME LIMIT` / state `TIMEOUT` | The 24 h walltime ran out | Normal; the next part resumes. If no part is left, submit the chain again (§16). |
@@ -1168,7 +1195,7 @@ from §12.
 |---|---|
 | Status of everything | `bash slurm/status.sh` |
 | 0 | `sbatch slurm/checks.sbatch` |
-| GPU check | `sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch python -c "import torch; print(torch.cuda.is_available())"` |
+| GPU check | `sbatch --job-name=gpu-check --partition=gpu_test --time=00:10:00 slurm/job.sbatch python -c "import torch; x = torch.randn(256, 256, device='cuda'); print(torch.__version__, torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0), 'matmul ok', float((x @ x).sum()))"` |
 | 1 | `sbatch --job-name=gpu-smoke --partition=gpu_test --time=00:30:00 slurm/job.sbatch omnifuser train "${PROTOCOL[@]}" --epochs 1 --test-tool T10 --output-dir experiment_results/validation/gpu-smoke --max-train-windows 64 --max-eval-windows 32` |
 | 2 | `sbatch --job-name=pilot-T10 --time=03:00:00 slurm/job.sbatch omnifuser train "${PROTOCOL[@]}" --epochs 3 --test-tool T10 --output-dir experiment_results/pilot/T10` |
 | 3a | `bash slurm/chain.sh N --job-name=main-full-model slurm/job.sbatch python scripts/train_lightning.py "${PROTOCOL[@]}" --dedup-identical-forces True --eval-dedup-identical-forces True --output-dir experiment_results/main/full-model` |

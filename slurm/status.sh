@@ -69,11 +69,11 @@ for suite in sorted(suite_dirs):
 EOF
 
 echo
-echo "== Logs with an error (time-limit stops are expected and not listed; read a log's end with: tail -40 FILE)"
+echo "== Logs with an error (time-limit stops are expected and not listed; read a log's end with: tail -n 40 FILE)"
 found=0
 for log in experiment_results/logs/*.out; do
     [ -f "$log" ] || continue
-    last=$(grep -E "Traceback|Error:|error:|CANCELLED|oom-kill" "$log" | grep -v "DUE TO TIME LIMIT" | tail -1)
+    last=$(grep -E "Traceback|Error:|error:|CANCELLED|oom-kill" "$log" | grep -v "DUE TO TIME LIMIT" | tail -n 1)
     if [ -n "$last" ]; then
         echo "  $log: $(echo "$last" | cut -c1-110)"
         found=1

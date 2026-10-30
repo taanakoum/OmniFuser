@@ -24,6 +24,8 @@ points, not targets this code claims to reproduce.
 | [`experiment_results/README.md`](experiment_results/README.md) | Layout of the generated results |
 | [`FUTURE_WORK_AND_ANALYSIS.md`](FUTURE_WORK_AND_ANALYSIS.md) | **What next**: a critical review of the implementation (shortcuts, label leakage, Fz drift, label noise), each finding with implementation steps, and the plan toward a multimodal PdM foundation model (Project 14) with papers, repositories and a timeline |
 | [`REPORT_PLAN.md`](REPORT_PLAN.md) | **After training**: what to download, the report outline with the source of every section, and tested snippets that produce every table and figure |
+| [`RESULTS_MAIN_RUNS.md`](RESULTS_MAIN_RUNS.md) | **First results**: steps 3a and 3b against the baselines and the paper, by horizon and by lead segment, with interpretation, limitations and the next checks |
+| [`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md) | **Final report**: all 49 runs (ablations, image studies, heads, sensitivity, missing modality), reasoning over accuracy and precision, conclusions and how to improve them |
 
 ## Repository layout
 
