@@ -506,12 +506,29 @@ class WindowDataset(Dataset[dict[str, Any]]):
         }
 
 
-def image_tensor(path: Path, height: int = 128, width: int = 384) -> Tensor:
+Crop = tuple[float, float, float, float]
+
+
+def load_photo(path: Path, height: int, width: int, crop: Crop | None = None) -> Image.Image:
+    """The RGB photo, cropped to ``crop`` (top, left, bottom, right as fractions of its
+    height and width) if given, then resized to ``width`` x ``height``."""
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    if crop is not None:
+        top, left, bottom, right = crop
+        image = image.crop((
+            round(left * image.width), round(top * image.height),
+            round(right * image.width), round(bottom * image.height),
+        ))
+    return image.resize((width, height), Image.Resampling.BILINEAR)
+
+
+def image_tensor(
+    path: Path, height: int = 128, width: int = 384, crop: Crop | None = None
+) -> Tensor:
     if Path(path) == NO_IMAGE:
         return torch.zeros(3, height, width)
-    with Image.open(path) as source:
-        image = source.convert("RGB").resize((width, height), Image.Resampling.BILINEAR)
-        array = np.asarray(image, dtype=np.float32) / 255.0
+    array = np.asarray(load_photo(path, height, width, crop), dtype=np.float32) / 255.0
     array = (array - IMAGE_MEAN) / IMAGE_STD
     return torch.from_numpy(array.transpose(2, 0, 1).copy())
 
@@ -520,27 +537,32 @@ class ImageBank:
     """Cache resized RGB pixels once to avoid decoding the same photos for every batch."""
 
     def __init__(
-        self, paths: Sequence[Path], height: int = 128, width: int = 384
+        self,
+        paths: Sequence[Path],
+        height: int = 128,
+        width: int = 384,
+        crop: Crop | None = None,
     ) -> None:
         unique = list(dict.fromkeys(Path(path) for path in paths if Path(path) != NO_IMAGE))
         self.height, self.width = height, width
         self.index = {path: position for position, path in enumerate(unique)}
         self.pixels = np.empty((len(unique), height, width, 3), dtype=np.uint8)
         for position, path in enumerate(unique):
-            with Image.open(path) as source:
-                resized = source.convert("RGB").resize(
-                    (width, height), Image.Resampling.BILINEAR
-                )
-                self.pixels[position] = np.asarray(resized, dtype=np.uint8)
+            self.pixels[position] = np.asarray(load_photo(path, height, width, crop), dtype=np.uint8)
 
     @classmethod
     def from_timelines(
-        cls, timelines: Sequence[ToolTimeline], height: int = 128, width: int = 384
+        cls,
+        timelines: Sequence[ToolTimeline],
+        height: int = 128,
+        width: int = 384,
+        crop: Crop | None = None,
     ) -> ImageBank:
         return cls(
             [path for timeline in timelines for path in timeline.image_paths],
             height,
             width,
+            crop,
         )
 
     def __len__(self) -> int:
@@ -565,6 +587,7 @@ def collate_windows(
     height: int = 128,
     width: int = 384,
     bank: PixelSource | None = None,
+    crop: Crop | None = None,
 ) -> dict[str, Any]:
     if "images" in samples[0]:
         # Images built per window (``spectrogram.ForceWindowDataset``); short rows are
@@ -578,7 +601,7 @@ def collate_windows(
         )
         indices = torch.from_numpy(np.stack([sample["image_index"] for sample in samples]))
     else:
-        images, indices = _photo_batch(samples, height, width, bank)
+        images, indices = _photo_batch(samples, height, width, bank, crop)
     return {
         "force": torch.from_numpy(np.stack([sample["force"] for sample in samples])),
         "force_target": torch.from_numpy(np.stack([sample["force_target"] for sample in samples])),
@@ -593,7 +616,11 @@ def collate_windows(
 
 
 def _photo_batch(
-    samples: Sequence[dict[str, Any]], height: int, width: int, bank: PixelSource | None
+    samples: Sequence[dict[str, Any]],
+    height: int,
+    width: int,
+    bank: PixelSource | None,
+    crop: Crop | None = None,
 ) -> tuple[Tensor, Tensor]:
     """Each window's distinct photos and, per step, the position of its photo."""
     image_paths: list[list[Path]] = []
@@ -612,7 +639,7 @@ def _photo_batch(
         image_indices.append(row)
     max_images = max(map(len, image_paths))
     load = bank.tensor if bank is not None else (
-        lambda path: image_tensor(path, height, width)
+        lambda path: image_tensor(path, height, width, crop)
     )
     images = [
         torch.stack(

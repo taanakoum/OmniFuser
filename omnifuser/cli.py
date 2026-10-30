@@ -244,6 +244,42 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="model dropout rate (paper default: 0.1)",
     )
+    # Classification fixes (FIXES_AND_VALIDATION.md); the defaults are the main runs.
+    parser.add_argument(
+        "--metadata",
+        choices=("all", "position", "none"),
+        default="all",
+        help="metadata codes in both streams: run, block and position (all, default), "
+        "position within the pass only, or none",
+    )
+    parser.add_argument(
+        "--revin",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="reversible instance normalization of each input force window",
+    )
+    parser.add_argument(
+        "--class-loss",
+        choices=("ce", "coral"),
+        default="ce",
+        help="3-class cross-entropy (default) or the ordinal CORAL head (direct head only)",
+    )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        nargs=2,
+        metavar=("HEIGHT", "WIDTH"),
+        default=None,
+        help="photo input size after cropping (default: 128 384)",
+    )
+    parser.add_argument(
+        "--image-crop",
+        type=float,
+        nargs=4,
+        metavar=("TOP", "LEFT", "BOTTOM", "RIGHT"),
+        default=None,
+        help="crop each photo to these fractions of its height and width before resizing",
+    )
 
 
 ARCHITECTURE_OPTIONS = {
@@ -286,7 +322,13 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "freeze_bn": args.freeze_bn,
         "freeze_image_encoder": args.freeze_image_encoder,
         "image_gat": args.image_gat,
+        "metadata": args.metadata,
+        "revin": args.revin,
+        "class_loss": args.class_loss,
+        "image_crop": tuple(args.image_crop) if args.image_crop is not None else None,
     }
+    if args.image_size is not None:
+        overrides["image_height"], overrides["image_width"] = args.image_size
     for attribute, field in ARCHITECTURE_OPTIONS.items():
         value = getattr(args, attribute, None)
         if value is not None:
@@ -539,6 +581,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="mask one input, as in the missing-modality evaluation",
     )
     predict_parser.add_argument("--max-windows", type=int, help="only the first N windows (quick checks)")
+    predict_parser.add_argument(
+        "--evaluation-stride", type=int,
+        help="window stride instead of the saved one; e.g. 24 starts forecasts at every phase of a pass",
+    )
     predict_parser.set_defaults(handler=_predict)
     return parser
 
@@ -558,6 +604,7 @@ def _predict(args: argparse.Namespace) -> None:
         drop_modality=args.drop_modality,
         max_windows=args.max_windows,
         num_workers=args.num_workers,
+        evaluation_stride=args.evaluation_stride,
     )
     info = metrics["prediction"]
     if "warning" in info:

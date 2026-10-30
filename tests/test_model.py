@@ -69,6 +69,8 @@ def test_learned_period_codes_are_added_and_receive_gradients() -> None:
     relative = torch.tensor([list(range(12)), list(range(4, 16))])
 
     output = embedding(force, cycle, batch_code, relative)
+    # the default metadata mode ("all") creates every table
+    assert embedding.cycle is not None and embedding.batch is not None and embedding.relative is not None
     expected = (
         embedding.value(force)
         + embedding.position_encoding[None]

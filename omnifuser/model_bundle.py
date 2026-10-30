@@ -188,12 +188,18 @@ def predict(
     drop_modality: str | None = None,
     max_windows: int | None = None,
     num_workers: int = 0,
+    evaluation_stride: int | None = None,
 ) -> dict[str, Any]:
     """Forecast every evaluation window of ``tool`` with a saved model, without training.
 
     Writes ``predictions-<tool>[-<mode>].npz`` (forecasts and targets in newtons, class
     probabilities and targets) and ``metrics-<tool>[-<mode>].json``; returns the metrics.
+    ``evaluation_stride`` replaces the saved window stride (files then end in
+    ``-stride<n>``): a stride that is not a multiple of the pass length starts the
+    forecasts at every phase of a pass instead of near pass boundaries.
     """
+    if evaluation_stride is not None and evaluation_stride < 1:
+        raise ValueError("evaluation_stride must be positive")
     # Imported here: train.py itself imports this module to save its fold models.
     from omnifuser.train import (
         _run_epoch,
@@ -219,8 +225,9 @@ def predict(
     by_tool = {timeline.tool: timeline for timeline in timelines}
     if tool not in by_tool:
         raise ValueError(f"unknown tool {tool!r}; choose one of {sorted(by_tool, key=lambda t: int(t[1:]))}")
+    stride = evaluation_stride or data["evaluation_stride"]
     dataset: Any = window_dataset(
-        [by_tool[tool]], loaded.normalizer, loaded.config, data["evaluation_stride"],
+        [by_tool[tool]], loaded.normalizer, loaded.config, stride,
         spectrogram=loaded.spectrogram, raw_passes=raw_passes, pool=data["pool"],
     )
     if max_windows is not None and max_windows < len(dataset):
@@ -251,6 +258,7 @@ def predict(
         "tool": tool,
         "tool_role": role,
         "windows": len(dataset),
+        "evaluation_stride": stride,
         "drop_modality": drop_modality,
         "config": asdict(loaded.config),
         "data": data,
@@ -260,6 +268,8 @@ def predict(
             f"{tool} was a {role} tool of this model; its scores are not test scores"
         )
     suffix = f"{tool}-{drop_modality}_missing" if drop_modality else tool
+    if evaluation_stride is not None:
+        suffix += f"-stride{evaluation_stride}"
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     save_arrays(output_path / f"predictions-{suffix}.npz", predictions)

@@ -538,7 +538,7 @@ less experiment_results/logs/step0-checks-*.out
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `146 passed` |
+| `=== tests` | `168 passed` (146 when the main runs were made) |
 | `=== data inspection` | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
 | `=== parameter count` | `4,183,600 ... (match)` |
 | `=== exploratory data analysis` | Ends without an error; the tables and figures are in `experiment_results/eda/` |

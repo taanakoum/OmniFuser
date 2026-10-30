@@ -35,6 +35,42 @@ def _metadata_code(
     return table(indices)
 
 
+def _metadata_tables(config: ModelConfig) -> tuple[nn.Embedding | None, ...]:
+    """The run, block and position-within-pass tables that ``config.metadata`` keeps."""
+    d = config.d_model
+    keep_run_and_block = config.metadata == "all"
+    return (
+        nn.Embedding(128, d) if keep_run_and_block else None,
+        nn.Embedding(8, d) if keep_run_and_block else None,
+        nn.Embedding(16, d) if config.metadata != "none" else None,
+    )
+
+
+def _add_metadata(
+    x: Tensor,
+    tables: tuple[nn.Embedding | None, ...],
+    values: tuple[Tensor | None, ...],
+) -> Tensor:
+    """``x`` plus the code of every metadata table that exists, in table order."""
+    batch, steps = x.shape[:2]
+    for table, value in zip(tables, values):
+        if table is not None:
+            x = x + _metadata_code(table, value, batch, steps, x.device)
+    return x
+
+
+def ordinal_log_probabilities(cumulative: Tensor) -> Tensor:
+    """(..., K-1) logits of P(class > k), non-increasing in k -> (..., K) log-probabilities.
+
+    P(class = k) = P(class > k - 1) - P(class > k), with P(class > -1) = 1 and
+    P(class > K - 1) = 0.
+    """
+    above = torch.sigmoid(cumulative)
+    edge = above.new_ones((*above.shape[:-1], 1))
+    exceedance = torch.cat((edge, above, torch.zeros_like(edge)), dim=-1)
+    return (exceedance[..., :-1] - exceedance[..., 1:]).clamp_min(1e-12).log()
+
+
 class TemporalEmbedding(nn.Module):
     position_encoding: Tensor  # registered buffer; declared for type checkers
 
@@ -51,9 +87,7 @@ class TemporalEmbedding(nn.Module):
             sinusoidal_position_encoding(config.input_len, d),
             persistent=False,
         )
-        self.cycle = nn.Embedding(128, d)
-        self.batch = nn.Embedding(8, d)
-        self.relative = nn.Embedding(16, d)
+        self.cycle, self.batch, self.relative = _metadata_tables(config)
         self.dropout = nn.Dropout(config.dropout)
 
     def forward(
@@ -63,17 +97,16 @@ class TemporalEmbedding(nn.Module):
         batch_code: Tensor | None = None,
         relative: Tensor | None = None,
     ) -> Tensor:
-        batch, steps, _ = force.shape
+        steps = force.shape[1]
         if steps > self.position_encoding.shape[0]:
             raise ValueError(
                 f"sequence length {steps} exceeds {self.position_encoding.shape[0]}"
             )
+        embedded = self.value(force) + self.position_encoding[:steps].to(dtype=force.dtype)[None]
         return self.dropout(
-            self.value(force)
-            + self.position_encoding[:steps].to(dtype=force.dtype)[None]
-            + _metadata_code(self.cycle, cycle, batch, steps, force.device)
-            + _metadata_code(self.batch, batch_code, batch, steps, force.device)
-            + _metadata_code(self.relative, relative, batch, steps, force.device)
+            _add_metadata(
+                embedded, (self.cycle, self.batch, self.relative), (cycle, batch_code, relative)
+            )
         )
 
 
@@ -289,9 +322,7 @@ class ImageBranch(nn.Module):
             sinusoidal_position_encoding(config.input_len, config.d_model),
             persistent=False,
         )
-        self.cycle = nn.Embedding(128, config.d_model)
-        self.batch = nn.Embedding(8, config.d_model)
-        self.relative = nn.Embedding(16, config.d_model)
+        self.cycle, self.batch, self.relative = _metadata_tables(config)
         # With image_gat=False (an experiment) there are no GAT layers: the projected
         # encoder features go to fusion with only the position and metadata codes added.
         self.layers = nn.ModuleList(
@@ -309,7 +340,7 @@ class ImageBranch(nn.Module):
         batch_code: Tensor | None = None,
         relative: Tensor | None = None,
     ) -> Tensor:
-        batch, steps = image_indices.shape
+        steps = image_indices.shape[1]
         encoded = self.encoder(images)
         if encoded.shape[1] == 0:
             raise ValueError("each sequence must reference at least one image")
@@ -321,12 +352,10 @@ class ImageBranch(nn.Module):
         for layer, norm in zip(self.layers, self.norms):
             output, _ = layer(x)
             x = norm(x + self.dropout(F.elu(output)))
-        return (
-            x
-            + self.position_encoding[:steps].to(dtype=x.dtype)[None]
-            + _metadata_code(self.cycle, cycle, batch, steps, x.device)
-            + _metadata_code(self.batch, batch_code, batch, steps, x.device)
-            + _metadata_code(self.relative, relative, batch, steps, x.device)
+        return _add_metadata(
+            x + self.position_encoding[:steps].to(dtype=x.dtype)[None],
+            (self.cycle, self.batch, self.relative),
+            (cycle, batch_code, relative),
         )
 
 
@@ -548,12 +577,27 @@ class OmniFuser(nn.Module):
             self.direct_force = nn.Linear(
                 d, self.config.horizon * self.config.force_channels
             )
+            # The ordinal head has one score per lead and K - 1 ordered thresholds.
+            coral = self.config.class_loss == "coral"
             self.direct_class = nn.Linear(
-                d, self.config.horizon * self.config.num_classes
+                d, self.config.horizon * (1 if coral else self.config.num_classes)
             )
+            if coral:
+                # Threshold 1 per lead, then positive gaps (softplus), so the thresholds
+                # stay ordered; they start at -0.5 and +0.5.
+                self.coral_first = nn.Parameter(torch.full((self.config.horizon, 1), -0.5))
+                self.coral_gaps = nn.Parameter(
+                    torch.full(
+                        (self.config.horizon, self.config.num_classes - 2), math.log(math.e - 1)
+                    )
+                )
         else:
             self.force_head = nn.Linear(d, self.config.force_channels)
             self.classification_head = nn.Linear(d, self.config.num_classes)
+        if self.config.revin:
+            # RevIN's learnable per-channel affine map.
+            self.revin_weight = nn.Parameter(torch.ones(self.config.force_channels))
+            self.revin_bias = nn.Parameter(torch.zeros(self.config.force_channels))
 
     def _mask_modalities(
         self, sensor: Tensor, image: Tensor, drop_modality: str | None
@@ -591,6 +635,12 @@ class OmniFuser(nn.Module):
                 "images must have shape (batch, images, channels, height, width), or "
                 "(batch, images, features) for precomputed frozen-backbone features"
             )
+        window_level: tuple[Tensor, Tensor] | None = None
+        if self.config.revin:
+            level = force.mean(dim=1, keepdim=True)
+            spread = force.var(dim=1, keepdim=True, unbiased=False).add(1e-5).sqrt()
+            force = (force - level) / spread * self.revin_weight + self.revin_bias
+            window_level = (level, spread)
         sensor = self.temporal_encoder(
             self.temporal_embedding(force, cycle, batch_code, relative)
         )
@@ -616,13 +666,23 @@ class OmniFuser(nn.Module):
         if fused is None:
             raise RuntimeError("OmniFuser requires at least one fusion layer")
         final = fused[:, -1]
+        cumulative: Tensor | None = None
         if self.config.prediction_head == "direct":
             force_output = self.direct_force(final).view(
                 -1, self.config.horizon, self.config.force_channels
             )
-            class_output = self.direct_class(final).view(
-                -1, self.config.horizon, self.config.num_classes
-            )
+            if self.config.class_loss == "coral":
+                score = self.direct_class(final).view(-1, self.config.horizon, 1)
+                thresholds = torch.cumsum(
+                    torch.cat((self.coral_first, F.softplus(self.coral_gaps)), dim=-1), dim=-1
+                )
+                ordinal = score - thresholds[None]
+                cumulative = ordinal
+                class_output = ordinal_log_probabilities(ordinal)
+            else:
+                class_output = self.direct_class(final).view(
+                    -1, self.config.horizon, self.config.num_classes
+                )
         elif self.config.prediction_head == "paper_literal":
             force_step = self.force_head(final)
             class_step = self.classification_head(final)
@@ -642,8 +702,14 @@ class OmniFuser(nn.Module):
             future = self.forecast_projection(torch.cat((context, lead_codes), dim=-1))
             force_output = self.force_head(future)
             class_output = self.classification_head(future)
-        return {
+        if window_level is not None:
+            level, spread = window_level
+            force_output = (force_output - self.revin_bias) / (self.revin_weight + 1e-10)
+            force_output = force_output * spread + level
+        outputs: dict[str, Any] = {
             "force": force_output,
+            # With class_loss "coral" these are log-probabilities: softmax and argmax
+            # treat them exactly like logits.
             "class_logits": class_output,
             "alignment_loss": (
                 alignment_loss / len(self.fusion_layers)
@@ -656,6 +722,9 @@ class OmniFuser(nn.Module):
                 else orthogonality_loss
             ),
         }
+        if cumulative is not None:
+            outputs["class_cumulative_logits"] = cumulative
+        return outputs
 
 
 def multitask_loss(
@@ -664,10 +733,19 @@ def multitask_loss(
     class_target: Tensor,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     force_loss = F.mse_loss(outputs["force"], force_target)
-    class_loss = F.cross_entropy(
-        outputs["class_logits"].reshape(-1, outputs["class_logits"].shape[-1]),
-        class_target.reshape(-1).long(),
-    )
+    if "class_cumulative_logits" in outputs:
+        # CORAL: binary cross-entropy on "class > k" for each threshold k, summed over k.
+        cumulative = outputs["class_cumulative_logits"]
+        levels = torch.arange(cumulative.shape[-1], device=cumulative.device)
+        above = (class_target.long()[..., None] > levels).to(cumulative.dtype)
+        class_loss = F.binary_cross_entropy_with_logits(
+            cumulative, above, reduction="none"
+        ).sum(dim=-1).mean()
+    else:
+        class_loss = F.cross_entropy(
+            outputs["class_logits"].reshape(-1, outputs["class_logits"].shape[-1]),
+            class_target.reshape(-1).long(),
+        )
     alignment_loss = outputs["alignment_loss"]
     orthogonality_loss = outputs["orthogonality_loss"]
     total = force_loss + class_loss

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from omnifuser.data import CLASS_NAMES
+from omnifuser.data import CLASS_NAMES, ToolTimeline, WindowDataset
 
 PAPER_HORIZONS = (12, 24, 36, 48, 60, 72, 84, 96)
 # OmniFuser on "Mudestreda" in the paper's Tables IV-V, indexed like PAPER_HORIZONS.
@@ -101,6 +101,57 @@ def baseline_report(
         if 1 <= horizon <= targets.shape[1]
     }
     return report
+
+
+def photo_change_report(
+    predicted: np.ndarray, class_targets: np.ndarray, shown_label: np.ndarray
+) -> dict[str, float | None]:
+    """Accuracy split by whether a target step's label differs from the shown photo's.
+
+    With the same-pass photo, copying its label is right for most target steps, so
+    plain accuracy mostly measures reading the photo. Accuracy on the steps whose label
+    differs from the photo's measures forecasting a change.
+    """
+    if predicted.shape != class_targets.shape or shown_label.shape != (class_targets.shape[0],):
+        raise ValueError("predicted classes, targets and shown labels have incompatible shapes")
+    changed = class_targets != shown_label[:, None]
+    correct = predicted == class_targets
+    return {
+        "label_changed_share": float(changed.mean()),
+        "accuracy_label_changed": float(correct[changed].mean()) if changed.any() else None,
+        "accuracy_label_unchanged": float(correct[~changed].mean()) if (~changed).any() else None,
+    }
+
+
+def run_number_baseline_accuracy(
+    train_timelines: list[ToolTimeline], dataset: Any
+) -> float:
+    """Accuracy of predicting each target step's class from its run number alone.
+
+    The rule is the most frequent class of each run number over the training tools'
+    steps (the overall most frequent class for a run number they lack). It measures how
+    much of the accuracy the run-number metadata code could explain by itself.
+    ``dataset`` is a ``WindowDataset`` or a ``Subset`` of one.
+    """
+    indices = list(getattr(dataset, "indices", range(len(dataset))))
+    windows: WindowDataset = getattr(dataset, "dataset", dataset)
+    runs = np.concatenate([timeline.cycle_codes for timeline in train_timelines]).astype(np.int64)
+    labels = np.concatenate([timeline.labels for timeline in train_timelines]).astype(np.int64)
+    classes = int(labels.max()) + 1
+    largest_run = max(int(t.cycle_codes.max()) for t in [*train_timelines, *windows.timelines])
+    counts = np.zeros((largest_run + 1, classes), dtype=np.int64)
+    np.add.at(counts, (runs, labels), 1)
+    fallback = int(np.bincount(labels).argmax())
+    rule = np.where(counts.sum(axis=1) > 0, counts.argmax(axis=1), fallback)
+    correct = total = 0
+    for index in indices:
+        timeline_index, start = windows.locate(int(index))
+        timeline = windows.timelines[timeline_index]
+        target = slice(start + windows.input_len, start + windows.input_len + windows.horizon)
+        predicted = rule[timeline.cycle_codes[target].astype(np.int64)]
+        correct += int((predicted == timeline.labels[target]).sum())
+        total += len(predicted)
+    return correct / max(total, 1)
 
 
 def _binary_roc_curve(

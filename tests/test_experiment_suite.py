@@ -200,3 +200,25 @@ def test_image_encoder_study_adds_a_frozen_arm_without_the_image_gat() -> None:
     assert runs["pretrained-frozen-no-gat"] == {"pretrained": True, "freeze_image_encoder": True, "image_gat": False}
     # every other arm keeps the paper's GAT, so only the GAT differs from pretrained-frozen
     assert all(overrides["image_gat"] for name, overrides in runs.items() if name != "pretrained-frozen-no-gat")
+
+
+def test_fixes_study_changes_one_setting_per_arm_from_the_main_runs() -> None:
+    from omnifuser.cli import protocol_kwargs
+    from omnifuser.train import model_config
+
+    args = build_parser().parse_args(["--study", "fixes", "--pretrained", "--freeze-image-encoder"])
+    common = protocol_kwargs(args)["config_overrides"]
+    runs = {run["name"]: run["overrides"] for run in suite._experiment_runs("fixes")}
+    assert next(iter(runs)) == "reference" and runs["reference"] == {}
+
+    def config(overrides: dict[str, object]) -> dict[str, object]:
+        built = model_config(d_model=32, input_len=96, horizon=96, image_encoder="efficientnet_b0",
+                             prediction_head="direct", config_overrides={**common, **overrides})
+        return vars(built)
+
+    reference = config({})
+    for name, overrides in runs.items():
+        changed = {key for key, value in config(overrides).items() if reference[key] != value}
+        # an override equal to the protocol's value (e.g. the crop's height of 128) changes nothing
+        expected = {key for key, value in overrides.items() if reference[key] != value}
+        assert changed == expected and (expected or name == "reference"), name

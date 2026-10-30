@@ -31,6 +31,11 @@ SENSITIVITY_AXES = (
     ("refinement-rounds", "num_fusion_layers", "n", (1, 2, 3)),
 )
 DEFAULT_MODALITY_DROPOUT_RATES = (0.2,)
+# The photo setting of the "fixes" study's photo arm, chosen by scripts/photo_probe.py
+# (FIXES_AND_VALIDATION.md §8.1): the band around the cutting edge, which every photo
+# has inside rows 0.51-0.68; higher resolutions did not help the frozen encoder.
+FIX_PHOTO_CROP = (0.30, 0.0, 0.85, 1.0)
+FIX_PHOTO_SIZE = (128, 640)
 SUMMARY_METRICS = (
     "classification_accuracy",
     "classification_precision_macro",
@@ -175,6 +180,29 @@ def _image_source_runs() -> list[dict[str, Any]]:
     ]
 
 
+def _fixes_runs() -> list[dict[str, Any]]:
+    """Stage 1 of the classification fixes: each arm changes one thing from the main runs.
+
+    Run once per seed (TRAINING_RUNBOOK_RUCHE_FIXES.md): single runs of one setting
+    differ by up to 0.017 in accuracy, as much as most effects being tested, so every arm
+    is compared with the reference over the same seeds. "finetuned-encoder" and
+    "no-image-gat" repeat the two best single-seed results of the image-encoder study.
+    """
+    height, width = FIX_PHOTO_SIZE
+    arms: tuple[tuple[str, dict[str, Any]], ...] = (
+        ("reference", {}),
+        ("modality-dropout-0-2", {"modality_dropout": 0.2}),
+        ("metadata-position", {"metadata": "position"}),
+        ("metadata-none", {"metadata": "none"}),
+        ("revin", {"revin": True}),
+        ("coral", {"class_loss": "coral"}),
+        ("photo-edge-crop", {"image_crop": FIX_PHOTO_CROP, "image_height": height, "image_width": width}),
+        ("no-image-gat", {"image_gat": False}),
+        ("finetuned-encoder", {"freeze_image_encoder": False}),
+    )
+    return [{"name": name, "group": "fixes", "overrides": overrides} for name, overrides in arms]
+
+
 def _experiment_runs(
     study: str,
     baseline: dict[str, Any] | None = None,
@@ -193,6 +221,8 @@ def _experiment_runs(
         return _image_encoder_runs()
     if study == "image-source":
         return _image_source_runs()
+    if study == "fixes":
+        return _fixes_runs()
     # In the combined study the ablation full model is the shared reference arm.
     return (
         _ablation_runs()
@@ -279,6 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
             "image-encoder",
             "image-source",
             "deduplication",
+            "fixes",
         ),
         default="ablations",
         help=(
@@ -287,7 +318,8 @@ def build_parser() -> argparse.ArgumentParser:
             "the image GAT; 'image-source' compares "
             "leak-free images: previous-pass photos and spectrograms of each window's raw "
             "input force; 'deduplication' compares "
-            "--dedup-identical-forces True and False"
+            "--dedup-identical-forces True and False; 'fixes' runs the classification fixes "
+            "(one change per arm; run it once per seed)"
         ),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))

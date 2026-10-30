@@ -322,7 +322,11 @@ forecasting effect.
 ## 5. Steps to rectify classification
 
 The fixes started from this plan, and their validation, are recorded in
-[`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md).
+[`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md); the training runs they need are planned in
+[`TRAINING_RUNBOOK_RUCHE_FIXES.md`](TRAINING_RUNBOOK_RUCHE_FIXES.md). Two findings there qualify
+this section: single runs of one configuration differ by up to 0.017 in accuracy, so the
+modality-dropout gain of Step 6 is within noise; and frozen photo features gain nothing from
+higher resolution, so Step 2's lever is training the encoder, with a crop of the cutting edge.
 
 Each step lists the change, where to make it, the expected effect, and how to
 verify it. Items marked (F) are specified in detail in

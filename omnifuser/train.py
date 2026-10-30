@@ -38,7 +38,9 @@ from omnifuser.evaluation import (
     baseline_report,
     classification_report,
     cumulative_horizon_report,
+    photo_change_report,
     regression_report,
+    run_number_baseline_accuracy,
     softmax_probabilities,
 )
 from omnifuser.model_bundle import make_bundle
@@ -176,7 +178,9 @@ def image_bank_for(
     # frozen backbone, the bank holds each photo's features instead of its pixels.
     if spectrogram is not None:
         return None
-    bank = ImageBank.from_timelines(timelines, config.image_height, config.image_width)
+    bank = ImageBank.from_timelines(
+        timelines, config.image_height, config.image_width, config.image_crop
+    )
     if config.freeze_image_encoder:
         return FrozenFeatureBank(bank, model.image_branch.encoder, device)
     return bank
@@ -470,11 +474,15 @@ def _run_epoch(
         result["paper_horizons"] = cumulative_horizon_report(
             prediction_array, target_array, probability_array, targets
         )
+        shown_label_array = torch.cat(shown_labels).numpy()
         result["baselines"] = baseline_report(
             torch.cat(last_input_forces).numpy(),
             target_array,
-            torch.cat(shown_labels).numpy(),
+            shown_label_array,
             targets,
+        )
+        result["photo_change"] = photo_change_report(
+            probabilities.argmax(axis=-1), targets, shown_label_array
         )
         prediction_array = prediction_array * scale[None, None, :] + mean[None, None, :]
         target_array = target_array * scale[None, None, :] + mean[None, None, :]
@@ -615,6 +623,7 @@ def train_fold(
         height=config.image_height,
         width=config.image_width,
         bank=image_bank,
+        crop=config.image_crop,
     )
     loader_options: dict[str, Any] = {
         "num_workers": num_workers,
@@ -859,6 +868,9 @@ def train_fold(
     )
     if test_predictions is None:
         raise RuntimeError("test evaluation did not return predictions")
+    test_metrics["baselines"]["run_number_class_accuracy"] = run_number_baseline_accuracy(
+        train_timelines, test_data
+    )
     test_seconds = time.perf_counter() - test_started
     tracker.log(
         split="test",

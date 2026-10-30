@@ -19,8 +19,11 @@ shapes and scales, not results.
 model or the training loop, rerun the trace script and update this document
 (§20).
 
-Last verified: 2026-10-26, against the code after the image-GAT switch and
-the saved-model files (146 tests).
+Last verified: 2026-10-30, against the code after the classification-fix
+options (`--metadata`, `--revin`, `--class-loss`, `--image-size`,
+`--image-crop`) and the run-number and photo-change metrics (168 tests).
+Every new option defaults to the main runs' behaviour, so the numbers of the
+protocol below are unchanged.
 
 ---
 
@@ -445,6 +448,16 @@ $$
 T10R1B1 is RGB (127, 139, 137) → $(0.057,\,0.398,\,0.583)$. `NO_IMAGE`
 returns zeros.
 
+**Crop and size (fix experiment, `--image-crop TOP LEFT BOTTOM RIGHT`,
+`--image-size H W`).** `data.load_photo` first crops the photo to the given
+fractions of its height and width, then resizes to $W\times H$. Without a
+crop (the protocol) the result is identical to the above. The `fixes` suite's
+photo arm uses the band of rows 0.30-0.85 of the full width at 128 × 640.
+The cutting edge lies at rows 0.51-0.68 in all 512 photos, inside the band
+(`scripts/photo_probe.py`). The band is 1550 × 275 pixels in most photos, so
+the reduction is 2.1× instead of 3.9×. The crop and size are part of
+`ModelConfig`, so saved models and `omnifuser predict` reproduce them.
+
 ### 9.2 Cached frozen features (the protocol)
 
 **Class:** `train.FrozenFeatureBank(bank, encoder, device)`; `tensor(path)`.
@@ -601,6 +614,24 @@ $$
 The code tables have 128 (run), 8 (block) and 16 (position) rows, and codes
 are clipped to the table size. Parameters: value MLP 1,184 + tables 4,864 =
 **6,048**. Example batch: $E$ has mean 0.37 and std 1.80.
+
+**Metadata switch (fix experiment, `--metadata`).** `all` (protocol) adds the
+three codes. `position` drops $e^{\text{cyc}}$ and $e^{\text{blk}}$ (run and
+block) and keeps $e^{\text{rel}}$; `none` drops all three. The tables are then
+not created, in this embedding and in the image branch (§10.3): `position`
+has 8,704 fewer parameters (4,174,896), `none` 9,728 fewer (4,173,872). The
+run number alone predicts 71 % of the classes on held-out tools
+(`FINAL_REPORT_REPRODUCTION.md` §4.4), and this switch removes that
+shortcut.
+
+**RevIN (fix experiment, `--revin`).** Before the embedding, each input
+window is normalized by its own per-channel mean $\mu_w$ and spread
+$\sigma_w=\sqrt{\operatorname{Var}_t(z)+10^{-5}}$, then scaled by a learnable
+$(\gamma,\beta)\in\mathbb{R}^3$: $\tilde z_t=\gamma\odot(z_t-\mu_w)/\sigma_w+\beta$.
+The force forecast is mapped back: $\hat Y=(\hat Y'-\beta)/\gamma\odot\sigma_w+\mu_w$
+(Kim et al., ICLR 2022; 6 extra parameters). The sensor stream then sees no
+tool-specific force level. A constant shift of the input shifts the forecast
+by the same amount and leaves the class logits unchanged (tested).
 
 ### 10.2 MRTE: four RTD blocks (paper Eqs. 2-3)
 
@@ -780,6 +811,15 @@ Only the **last step** of the fused sequence is used: $f=F^{(n)}_{:,T-1}\in\math
 | `paper_literal` | one step $W_ff+b$, repeated $P$ times | same | 198 |
 | `lead_conditioned` | $\mathrm{GELU}(W[f;e_j])$ for each lead $j$ (learned lead embedding $e_j$), then $W_f$ | same | 5,350 |
 
+**Ordinal head (fix experiment, `--class-loss coral`, direct head only).** The
+class head gives one score per lead, $s=\mathrm{reshape}(W_cf+b_c)\in\mathbb{R}^{B\times P}$,
+$W_c\in\mathbb{R}^{96\times32}$, and each lead has two ordered thresholds
+$\theta_{j1}$ and $\theta_{j2}=\theta_{j1}+\operatorname{softplus}(g_j)$ (start
+−0.5 and +0.5). Then $P(y>k)=\sigma(s_j-\theta_{jk})$ and
+$P(y=k)=P(y>k-1)-P(y>k)$. The model returns $\log P(y=k)$ as `class_logits`,
+so softmax, argmax and every metric treat them exactly like logits. The head
+has 3,360 parameters instead of 9,504 (total 4,177,456).
+
 ### 10.8 Parameter budget
 
 | Block | Parameters | Trains in the protocol |
@@ -824,6 +864,11 @@ $$
 
 weighted 1:1 (the paper gives no weights). Alignment and orthogonality are
 detached and only logged.
+
+With `--class-loss coral` the cross-entropy is replaced by CORAL's binary
+cross-entropy on the two events "class above sharp" and "class above used",
+summed over the two and averaged over $B\times P$:
+$\frac{1}{BP}\sum_{b,j}\sum_{k=1}^{2}\mathrm{BCE}\big(\sigma(s_{bj}-\theta_{jk}),\,[y_{bj}>k-1]\big)$.
 
 **Example batch:** MSE 2.606 (the untrained model predicts about 0, while
 T10's targets sit near $z\approx-1.8$ in $F_x$), cross-entropy 1.109 (close to
@@ -937,6 +982,8 @@ pairs, with confusion matrix $\mathbf{C}$ (rows = true class):
 | Last-value baseline | $\hat Y_{t+j}=z_t$, the last input step | `baseline_report` |
 | Zero baseline | $\hat Y=0$, the training mean | same |
 | Persistence baseline | predict `shown_label` for every lead | same |
+| Run-number baseline | each target step's class from its run number, by the training tools' majority class per run (`baselines.run_number_class_accuracy`, test only) | `run_number_baseline_accuracy` |
+| Photo-change accuracy | accuracy on target steps whose label differs from the shown photo's, and on the others (`photo_change`) | `photo_change_report` |
 
 **Saved per fold** (`output_dir/`): `fold-Tn.json` (settings, normalizer,
 window counts, config, history, all metrics; written last as the completion
@@ -992,6 +1039,7 @@ exactly.
 | `image-encoder` | 4 | from scratch / pretrained fine-tuned / pretrained frozen / pretrained frozen without the image GAT |
 | `image-source` | 4 | previous-pass photo (lag 1), spectrogram with the main encoder, fine-tuned, from scratch |
 | `deduplication` | 2 | training with duplicates merged / kept, scored on the same deduplicated test data |
+| `fixes` | 9 | the classification fixes, one change per arm: reference, modality dropout 0.2, metadata position, metadata none, RevIN, CORAL, photo edge crop at 128 × 640, no image GAT, fine-tuned encoder. Run once per seed (`TRAINING_RUNBOOK_RUCHE_FIXES.md`) |
 
 Each variant is a full `run_cross_validation` into
 `<output-root>/<study>/<run-id>/<group>/<variant>/`. `suite.json` records the
@@ -1045,6 +1093,11 @@ settings are refused.
 | `--ablation` | `none` | model | 9 paper variants (§10) |
 | `--modality-dropout` | 0 | `_mask_modalities` | training-time masking |
 | `--prediction-head` | `direct` | heads | §10.7 |
+| `--metadata` | `all` | `TemporalEmbedding`, `ImageBranch` | run, block and position codes; `position` or `none` drop them (§10.1) |
+| `--revin` | off | `OmniFuser.forward` | per-window instance normalization and de-normalization of the forecast (§10.1) |
+| `--class-loss` | `ce` | direct head, `multitask_loss` | `coral`: ordinal head and loss (§10.7, §11) |
+| `--image-size H W` | 128 384 | `ImageBank`, `ModelConfig` | photo input size (§9.1) |
+| `--image-crop T L B R` | none | `data.load_photo` | crop before resizing (§9.1) |
 | `--epochs`, `--batch-size`, `--learning-rate`, `--accumulation-steps` | 5, 32, 1e-4, 1 / 30, 32, 1e-4, 1 | `train_fold` | optimization |
 | `--select-best` | on | `train_fold` | best-validation epoch or last |
 | `--num-workers` | 0 / 4 | DataLoaders | background loading |
@@ -1080,7 +1133,8 @@ settings are refused.
 | `data.leave_one_tool_out_folds` | tools | cyclic validation tool | `ToolFold`s |
 | `data.ForceNormalizer.fit` / `transform` | timelines / values | parallel mean/variance; $z=(x-\mu)/\sigma$ | normalizer / $z$ |
 | `data.WindowDataset` (`locate`, `__getitem__`) | timelines, normalizer, $T,P,s$ | window index → slices | item dict (§8) |
-| `data.image_tensor` | path | decode, resize, normalize | $(3,H,W)$ |
+| `data.load_photo` | path, $H,W$, crop | decode, optional crop, resize | PIL image |
+| `data.image_tensor` | path | decode, crop, resize, normalize | $(3,H,W)$ |
 | `data.ImageBank` (`tensor`) | paths | decode once, uint8 cache; normalize on access | $(3,H,W)$ |
 | `data.collate_windows`, `_photo_batch` | items, bank | stack; per-window distinct images and step indices; padding | batch dict |
 | `spectrogram.SpectrogramSettings` | window, hop, rate | validate | settings |
@@ -1089,6 +1143,8 @@ settings are refused.
 | `spectrogram.ForceWindowDataset` (`segments`, `__getitem__`) | as `WindowDataset` + raw passes | split input at passes, build images | item with `images`, `image_index` |
 | `models.sinusoidal_position_encoding` | $T$, $d$ | sin/cos table | $(T,d)$ |
 | `models._metadata_code` | table, codes | clip, look up | $(B,T,d)$ |
+| `models._metadata_tables`, `_add_metadata` | config / $x$, tables, codes | the tables `--metadata` keeps; add their codes | tables / $(B,T,d)$ |
+| `models.ordinal_log_probabilities` | $(\dots,K-1)$ cumulative logits | differences of exceedance probabilities | $(\dots,K)$ log-probabilities |
 | `models.TemporalEmbedding` | force, codes | §10.1 | $(B,T,d)$ |
 | `models.RTDBlock` | $(B,T_{l-1},d)$ | downsample, decompose, restore (§10.2) | (down, restored) |
 | `models.MultiResolutionTemporalExtractor` | $E$ | 4 blocks, sum of restored | $(B,T,d)$ |
@@ -1098,7 +1154,7 @@ settings are refused.
 | `models.CrossModalFusionLayer` (`_decompose`, `_landmarks`, `_hybrid_gate`) | $Z^r,Z^i$ | §10.5 | fused, alignment, orthogonality |
 | `models.ConcatenationFusionLayer` | $Z^r,Z^i$ | Linear on concatenation | fused |
 | `models.OmniFuser` (`_mask_modalities`, `forward`) | batch tensors | §10 | force, logits, diagnostics |
-| `models.multitask_loss` | outputs, targets | MSE + CE | total, components |
+| `models.multitask_loss` | outputs, targets | MSE + CE (or CORAL BCE) | total, components |
 | `models.classification_metrics` | logits, targets | confusion-based scores (tensor helper) | dict |
 | `train.model_config` | dims, overrides, spectrogram | build `ModelConfig` (+7 channels) | config |
 | `train.FrozenFeatureBank` | `ImageBank`, encoder, device | features of every photo + blank, once | `tensor(path)` → $(1280,)$ |
@@ -1118,6 +1174,8 @@ settings are refused.
 | `evaluation.regression_report` | z-scored predictions, targets, $\mu,\sigma$ | physical and z-scored errors | report |
 | `evaluation.cumulative_horizon_report` | predictions, targets, probabilities | metrics over leads $1..h$ | per-horizon dict |
 | `evaluation.baseline_report` | last input, targets, shown labels | last-value, zero, persistence | dict |
+| `evaluation.photo_change_report` | predicted classes, targets, shown labels | accuracy where the label differs from the photo's, and elsewhere | dict |
+| `evaluation.run_number_baseline_accuracy` | training timelines, test dataset | majority class per run number, applied to target steps | accuracy |
 | `cross_validation.discover_tools` | folder | tool names from photo files | 10 tools |
 | `cross_validation._load_finished_fold` | folder, expected settings | strict reuse check | result or None |
 | `cross_validation._summarize_*`, `_aggregate_out_of_fold` | fold results | means/std, pooled metrics, mean ROC | summary dicts, ROC file |

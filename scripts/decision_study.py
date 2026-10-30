@@ -97,7 +97,7 @@ def _validation_predictions(run: Path, fold: dict[str, Any], data_dir: Path, cac
     arrays = {"class_probabilities": predictions["class_probabilities"],
               "class_targets": predictions["class_targets"]}
     output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output, **arrays)
+    np.savez_compressed(output, **arrays)  # pyright: ignore[reportArgumentType]
     return arrays
 
 
@@ -123,7 +123,7 @@ def study_run(run: Path, tune_offsets: bool, data_dir: Path | None, cache: dict[
     summary: dict[str, Any] = {"folds": len(next(iter(per_fold.values()))), "decoders": {}}
     base = [fold["accuracy"] for fold in per_fold["argmax"]]
     for name, folds in per_fold.items():
-        entry = {key: float(np.mean([fold[key] for fold in folds])) for key in REPORTED}
+        entry: dict[str, Any] = {key: float(np.mean([fold[key] for fold in folds])) for key in REPORTED}
         entry["accuracy_per_fold"] = [fold["accuracy"] for fold in folds]
         if name != "argmax":
             diff = np.asarray(entry["accuracy_per_fold"]) - np.asarray(base)
@@ -140,7 +140,8 @@ def _wilcoxon(diff: np.ndarray) -> float | None:
     if not np.any(np.abs(diff) > 1e-12):
         return None
     from scipy.stats import wilcoxon
-    return float(wilcoxon(diff).pvalue)
+    # SciPy's type stubs do not declare the result's fields.
+    return float(wilcoxon(diff).pvalue)  # pyright: ignore[reportAttributeAccessIssue]
 
 
 def main() -> None:

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from omnifuser.config import ModelConfig
 from omnifuser.data import (
     CLASS_NAMES,
     leave_one_tool_out_folds,
@@ -68,6 +69,10 @@ def _summarize_folds(results: list[dict[str, Any]]) -> dict[str, Any]:
         "force_mae_normalized": ("test", "regression", "normalized", "mae"),
         "force_mse_normalized": ("test", "regression", "normalized", "mse"),
         "force_rmse_normalized": ("test", "regression", "normalized", "rmse"),
+        # Reference points for the classification accuracy (None in older folds).
+        "persistence_class_accuracy": ("test", "baselines", "persistence_class_accuracy"),
+        "run_number_baseline_accuracy": ("test", "baselines", "run_number_class_accuracy"),
+        "classification_accuracy_label_changed": ("test", "photo_change", "accuracy_label_changed"),
     }
     summary: dict[str, Any] = {"folds": len(results), "metrics": {}}
     for name, path in scalar_paths.items():
@@ -320,6 +325,15 @@ def _aggregate_out_of_fold(
     return aggregate
 
 
+def _rebuilt_config(recorded: dict[str, Any]) -> dict[str, Any] | None:
+    """A fold's recorded config rebuilt as ``ModelConfig``: a JSON list then equals a
+    tuple, and a field added after the fold was written takes its default."""
+    try:
+        return asdict(ModelConfig(**recorded))
+    except (TypeError, ValueError):
+        return None
+
+
 def _load_finished_fold(
     output_dir: Path,
     test_tool: str,
@@ -350,7 +364,7 @@ def _load_finished_fold(
             artifact_path = (output_dir / artifact).resolve()
             if not artifact_path.is_relative_to(output_dir.resolve()) or not artifact_path.is_file():
                 return None
-        if result["config"] != expected_config:
+        if result["config"] != expected_config and _rebuilt_config(result["config"]) != expected_config:
             return None
         if result.get("spectrogram") != expected_spectrogram:
             return None

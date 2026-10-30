@@ -26,7 +26,7 @@ reproduce the paper's scores.
 | File | Responsibility |
 |---|---|
 | `__init__.py` | Version `0.1.0`. On Windows it guards against a stuck WMI service: torch's import asks `platform` for the machine type, which queries WMI; if WMI does not answer within 5 s, `platform` uses its own fallback instead of blocking forever. |
-| `config.py` | `ModelConfig`, a frozen dataclass holding every model dimension and variant switch. It validates all values when constructed (§4.8). |
+| `config.py` | `ModelConfig`, a frozen dataclass holding every model dimension and variant switch, including the classification-fix options `metadata`, `revin`, `class_loss` and `image_crop` (defaults: the main runs). It validates all values when constructed (§4.8). |
 | `data.py` | Loading and validating the MAT/CSV/JPG files, duplicate merging, pass trimming, optional decimation, per-pass pooling, per-tool timelines, folds, the training-only normalizer, windowing, the image cache, and batch collation (§3). |
 | `models.py` | The model (§4): temporal embedding, RTD/MRTE, image encoder and temporal GAT, C2F fusion, recursive refinement, prediction heads, modality masking, paper ablations, the multitask loss, and a tensor-level classification-metric helper. |
 | `train.py` | `train_fold`: one held-out-tool run; `model_config`, the configuration builder shared with cross-validation; `FrozenFeatureBank`, each photo's frozen-backbone features computed once per fold; the array/ROC save helpers (§5). |
@@ -44,14 +44,20 @@ reproduce the paper's scores.
 | Script | Purpose |
 |---|---|
 | `train_lightning.py` | Full 10-fold cross-validation (`run_cross_validation`). Defaults: CUDA, direct head, horizon 96. `--dedup-identical-forces True` or `False` is required (no default), so every full run states its duplicate handling. It is a plain PyTorch job that runs in a Lightning AI Studio; it does not use the Lightning `Trainer`. |
-| `run_experiment_suite.py` | The paper studies (ablations, sensitivity, missing-modality, or all three), the image-encoder study (from scratch, pretrained fine-tuned, pretrained frozen, pretrained frozen without the image GAT), and the optional image-source study (previous-pass photo at image lag 1; input-window spectrograms at lag 0 with the main runs' frozen pretrained encoder, fine-tuned and from scratch) and `deduplication` comparison. Each variant is a resumable 10-fold run. Writes `suite.json` and `suite-summary.csv` (§9). |
+| `run_experiment_suite.py` | The paper studies (ablations, sensitivity, missing-modality, or all three), the image-encoder study (from scratch, pretrained fine-tuned, pretrained frozen, pretrained frozen without the image GAT), and the optional image-source study (previous-pass photo at image lag 1; input-window spectrograms at lag 0 with the main runs' frozen pretrained encoder, fine-tuned and from scratch) and `deduplication` comparison. Each variant is a resumable 10-fold run. Writes `suite.json` and `suite-summary.csv` (§9). The `fixes` study trains the 9 single-change arms of `TRAINING_RUNBOOK_RUCHE_FIXES.md` (run once per seed). |
 | `train_local.py` | One-fold smoke test. Defaults: CPU, batch 1, horizon 96, windows capped at 2/1 unless `--full`. |
 | `eda.py` | The exploratory data analysis behind `EDA.md`. Writes tables, a JSON summary, and 12 figures. |
 | `compare_with_paper.py` | Prints cumulative per-horizon metrics next to Tables IV-V and the persistence baselines. |
 | `model_summary.py` | Per-block parameter counts and output shapes; `--check` compares the total with a count derived from the dimensions. |
 | `end_to_end_trace.py` | Runs the pipeline on fold T10 of the real data with an untrained model and prints every number quoted in `END_TO_END_SIM.md` (also as JSON); redraws `docs/end_to_end/*.png`. |
+| `decision_study.py` | Scores the post-hoc decision rules (`omnifuser/decision.py`) on every finished run's saved test predictions; `--tune-offsets` fits class offsets on each fold's validation tool from its saved model. |
+| `ensemble_runs.py` | Averages the class probabilities and forecasts of runs with identical test windows (seeds or replicates) and scores the average against its members. |
+| `fixes_analysis.py` | Seed-averaged, fold-paired comparison of the `fixes` study's arms with its reference, with the pre-declared decision rules; prints the stage-2 flags. |
+| `photo_probe.py` | Linear probe of frozen EfficientNet-B0 features at several photo sizes and crops (leave-one-tool-out); locates the cutting edge in every photo. |
+| `window_diagnostics.py` | The level-offset share of forecast error; with the data, the run-number baseline, persistence, the input-level anchor and the photo-change accuracy per fold. |
+| `phase_study.py` | Re-scores a run's saved fold models at other evaluation strides, to test the phase-locking explanation of the MSE-horizon curve. |
 
-### Tests `tests/`: 153 tests
+### Tests `tests/`: 168 tests
 
 | File | Tests | What it verifies |
 |---|---|---|
@@ -59,12 +65,14 @@ reproduce the paper's scores.
 | `test_alignment_patch.py` | 16 | Pooling, image lag, shown-label exposure, the image cache, ALS modes, modality masking statistics, BatchNorm freezing, gradients for every option, and an end-to-end fold with interruption and resume. |
 | `test_block12_integration.py` | 24 | Architecture flags reach `ModelConfig`; invalid dimensions fail early; the full compact model runs with all three heads. `--dedup-identical-forces` parses True/False, the bare flag and every alias for `train`, `inspect` and the suite, and rejects ambiguous values. |
 | `test_data.py` | 13 | Window shapes; exact input/target alignment; windows never mix tools; class change at a pass boundary; lag-1 photo with current-pass label; fold partitions; pooled normalizer statistics; collation; duplicate merging; span trimming and its documented limit. |
-| `test_experiment_suite.py` | 9 | Ablation list; the 8 sensitivity axes and their field mapping; skipping baseline-valued points; dropout arms; manifest, summary CSV, resume and failure handling (mocked trainer); refusal of changed settings. The deduplication study runs both settings with everything else shared, keeps the flag out of `ModelConfig`, and fills the summary columns. |
+| `test_experiment_suite.py` | 10 | Ablation list; the 8 sensitivity axes and their field mapping; skipping baseline-valued points; dropout arms; manifest, summary CSV, resume and failure handling (mocked trainer); refusal of changed settings. The deduplication study runs both settings with everything else shared, keeps the flag out of `ModelConfig`, and fills the summary columns. Each arm of the `fixes` study changes exactly its own config fields. |
 | `test_interruption.py` | 2 | A truncated resume checkpoint is ignored and the fold restarts. A job killed while saving the final checkpoint leaves no fold JSON, so the fold is not reused, and the rerun continues from the per-epoch resume file. No `.tmp` files remain. |
 | `test_spectrogram.py` | 6 | Window images: the STFT and global-spectrum maps share frequency rows (a sine lands on its row in both), every map is standardized, a segment shorter than one STFT frame still works; each step points at the image of its pass segment; changing any raw sample outside a window's input leaves its images unchanged, changing one inside changes them; collation pads unreferenced image slots; raw passes must match the pooled timeline, and pooling after loading equals the loader's; spectrogram runs refuse image lag 1, train end to end with `image_channels` 7 and never reuse photo folds; a frozen pretrained encoder keeps its weights and BatchNorm statistics while the image generator trains, and photos get no generator. |
 | `test_runtime.py` | 5 | The CPU-thread rule (override, SLURM allocation, `OMP_NUM_THREADS`, idle CPUs, never zero); the idle-CPU measurement is bounded; the WMI guard switches `platform` to its fallback when a (simulated) WMI call never returns and leaves it alone otherwise; a frozen backbone gives identical features in training mode, and cached features give the same model outputs as pixels; a frozen photo fold trains end to end on cached features. |
 | `test_model_bundle.py` | 7 | Every finished fold's `fold-Tn.pt` loads with the safe loader and `predict` on it reproduces the fold's test scores; the same for exported photo, frozen-feature (loading never downloads weights) and spectrogram models; older checkpoints are refused by `load_model` and converted by `export`; folds must be chosen in multi-fold folders; the `export` and `predict` commands. |
 | `test_decision.py` | 7 | Monotone and monotone-ordinal decoding equal brute force over all non-decreasing sequences; flicker removal; the ordinal median; validation offsets recover a biased boundary and stay zero without gain; counting of changing and decreasing windows. |
+| `test_fixes.py` | 12 | The classification-fix options: each `--metadata` mode removes exactly its codes (state-dict keys and output invariance); RevIN shifts the forecast with the input level and leaves the class logits unchanged; ordinal probabilities equal differences of exceedances; the CORAL head gives valid, ordered probabilities and its loss equals the manual binary cross-entropy; the photo crop is applied before resizing (also in the image cache); a config survives a JSON round trip and older configs take the new defaults; the CLI flags reach the config; the photo-change split and the run-number baseline; a fold trains, saves, reloads and re-predicts with every option, also at another evaluation stride. |
+| `test_fixes_analysis.py` | 2 | The fixes study's seed averaging, paired fold comparison and decision rules on synthetic runs (an arm meeting its rule is adopted, one that does not is rejected). |
 | `test_tracking.py` | 4 | JSONL/CSV logging; corrupt manifest; refusal of mixed settings; resume on different hardware. |
 | `test_alignment_fixes.py` | 3 | Sample-weighted partial gradient accumulation; strict completed-fold reuse (including retraining folds without missing-modality results); dataset signatures. |
 | `test_cross_validation.py` | 4 | Pooled out-of-fold metrics and mean ROC; missing-AUC folds; weighted and paper-horizon summaries; per-mode summaries. |
@@ -520,7 +528,7 @@ Static checks (`pyproject.toml` pins both configurations):
 | `pyright` (omnifuser, scripts, tests) | 0 errors |
 | VS Code diagnostics for the open project files | Clean (Pylance only analyzes open files; the `pyright` row covers the whole tree) |
 
-`pytest` passes all 153 tests. Three deliberately injected defects each make a
+`pytest` passes all 168 tests. Three deliberately injected defects each make a
 test fail: an off-by-one target window, a normalizer fitted on all tools, and
 a sensor mask that does nothing.
 

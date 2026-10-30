@@ -185,6 +185,7 @@ def test_image_gat_switch_sends_encoder_features_straight_to_fusion() -> None:
     with torch.no_grad():
         encoded = branch.encoder(images)
         gathered = torch.gather(encoded, 1, indices.unsqueeze(-1).expand(-1, -1, encoded.shape[-1]))
+        assert branch.cycle is not None and branch.batch is not None and branch.relative is not None
         expected = (gathered + branch.position_encoding[:24][None]
                     + branch.cycle.weight[0] + branch.batch.weight[0] + branch.relative.weight[0])
         assert torch.allclose(branch(images, indices), expected, atol=1e-6)
