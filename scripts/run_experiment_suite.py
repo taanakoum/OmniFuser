@@ -203,6 +203,23 @@ def _fixes_runs() -> list[dict[str, Any]]:
     return [{"name": name, "group": "fixes", "overrides": overrides} for name, overrides in arms]
 
 
+def _splits_runs() -> list[dict[str, Any]]:
+    """How much the fold split explains: the protocol against two easier splits.
+
+    Everything except the split is the main runs' protocol. Run once per seed
+    (TRAINING_RUNBOOK_RUCHE_FIXES.md); the test sets differ, so compare the arms' means
+    over seeds, not fold by fold.
+    """
+    return [
+        {"name": name, "group": "splits", "split": split}
+        for name, split in (
+            ("leave-one-tool-out", "tool"),
+            ("within-tool-blocks", "block"),
+            ("random-windows", "window"),
+        )
+    ]
+
+
 def _experiment_runs(
     study: str,
     baseline: dict[str, Any] | None = None,
@@ -223,6 +240,8 @@ def _experiment_runs(
         return _image_source_runs()
     if study == "fixes":
         return _fixes_runs()
+    if study == "splits":
+        return _splits_runs()
     # In the combined study the ablation full model is the shared reference arm.
     return (
         _ablation_runs()
@@ -310,6 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
             "image-source",
             "deduplication",
             "fixes",
+            "splits",
         ),
         default="ablations",
         help=(
@@ -319,7 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
             "leak-free images: previous-pass photos and spectrograms of each window's raw "
             "input force; 'deduplication' compares "
             "--dedup-identical-forces True and False; 'fixes' runs the classification fixes "
-            "(one change per arm; run it once per seed)"
+            "(one change per arm; run it once per seed); 'splits' compares leave-one-tool-out "
+            "with within-tool blocks and random windows"
         ),
     )
     parser.add_argument("--data-dir", type=Path, default=Path("Nonastreda_Data"))
@@ -483,6 +504,8 @@ def main(argv: list[str] | None = None) -> Path:
         if eval_dedup_identical_forces is None:
             eval_dedup_identical_forces = dedup_identical_forces
         changed_settings.update(data_overrides)
+        if "split" in spec:
+            changed_settings["split"] = spec["split"]
         run_record: dict[str, Any] = {
             "status": "running",
             "group": group,
@@ -503,6 +526,8 @@ def main(argv: list[str] | None = None) -> Path:
         run_protocol["config_overrides"] = config_overrides
         run_protocol["image_lag"] = image_lag
         run_protocol["spectrogram"] = spectrogram
+        if "split" in spec:
+            run_protocol["split"] = str(spec["split"])
         try:
             summary = run_cross_validation(
                 data_dir=args.data_dir,

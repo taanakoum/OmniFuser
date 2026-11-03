@@ -48,3 +48,28 @@ def test_paired_comparison_counts_folds_and_skips_missing_values() -> None:
     assert test["folds_up"] == 2 and test["folds_down"] == 0
     assert abs(test["difference"] - (0.1 + 0.0 + 0.1) / 3) < 1e-12
     assert analysis.paired([None, None], [0.1, 0.2]) is None
+
+
+def test_split_study_compares_each_split_with_leave_one_tool_out_per_seed(tmp_path: Path) -> None:
+    from scripts import split_study
+
+    def write(run: Path, accuracy: float, mse: float) -> None:
+        run.mkdir(parents=True)
+        (run / "cross-validation-results.json").write_text("{}", encoding="utf-8")
+        horizons = {str(h): {"accuracy": accuracy, "precision_macro": accuracy, "mse": mse, "mae": mse / 2}
+                    for h in (12, 24, 36, 48, 60, 72, 84, 96)}
+        for index in range(1, 11):
+            fold = {"test": {"paper_horizons": horizons, "classification_accuracy": accuracy,
+                             "baselines": {"persistence_class_accuracy": 0.9}},
+                    "modality_evaluations": {"full": {"train": {"classification_accuracy": 0.9}}},
+                    "window_counts": {"train": 1000, "test": 40}}
+            (run / f"fold-X{index}.json").write_text(json.dumps(fold), encoding="utf-8")
+
+    for seed, shift in (("s42", 0.0), ("s142", 0.01)):
+        write(tmp_path / seed / "splits" / "leave-one-tool-out", 0.67 + shift, 0.80)
+        write(tmp_path / seed / "splits" / "within-tool-blocks", 0.80 + shift, 0.60)
+    result = split_study.analyse(tmp_path)
+    blocks = result["summary"]["within-tool-blocks"]
+    assert abs(blocks["difference_to_leave_one_tool_out"]["accuracy"]["mean"] - 0.13) < 1e-9
+    assert abs(blocks["difference_to_leave_one_tool_out"]["mse"]["mean"] + 0.20) < 1e-9
+    assert abs(result["paper"]["accuracy"] - 0.866625) < 1e-6

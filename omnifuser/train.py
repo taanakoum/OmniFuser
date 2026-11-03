@@ -28,11 +28,13 @@ from omnifuser.data import (
     ToolTimeline,
     WindowDataset,
     collate_windows,
+    join_adjacent_blocks,
     leave_one_tool_out_folds,
     load_nonastreda,
     make_tool_timelines,
     nonastreda_source_signature,
     pool_records,
+    split_groups,
 )
 from omnifuser.evaluation import (
     baseline_report,
@@ -528,6 +530,7 @@ def train_fold(
     config_overrides: dict[str, Any] | None = None,
     tracker: ExperimentTracker | None = None,
     spectrogram: SpectrogramSettings | None = None,
+    split: str = "tool",
 ) -> dict[str, Any]:
     if epochs < 1 or batch_size < 1 or accumulation_steps < 1:
         raise ValueError("epochs, batch_size and accumulation_steps must be positive")
@@ -539,6 +542,10 @@ def train_fold(
         )
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
+    if split != "tool" and spectrogram is not None:
+        raise ValueError("the block and window splits support photo runs only")
+    if split != "tool" and eval_dedup_identical_forces not in (None, dedup_identical_forces):
+        raise ValueError("the block and window splits need the same duplicate handling for training and evaluation")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -582,15 +589,21 @@ def train_fold(
     source_signature = nonastreda_source_signature(data_dir)
     train_stride = stride if stride is not None else input_len + horizon
     eval_stride = max(train_stride, horizon)
-    folds = {fold.test_tools[0]: fold for fold in leave_one_tool_out_folds([t.tool for t in timelines])}
+    # Each fold name maps to timeline segments: a whole tool (the protocol), or the time
+    # blocks / windows of every tool for the easier splits (data.SPLITS).
+    groups = split_groups(timelines, split, window=input_len + horizon, stride=train_stride)
+    eval_groups = groups if eval_timelines is timelines else split_groups(
+        eval_timelines, split, window=input_len + horizon, stride=train_stride)
+    folds = {fold.test_tools[0]: fold for fold in leave_one_tool_out_folds(list(groups))}
     if test_tool not in folds:
-        raise ValueError(f"unknown test tool {test_tool!r}; choose one of {sorted(folds)}")
+        raise ValueError(f"unknown test fold {test_tool!r}; choose one of {list(folds)}")
     fold = folds[test_tool]
-    timeline_by_tool = {timeline.tool: timeline for timeline in timelines}
-    eval_timeline_by_tool = {timeline.tool: timeline for timeline in eval_timelines}
-    train_timelines = [timeline_by_tool[tool] for tool in fold.train_tools]
-    validation_timelines = [eval_timeline_by_tool[tool] for tool in fold.validation_tools]
-    test_timelines = [eval_timeline_by_tool[tool] for tool in fold.test_tools]
+    train_timelines = (
+        join_adjacent_blocks(groups, fold.train_tools) if split == "block"
+        else [segment for name in fold.train_tools for segment in groups[name]]
+    )
+    validation_timelines = [segment for name in fold.validation_tools for segment in eval_groups[name]]
+    test_timelines = [segment for name in fold.test_tools for segment in eval_groups[name]]
     normalizer = ForceNormalizer.fit(train_timelines)
     config = model_config(
         d_model=d_model,
@@ -652,6 +665,8 @@ def train_fold(
             "train_tools": list(fold.train_tools),
             "validation_tools": list(fold.validation_tools),
             "test_tools": list(fold.test_tools),
+            # Recorded only when used, so leave-one-tool-out runs keep their signature.
+            **({"split": split} if split != "tool" else {}),
         },
         "preprocessing": {
             "label_column": label_column,
@@ -971,6 +986,7 @@ def train_fold(
     )
     result: dict[str, Any] = {
         "test_tool": test_tool,
+        "split": split,
         "validation_tool": fold.validation_tools[0],
         "train_tools": list(fold.train_tools),
         "prediction_head": config.prediction_head,

@@ -295,6 +295,9 @@ from most to least likely:
   - Random splits put neighbouring windows of the same tool in training and
     test.
   - This removes exactly the cross-tool gap of §4.2.
+  - This is now measured directly: the `--split block` and `--split window`
+    experiment (`TRAINING_RUNBOOK_RUCHE_FIXES.md` §8.1) repeats the main run
+    with within-tool time blocks and with random windows.
 - **A fine-tuned or larger image model on higher-resolution photos.**
 - **A different label definition or class balance.**
 
@@ -607,7 +610,7 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
 ## 7. Conclusions
 
 1. OmniFuser was implemented faithfully: 35 audited items, 146 tests at the
-   time of the runs (168 now), and 51
+   time of the runs (175 now), and 51
    cluster runs. It trains stably on Nonastreda.
 2. **Forecasting reaches the paper's level** (MAE 0.595 against 0.597).
    - The falling cumulative MSE is an artefact of two things: evaluation

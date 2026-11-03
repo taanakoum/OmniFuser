@@ -244,6 +244,13 @@ def add_protocol_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="model dropout rate (paper default: 0.1)",
     )
+    parser.add_argument(
+        "--split",
+        choices=("tool", "block", "window"),
+        default="tool",
+        help="fold split: leave one tool out (default, the protocol); within-tool time blocks; "
+        "or random windows (easier experiments; fold names B1..B10 / W1..W10)",
+    )
     # Classification fixes (FIXES_AND_VALIDATION.md); the defaults are the main runs.
     parser.add_argument(
         "--metadata",
@@ -307,6 +314,7 @@ class ProtocolKwargs(TypedDict):
     resume: bool
     config_overrides: dict[str, Any]
     spectrogram: SpectrogramSettings | None
+    split: str
 
 
 def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
@@ -342,6 +350,7 @@ def protocol_kwargs(args: argparse.Namespace) -> ProtocolKwargs:
         "resume": args.resume,
         "config_overrides": overrides,
         "spectrogram": spectrogram_settings(args) if args.image_source == "spectrogram" else None,
+        "split": args.split,
     }
 
 

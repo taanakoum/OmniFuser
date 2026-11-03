@@ -222,3 +222,10 @@ def test_fixes_study_changes_one_setting_per_arm_from_the_main_runs() -> None:
         # an override equal to the protocol's value (e.g. the crop's height of 128) changes nothing
         expected = {key for key, value in overrides.items() if reference[key] != value}
         assert changed == expected and (expected or name == "reference"), name
+
+
+def test_splits_study_changes_only_the_split() -> None:
+    runs = suite._experiment_runs("splits")
+    assert [(run["name"], run["split"]) for run in runs] == [
+        ("leave-one-tool-out", "tool"), ("within-tool-blocks", "block"), ("random-windows", "window")]
+    assert all("overrides" not in run and "data_overrides" not in run for run in runs)

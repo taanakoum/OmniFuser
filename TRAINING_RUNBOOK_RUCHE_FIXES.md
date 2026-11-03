@@ -148,7 +148,7 @@ sbatch slurm/checks.sbatch
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `168 passed` |
+| `=== tests` | `175 passed` |
 | `=== data inspection` | as before: `"records": 378`, `"tools": 10` |
 | `=== parameter count` | `4,183,600 ... (match)`; the defaults of the new options do not change the model |
 
@@ -255,6 +255,60 @@ done
 - **Follow progress** with `bash slurm/status.sh`: each suite shows
   `n/9 variants`.
 
+### 8.1 The split experiment: how much does the protocol explain?
+
+**Why.** The paper does not state its split. The most likely explanation of
+its 0.87 accuracy is an easier split than ours, with windows of the same tool
+in both training and test (`FINAL_REPORT_REPRODUCTION.md` §4.7). This
+experiment measures accuracy and MSE under two easier splits, with
+everything else identical to the main runs. It is a measurement, not a fix:
+no decision rule applies, and the protocol stays leave-one-tool-out.
+
+| Arm (`--split`) | Fold *k* tests | Training sees the test tool? | Test targets inside training windows? |
+|---|---|---|---|
+| `leave-one-tool-out` (`tool`, the protocol) | tool T*k* | no | no |
+| `within-tool-blocks` (`block`) | time block *k* of **every** tool (each tool cut into 10 contiguous blocks) | yes, its other 8 blocks | no: windows never cross a block edge |
+| `random-windows` (`window`) | 1/10 of all windows, drawn at random (fixed draw, the same for every seed) | yes | **yes**: test windows overlap training windows (the leaky "random split") |
+
+- **Reading the differences:**
+  - `within-tool-blocks` minus `leave-one-tool-out` is the cost of meeting
+    a new tool;
+  - `random-windows` minus `within-tool-blocks` is what overlap leakage
+    adds;
+  - if `random-windows` approaches 0.87, the paper's number most likely
+    reflects such a split.
+- **Fair comparison.** Validation always uses the next group of the same
+  split, and the normalizer is fitted on the training segments. In the block
+  split, time-adjacent training blocks of a tool are joined, so training
+  keeps about as many windows as the protocol (per fold, on the real data):
+
+  | Split | Training windows | Test windows |
+  |---|---|---|
+  | leave-one-tool-out | 1,127-1,213 | 28-51 |
+  | within-tool blocks | 1,078-1,155 | 23-24 |
+  | random windows | 1,168-1,170 | 146-147 |
+
+- **Code changes kept minimal.** A split is a mapping from fold names (T1..T10,
+  B1..B10 or W1..W10) to timeline segments
+  (`data.split_groups`). The existing cyclic folds, windowing, metrics, saved
+  files and fold reuse are reused unchanged. Photo runs only.
+
+Three seeds suffice. The expected differences are much larger than the noise
+of 0.017, and the arms test on different windows, so they are compared by
+their means over seeds, not fold by fold. Each suite takes about 3 × 16
+minutes and can run alongside stage 1:
+
+```bash
+for seed in 42 142 242; do
+  sbatch --job-name=splits-s$seed --time=03:00:00 slurm/job.sbatch \
+    python scripts/run_experiment_suite.py --study splits --run-id s$seed \
+    --output-root experiment_results "${PROTOCOL[@]}" --seed $seed
+done
+```
+
+The folders are `experiment_results/splits/s<seed>/splits/<arm>/`, with fold
+files `fold-T*.json`, `fold-B*.json` or `fold-W*.json`.
+
 ## 9. Step 5: analyse stage 1
 
 When all suites show `completed` (it reads files only, under a minute):
@@ -266,6 +320,19 @@ srun --partition=cpu_short --time=00:20:00 bash -c '
   python scripts/decision_study.py experiment_results/fixes/s*/fixes/* \
     --output experiment_results/decision/decision-study-fixes.json'
 ```
+
+For the split experiment (§8.1):
+
+```bash
+srun --partition=cpu_short --time=00:10:00 bash -c '
+  source slurm/env.sh
+  python scripts/split_study.py --root experiment_results/splits'
+```
+
+It prints each split's accuracy, macro precision, MSE, MAE (means over the
+paper's 8 horizons, ± SD over seeds) and training-test gap, the paper's values,
+and each easier split's difference to leave-one-tool-out. It writes
+`experiment_results/splits/split-study.json`.
 
 `fixes_analysis.py` prints:
 
@@ -332,7 +399,7 @@ Ruche unless you need them):
 ```bash
 cd "$WORKDIR/OmniFuser"
 tar -czf results-fixes.tar.gz --exclude='*.pt' experiment_results/fixes \
-  experiment_results/decision experiment_results/main/full-model/phase-study \
+  experiment_results/splits experiment_results/decision experiment_results/main/full-model/phase-study \
   experiment_results/validation/fixes-smoke experiment_results/logs
 ls -lh results-fixes.tar.gz
 ```
@@ -393,8 +460,15 @@ for seed in 42 142 242 342 442; do
     --output-root experiment_results "${PROTOCOL[@]}" --seed $seed
 done
 
+# step 4 (in parallel): the split experiment
+for seed in 42 142 242; do
+  sbatch --job-name=splits-s$seed --time=03:00:00 slurm/job.sbatch \
+    python scripts/run_experiment_suite.py --study splits --run-id s$seed \
+    --output-root experiment_results "${PROTOCOL[@]}" --seed $seed
+done
+
 # step 5: analysis
-srun --partition=cpu_short --time=00:20:00 bash -c 'source slurm/env.sh; python scripts/fixes_analysis.py'
+srun --partition=cpu_short --time=00:20:00 bash -c 'source slurm/env.sh; python scripts/fixes_analysis.py; python scripts/split_study.py'
 
 # status
 bash slurm/status.sh

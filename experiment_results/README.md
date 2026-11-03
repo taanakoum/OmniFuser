@@ -28,6 +28,7 @@ experiment_results/
   paper-literal/<variant>/      literal readings of Eq. 3, Eq. 10 and the repeated head
   end_to_end/                   numbers of END_TO_END_SIM.md (scripts/end_to_end_trace.py)
   fixes/s<seed>/                classification-fix study, one suite per seed (fixes/<arm>/)
+  splits/s<seed>/               split experiment: leave-one-tool-out vs within-tool blocks vs random windows
   decision/                     decision-rule study (scripts/decision_study.py)
   ensembles/                    probability averages of runs (scripts/ensemble_runs.py)
   photo-probe/                  frozen-feature photo probe (scripts/photo_probe.py)

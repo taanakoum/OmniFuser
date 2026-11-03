@@ -73,7 +73,7 @@ scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
 docs/end_to_end/      figures of END_TO_END_SIM.md
 slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
                       env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
-tests/                168 pytest tests
+tests/                175 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -97,7 +97,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 168 tests
+python -m pytest -o addopts= -q tests                    # 175 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -203,6 +203,7 @@ main runs' behaviour, so existing results and saved models stay valid.
 | `--class-loss coral` | Ordinal head: two ordered thresholds (sharp < used < dulled) instead of a 3-class softmax |
 | `--image-crop T L B R`, `--image-size H W` | Crop each photo (e.g. to the cutting edge) before resizing |
 | `omnifuser predict --evaluation-stride N` | Re-score a saved model with windows every N steps |
+| `--split {tool,block,window}` | Fold split: leave one tool out (the protocol), or two easier experiments: within-tool time blocks, random windows |
 
 The verdicts, the reasoning and the paper's own inconsistencies are in
 `PAPER_IMPLEMENTATION_ALIGNMENT.md`.
@@ -210,7 +211,7 @@ The verdicts, the reasoning and the paper's own inconsistencies are in
 ## Development checks
 
 ```bash
-python -m pytest -o addopts= -q tests    # 168 passed
+python -m pytest -o addopts= -q tests    # 175 passed
 ruff check .                             # all checks passed
 pyright                                  # 0 errors (config in pyproject.toml)
 ```

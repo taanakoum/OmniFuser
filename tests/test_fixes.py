@@ -208,3 +208,72 @@ def test_a_fold_trains_and_reloads_with_every_fix_option(tmp_path: Path) -> None
     denser = predict(tmp_path / "run" / "fold-T1.pt", root, "T1", tmp_path / "predicted", evaluation_stride=4)
     assert denser["prediction"]["windows"] > again["prediction"]["windows"]
     assert (tmp_path / "predicted" / "predictions-T1-stride4.npz").is_file()
+
+
+def test_block_split_cuts_every_tool_into_ten_contiguous_blocks() -> None:
+    from omnifuser.data import split_group_names, split_groups
+
+    timelines = [_timeline("T1", list(range(1, 11)), [0] * 5 + [1] * 5, steps_per_run=20),
+                 _timeline("T2", list(range(1, 11)), [0] * 3 + [2] * 7, steps_per_run=30)]
+    groups = split_groups(timelines, "block", window=36, stride=12)
+    assert list(groups) == split_group_names(["T1", "T2"], "block") == [f"B{k}" for k in range(1, 11)]
+    for timeline in timelines:
+        parts = [segment for name in groups for segment in groups[name] if segment.tool == timeline.tool]
+        assert len(parts) == 10
+        assert np.array_equal(np.concatenate([part.force for part in parts]), timeline.force)
+        assert np.array_equal(np.concatenate([part.labels for part in parts]), timeline.labels)
+    assert split_groups(timelines, "tool", window=36, stride=12) == {"T1": [timelines[0]], "T2": [timelines[1]]}
+
+
+def test_window_split_assigns_each_training_window_once_and_reproducibly() -> None:
+    from omnifuser.data import split_groups
+
+    timelines = [_timeline("T1", list(range(1, 11)), [0] * 10, steps_per_run=20)]
+    groups = split_groups(timelines, "window", window=36, stride=12)
+    segments = [segment for name in groups for segment in groups[name]]
+    assert len(segments) == (200 - 36) // 12 + 1
+    assert all(len(segment.force) == 36 for segment in segments)
+    starts = {segment.force.__array_interface__["data"][0] for segment in segments}
+    assert len(starts) == len(segments)  # every window start once
+    again = split_groups(timelines, "window", window=36, stride=12)
+    assert [len(again[name]) for name in again] == [len(groups[name]) for name in groups]
+    first = {name: [segment.force.__array_interface__["data"][0] for segment in groups[name]] for name in groups}
+    second = {name: [segment.force.__array_interface__["data"][0] for segment in again[name]] for name in again}
+    assert first == second  # the same windows in the same groups, independent of the training seed
+
+
+@pytest.mark.parametrize("split", ["block", "window"])
+def test_a_fold_trains_with_the_easier_splits(tmp_path: Path, split: str) -> None:
+    from test_alignment_patch import make_nonastreda
+
+    from omnifuser.train import train_fold
+
+    root = make_nonastreda(tmp_path / "data", tools=(1, 2, 3), runs=(1, 2), length=700)
+    name = "B1" if split == "block" else "W1"
+    result = train_fold(
+        data_dir=root, test_tool=name, output_dir=tmp_path / "run", epochs=1, batch_size=4,
+        input_len=24, horizon=12, stride=12, device_name="cpu", trim_pass=False, pool=4,
+        image_encoder="compact", max_train_windows=8, num_workers=0, split=split,
+        config_overrides={"num_rtd_layers": 2, "num_gat_layers": 1, "image_height": 32, "image_width": 96},
+    )
+    assert result["split"] == split and result["test_tool"] == name
+    assert result["validation_tool"] == ("B2" if split == "block" else "W2")
+    assert result["window_counts"]["test"] > 0
+    assert (tmp_path / "run" / f"fold-{name}.json").is_file()
+    with pytest.raises(ValueError, match="unknown test fold"):
+        train_fold(data_dir=root, test_tool="T1", output_dir=tmp_path / "other", epochs=1, input_len=24,
+                   horizon=12, stride=12, trim_pass=False, pool=4, image_encoder="compact", split=split)
+
+
+def test_adjacent_training_blocks_are_joined_per_tool() -> None:
+    from omnifuser.data import join_adjacent_blocks, split_groups
+
+    timeline = _timeline("T1", list(range(1, 11)), [0] * 10, steps_per_run=20)
+    groups = split_groups([timeline], "block", window=36, stride=12)
+    # fold 1: test B1, validation B2, training B3..B10 -> one segment, the rest of the tool
+    [joined] = join_adjacent_blocks(groups, [f"B{k}" for k in range(3, 11)])
+    assert np.array_equal(joined.force, timeline.force[40:])
+    # fold 5: training B7..B10 and B1..B4 -> two segments, never across the test block
+    parts = join_adjacent_blocks(groups, ["B7", "B8", "B9", "B10", "B1", "B2", "B3", "B4"])
+    assert [len(part.force) for part in parts] == [80, 80]
+    assert np.array_equal(parts[0].force, timeline.force[:80]) and np.array_equal(parts[1].force, timeline.force[120:])

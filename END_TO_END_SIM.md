@@ -21,7 +21,7 @@ model or the training loop, rerun the trace script and update this document
 
 Last verified: 2026-10-30, against the code after the classification-fix
 options (`--metadata`, `--revin`, `--class-loss`, `--image-size`,
-`--image-crop`) and the run-number and photo-change metrics (168 tests).
+`--image-crop`) and the run-number and photo-change metrics, and the `--split` experiment (175 tests).
 Every new option defaults to the main runs' behaviour, so the numbers of the
 protocol below are unchanged.
 
@@ -335,6 +335,21 @@ For tool $i$ in T1…T10: test $=i$, validation = the next tool (cyclic), train
 
 No tool ever appears in two roles within a fold, so no pass, photo or
 normalization statistic of the validation or test tool reaches training.
+
+**Easier splits (experiment, `--split block` / `--split window`).**
+`data.split_groups` maps 10 fold names to timeline segments, and the same
+cyclic rule (test = group *k*, validation = group *k*+1, train = the rest)
+applies.
+
+- `block`: every tool is cut into 10 contiguous time blocks; group B*k* is
+  block *k* of every tool. Time-adjacent training blocks of a tool are joined
+  (`join_adjacent_blocks`), so training loses windows only next to the
+  validation and test blocks. No window crosses a block edge.
+- `window`: every training-stride window of every tool becomes its own
+  segment, assigned to W1..W10 by a fixed random permutation (seed 0). Test
+  windows overlap training windows, the leaky random-split setting.
+
+Both measure how much the protocol explains; neither is the protocol.
 
 ---
 
@@ -1039,6 +1054,7 @@ exactly.
 | `image-encoder` | 4 | from scratch / pretrained fine-tuned / pretrained frozen / pretrained frozen without the image GAT |
 | `image-source` | 4 | previous-pass photo (lag 1), spectrogram with the main encoder, fine-tuned, from scratch |
 | `deduplication` | 2 | training with duplicates merged / kept, scored on the same deduplicated test data |
+| `splits` | 3 | the same protocol with `--split` tool, block and window. Run once per seed |
 | `fixes` | 9 | the classification fixes, one change per arm: reference, modality dropout 0.2, metadata position, metadata none, RevIN, CORAL, photo edge crop at 128 × 640, no image GAT, fine-tuned encoder. Run once per seed (`TRAINING_RUNBOOK_RUCHE_FIXES.md`) |
 
 Each variant is a full `run_cross_validation` into
@@ -1093,6 +1109,7 @@ settings are refused.
 | `--ablation` | `none` | model | 9 paper variants (§10) |
 | `--modality-dropout` | 0 | `_mask_modalities` | training-time masking |
 | `--prediction-head` | `direct` | heads | §10.7 |
+| `--split` | `tool` | `train_fold`, `run_cross_validation` | leave one tool out, or the easier within-tool block / random-window splits (§6) |
 | `--metadata` | `all` | `TemporalEmbedding`, `ImageBranch` | run, block and position codes; `position` or `none` drop them (§10.1) |
 | `--revin` | off | `OmniFuser.forward` | per-window instance normalization and de-normalization of the forecast (§10.1) |
 | `--class-loss` | `ce` | direct head, `multitask_loss` | `coral`: ordinal head and loss (§10.7, §11) |
@@ -1130,7 +1147,9 @@ settings are refused.
 | `data.pool_records` | records, $q$ | `_block_mean` per record | pooled records |
 | `data.load_nonastreda` | folder, flags | validate, label, merge duplicates, trim, decimate, pool | sorted `Record`s |
 | `data.make_tool_timelines` | records, lag | concatenate per tool, per-step codes | `ToolTimeline`s |
-| `data.leave_one_tool_out_folds` | tools | cyclic validation tool | `ToolFold`s |
+| `data.leave_one_tool_out_folds` | tools (or fold names) | cyclic validation group | `ToolFold`s |
+| `data.split_group_names`, `split_groups` | tools / timelines, split | fold names; fold name → timeline segments (§6) | names; dict |
+| `data.slice_timeline`, `join_adjacent_blocks` | timeline, range / block groups | a step range as a timeline; adjacent training blocks joined | timeline(s) |
 | `data.ForceNormalizer.fit` / `transform` | timelines / values | parallel mean/variance; $z=(x-\mu)/\sigma$ | normalizer / $z$ |
 | `data.WindowDataset` (`locate`, `__getitem__`) | timelines, normalizer, $T,P,s$ | window index → slices | item dict (§8) |
 | `data.load_photo` | path, $H,W$, crop | decode, optional crop, resize | PIL image |

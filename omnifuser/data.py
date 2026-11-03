@@ -406,6 +406,102 @@ def make_tool_timelines(
     return timelines
 
 
+# How the 10 folds divide the data. "tool" (the protocol): leave one tool out.
+# The two others are deliberately easier experiments, to measure how much the split
+# itself explains (the paper does not state its split):
+#   "block":  every tool is cut into 10 contiguous time blocks; fold k tests block k of
+#             every tool. Each tool is seen in training, but windows never cross blocks,
+#             so no target step of a test window is in a training window.
+#   "window": every training-stride window of every tool is assigned at random to one of
+#             10 groups. Test windows overlap training windows of the same tool: the
+#             leakiest, random-split setting.
+SPLITS = ("tool", "block", "window")
+SPLIT_GROUPS = 10
+SPLIT_SEED = 0  # the same random window groups for every training seed
+
+
+def split_group_names(tools: Sequence[str], split: str) -> list[str]:
+    """The fold names of ``split``: the tools, or B1..B10 / W1..W10."""
+    if split not in SPLITS:
+        raise ValueError(f"split must be one of {SPLITS}")
+    if split == "tool":
+        return sorted(set(tools), key=lambda item: int(item[1:]))
+    prefix = "B" if split == "block" else "W"
+    return [f"{prefix}{index}" for index in range(1, SPLIT_GROUPS + 1)]
+
+
+def slice_timeline(timeline: ToolTimeline, start: int, end: int) -> ToolTimeline:
+    """Steps ``start:end`` of a tool timeline (array views; the photo table is shared)."""
+    return replace(
+        timeline,
+        force=timeline.force[start:end],
+        labels=timeline.labels[start:end],
+        image_codes=timeline.image_codes[start:end],
+        cycle_codes=timeline.cycle_codes[start:end],
+        batch_codes=timeline.batch_codes[start:end],
+        relative_codes=timeline.relative_codes[start:end],
+        image_labels=timeline.image_labels[start:end],
+    )
+
+
+def split_groups(
+    timelines: Sequence[ToolTimeline], split: str, *, window: int, stride: int
+) -> dict[str, list[ToolTimeline]]:
+    """Fold name -> the timeline segments it holds (see ``SPLITS``).
+
+    ``window`` is input length + horizon and ``stride`` the training stride; they set
+    the window segments of the "window" split.
+    """
+    names = split_group_names([timeline.tool for timeline in timelines], split)
+    if split == "tool":
+        return {timeline.tool: [timeline] for timeline in timelines}
+    groups: dict[str, list[ToolTimeline]] = {name: [] for name in names}
+    if split == "block":
+        for timeline in timelines:
+            edges = np.linspace(0, len(timeline.force), SPLIT_GROUPS + 1).round().astype(int)
+            for name, start, end in zip(names, edges[:-1], edges[1:]):
+                groups[name].append(slice_timeline(timeline, int(start), int(end)))
+        return groups
+    segments = [
+        slice_timeline(timeline, start, start + window)
+        for timeline in timelines
+        for start in range(0, len(timeline.force) - window + 1, stride)
+    ]
+    order = np.random.default_rng(SPLIT_SEED).permutation(len(segments))
+    for position, index in enumerate(order):
+        groups[names[position % SPLIT_GROUPS]].append(segments[index])
+    return groups
+
+
+def join_adjacent_blocks(
+    groups: dict[str, list[ToolTimeline]], names: Sequence[str]
+) -> list[ToolTimeline]:
+    """The block split's training segments, with time-adjacent blocks of a tool joined.
+
+    Joined blocks keep the windows that would straddle their shared edge, so training
+    loses windows only at the edges next to the validation and test blocks.
+    """
+    numbers = sorted(int(name[1:]) for name in names)
+    runs: list[list[int]] = []
+    for number in numbers:
+        if runs and number == runs[-1][-1] + 1:
+            runs[-1].append(number)
+        else:
+            runs.append([number])
+    joined: list[ToolTimeline] = []
+    for run in runs:
+        parts = [groups[f"B{number}"] for number in run]
+        for tool_parts in zip(*parts):
+            first = tool_parts[0]
+            joined.append(replace(
+                first,
+                **{field: np.concatenate([getattr(part, field) for part in tool_parts])
+                   for field in ("force", "labels", "image_codes", "cycle_codes", "batch_codes",
+                                 "relative_codes", "image_labels")},
+            ))
+    return joined
+
+
 def leave_one_tool_out_folds(tools: Sequence[str]) -> Iterator[ToolFold]:
     ordered = sorted(set(tools), key=lambda item: int(item[1:]))
     if len(ordered) < 3:

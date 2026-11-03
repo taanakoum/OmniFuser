@@ -22,15 +22,15 @@ import os
 ROOT = "experiment_results"
 SUITE_SIZES = {
     "ablations": 9, "sensitivity": 22, "missing-modality": 2, "all": 31,
-    "image-encoder": 4, "image-source": 4, "deduplication": 2, "fixes": 9,
+    "image-encoder": 4, "image-source": 4, "deduplication": 2, "fixes": 9, "splits": 3,
 }
 
 
 def run_state(path):
-    folds = len(glob.glob(os.path.join(path, "fold-T*.json")))
+    folds = len(glob.glob(os.path.join(path, "fold-[TBW]*.json")))
     running = sorted(
         os.path.basename(p)[len("fold-"):-len("-resume.pt")]
-        for p in glob.glob(os.path.join(path, "fold-T*-resume.pt"))
+        for p in glob.glob(os.path.join(path, "fold-[TBW]*-resume.pt"))
     )
     if os.path.isfile(os.path.join(path, "cross-validation-results.json")):
         return "complete", folds, running

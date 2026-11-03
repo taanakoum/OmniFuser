@@ -544,6 +544,7 @@ design follows from §6-§8.
 | Decision rules | Fixed before the runs, in `scripts/fixes_analysis.py`. Accuracy arms: +0.01 with p < 0.10. RevIN: MSE −3 % with p < 0.10 and accuracy not below −0.01. Metadata: accuracy not below −0.01 and a smaller training-test gap. CORAL: "used" recall +0.05 with p < 0.10 and accuracy not below −0.01. | Results cannot choose their own rule |
 | Stage 2 | The adopted arms combined, on the same 5 seeds; reported with the seed ensemble and both decision rules | Tests the combination once, on its own runs |
 | No training | A2 offsets and the phase study on the saved models (CPU jobs) | Answer two open questions without new runs |
+| Split experiment | `--study splits`: leave-one-tool-out, within-tool time blocks, random windows; 3 seeds | Measures how much the protocol explains the gap to the paper's 0.87 (a measurement, not a fix) |
 | Cost | About 2.5 h per seed for stage 1 on an A100; 5 suites in parallel | A frozen-encoder run takes about 16 min |
 
 ## 10. Status of all fixes
@@ -561,6 +562,8 @@ design follows from §6-§8.
 | B5 Fine-tuned encoder, no image GAT | Existing options | Stage-1 arms (repeat the best single-seed results) |
 | Step 8 Photo-change accuracy | In every new fold; computed for the main run | Report with every result |
 | MSE-horizon check | Code ready | Ruche CPU job (runbook §7.2) |
+| Split experiment | Code ready (`--split`, `--study splits`, `scripts/split_study.py`) | Ruche, 3 seeds (runbook §8.1) |
+| Label cleaning | Measured: 31 of 378 passes break monotone wear; scoring the main run against cleaned labels changes accuracy by only +0.004 (16 % of errors fall on those steps) | Not adopted; cleaning only the training labels remains an option |
 | C1 Chip and workpiece photos | **Blocked**: the folders are not in `Nonastreda_Data/` | Download them, check that each photo belongs to one pass and when it was taken, then build a multi-view image branch |
 | C2 Spectrogram as a third stream | Not started | A three-stream fusion design (C2F fuses two streams) |
 | Photo augmentation | Not started | Only with a fine-tuned encoder (frozen features are cached) |
@@ -584,12 +587,14 @@ design follows from §6-§8.
 | [`scripts/photo_probe.py`](scripts/photo_probe.py) | New. §8.1 |
 | [`scripts/window_diagnostics.py`](scripts/window_diagnostics.py) | New. §8.2-§8.3 |
 | [`scripts/phase_study.py`](scripts/phase_study.py) | New. Re-scores saved models at other strides |
+| [`scripts/split_study.py`](scripts/split_study.py) | New. Compares the three splits over seeds |
+| `omnifuser/data.py` (`split_group_names`, `slice_timeline`, `split_groups`, `join_adjacent_blocks`), `train.py`, `cross_validation.py`, `cli.py` | `--split {tool,block,window}`: a split maps fold names to timeline segments; everything else is unchanged |
 | [`slurm/status.sh`](slurm/status.sh) | Knows the `fixes` suite (9 variants) |
 | [`tests/test_fixes.py`](tests/test_fixes.py) | New, 12 tests: each metadata mode removes exactly its codes; RevIN shift equivariance; ordinal probabilities; the CORAL head's valid, ordered probabilities and its loss; crop before resize; config JSON round trip and older configs; CLI flags; photo-change and run-number metrics; a fold trains, saves, reloads and re-predicts (also at another stride) with every option |
 | [`tests/test_fixes_analysis.py`](tests/test_fixes_analysis.py) | New, 2 tests: seed averaging, paired comparison and the decision rules on synthetic runs |
 | [`tests/test_experiment_suite.py`](tests/test_experiment_suite.py) | +1 test: each `fixes` arm changes exactly its own config fields |
 
-The full test suite passes (168 tests); `ruff` and `pyright` report no issues. The end-to-end
+The full test suite passes (175 tests); `ruff` and `pyright` report no issues. The end-to-end
 trace (`scripts/end_to_end_trace.py`) gives the same numbers as before the changes, except for
 two timings, so the protocol's pipeline is unchanged.
 

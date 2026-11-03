@@ -15,6 +15,7 @@ from omnifuser.data import (
     CLASS_NAMES,
     leave_one_tool_out_folds,
     nonastreda_source_signature,
+    split_group_names,
 )
 from omnifuser.spectrogram import SpectrogramSettings
 from omnifuser.tracking import ExperimentTracker
@@ -419,6 +420,7 @@ def run_cross_validation(
     resume: bool = True,
     config_overrides: dict[str, Any] | None = None,
     spectrogram: SpectrogramSettings | None = None,
+    split: str = "tool",
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
     spectrogram_record = asdict(spectrogram) if spectrogram is not None else None
@@ -426,7 +428,7 @@ def run_cross_validation(
     if eval_dedup_identical_forces is None:
         eval_dedup_identical_forces = dedup_identical_forces
     tools = discover_tools(data_dir)
-    folds = list(leave_one_tool_out_folds(tools))
+    folds = list(leave_one_tool_out_folds(split_group_names(tools, split)))
     source_signature = nonastreda_source_signature(data_dir)
     results: list[dict[str, Any]] = []
     train_stride = stride if stride is not None else input_len + horizon
@@ -449,7 +451,11 @@ def run_cross_validation(
             "dataset": "Nonastreda",
             "data_dir": str(Path(data_dir).resolve()),
             "source_signature": source_signature,
-            "protocol": "leave-one-tool-out with cyclic validation tool",
+            "protocol": {
+                "tool": "leave-one-tool-out with cyclic validation tool",
+                "block": "within-tool time blocks: fold k tests block k of every tool (easier split)",
+                "window": "random window groups across all tools (easiest, leaky split)",
+            }[split],
             "tools": tools,
             "folds": [
                 {
@@ -542,6 +548,8 @@ def run_cross_validation(
                     "training.num_workers": num_workers,
                     "training.seed": seed + fold_index,
                     "training.device": device_name,
+                    # Folds written before the split option are leave-one-tool-out.
+                    **({"split": split} if split != "tool" else {}),
                 },
                 epochs,
                 batch_size,
@@ -592,6 +600,7 @@ def run_cross_validation(
             config_overrides=config_overrides,
             tracker=tracker,
             spectrogram=spectrogram,
+            split=split,
         )
         results.append(result)
         partial = {
