@@ -1097,7 +1097,7 @@ srun --partition=cpu_short --time=00:30:00 bash -c "find experiment_results -nam
 Then download to your laptop. Run this in PowerShell **from your local
 repository folder**, the one that holds `README.md` and `experiment_results/`.
 `scp` saves into the current folder, and `tar` unpacks into the
-`experiment_results/` below it, which is where `REPORT_PLAN.md`'s snippets
+`experiment_results/` below it, which is where the analysis scripts
 look for the results. In a new PowerShell window, set `$Ruche` and
 `$RucheLogin` again first (§3).
 
@@ -1127,7 +1127,7 @@ tar -xzf results-checkpoints.tar.gz
 - **Not in the archives:** the commit and GPU type (checklist step 3) and
   your record table (§12). Keep them with the archives.
 
-Then follow [`REPORT_PLAN.md`](REPORT_PLAN.md). Keep the archives: Ruche's
+The results report is [`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md). Keep the archives: Ruche's
 directories are not backed up, and they are deleted when your account
 closes.
 

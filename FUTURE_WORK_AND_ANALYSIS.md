@@ -21,6 +21,7 @@ How to run: [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md).
 
 ## Contents
 
+- [Status update (2026-11-03)](#status-update-2026-11-03)
 1. [Summary and priorities](#1-summary-and-priorities)
 2. [How the analysis was done](#2-how-the-analysis-was-done)
 3. [Evaluation by criterion](#3-evaluation-by-criterion)
@@ -36,13 +37,33 @@ How to run: [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md).
 
 ---
 
+## Status update (2026-11-03)
+
+This review predates the 51 GPU runs. What has happened to its findings since
+(details in [`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md) and
+[`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md)):
+
+| Finding | Status |
+|---|---|
+| F1 Lag-0 photo shows the target label | Measured: the lag-1 run costs 0.065 accuracy. Every new fold also reports accuracy where the label differs from the photo's (0.43 in the main run). |
+| F2 Run-number shortcut | Measured on the test windows: the run number alone scores 0.708, above the model. `--metadata position/none` implemented; Ruche stage-1 arms. |
+| F3 Fz drift | Not addressed separately; `--revin` removes each window's level, including Fz drift. |
+| F4 Model selection on one validation tool | Addressed by seeds and paired tests; validation-tuned class offsets implemented (to run on Ruche). |
+| F9 Photos shrunk 4× | Probed: frozen features gain nothing from higher resolution, while a cutting-edge crop helps a little. `--image-crop`/`--image-size` implemented; Ruche stage-1 arm. |
+| F10 Chip and workpiece photos | Blocked: the folders are not in the local data. |
+| F11 No significance tests | Paired Wilcoxon tests over folds in all new analysis scripts. |
+| F12 Label noise, non-monotonic wear | Ordinal and monotone decision rules validated on all 51 runs ("used" recall +0.22); `--class-loss coral` implemented; Ruche stage-1 arm. |
+| F14 One seed per fold | Run-to-run noise measured on 7 identical runs (0.659-0.676); fixes run over 5 seeds. |
+| F16 Tool-to-tool shift | `--revin` implemented; the level-offset check motivates it. Ruche stage-1 arm. |
+
 ## 1. Summary and priorities
 
 **Verdict.**
 
 - **As an OmniFuser reproduction, the project works.** The architecture,
   training and evaluation follow the paper (35 checked items, 3 documented
-  deviations, each with a paper-literal run). The 137 tests and the
+  deviations, each with a paper-literal run). The tests (137 at this review,
+  168 now) and the
   real-data runs pass, and the review found no open code bug that would
   invalidate a run. Two bugs found this week are fixed: spectrogram fold
   reuse, and stochastic depth in the "frozen" backbone.
@@ -102,7 +123,7 @@ Everything else can follow the roadmap (§8).
 
 | Criterion | Rating | Detail |
 |---|---|---|
-| Code correctness | **Strong** | 137 tests cover leakage, numerical equivalence (cached features vs pixels, NumPy reference of the front end), competence (the model memorizes a batch and learns an image-only class), interruption and resume. The real-data smoke runs complete. |
+| Code correctness | **Strong** | The tests (137 at this review, 168 now) cover leakage, numerical equivalence (cached features vs pixels, NumPy reference of the front end), competence (the model memorizes a batch and learns an image-only class), interruption and resume. The real-data smoke runs complete. |
 | Fidelity to OmniFuser | **Strong** | Each block maps to its equation (`END_TO_END_SIM.md` §10). The 9 Fig. 13 ablations and 8 Fig. 7-8 sensitivity axes are implemented. The deviations (direct head, branch decomposition, normalized ALS) are justified and testable with the paper-literal arms. |
 | Split and normalization leakage | **Strong** | Leave-one-tool-out with a separate validation tool; normalizer on training tools only; per-image image statistics; spectrograms from the input window only; strict fold-reuse checks. |
 | Shortcut and label leakage in the inputs | **Weak** | The post-pass photo at lag 0 (F1), the run-number code (F2) and Fz drift (F3) let the model score without forecasting wear. |

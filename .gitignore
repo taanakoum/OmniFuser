@@ -13,3 +13,25 @@ Literature/
 Nonastreda_Data.tar.gz
 Nonastreda_Data.zip
 results-*.tar.gz
+
+# Talk preparation (not part of the public project)
+*.pptx
+*.ppt
+PRESENTATION_NOTES.md
+
+# Internal working notes, kept locally
+REPORT_PLAN.md
+IMPLEMENTATION_AUDIT.md
+
+# Local tools, editors and scratch files
+.vscode/
+.idea/
+.claude/
+CLAUDE.md
+.ipynb_checkpoints/
+*.log
+*.tmp
+scratch/
+.DS_Store
+Thumbs.db
+desktop.ini

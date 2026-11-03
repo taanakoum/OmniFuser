@@ -7,7 +7,10 @@ the final report: the tables can be copied as they are. Section 9 lists the
 checks that should come before the conclusions are final.
 
 Recorded on 2026-10-28 from the output of `scripts/compare_with_paper.py`.
-Values in brackets, such as [commit], are to be filled in from the run files.
+The complete results of all 51 runs, and the conclusions, are in
+[`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md); the checks
+listed in §9 were carried out there and in
+[`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md).
 
 ## Contents
 
@@ -392,7 +395,7 @@ Possible causes, most likely first:
    - The best epoch is chosen on one validation tool, by the total loss in
      which the force term may dominate (F4).
    - **Tests:** the training-set accuracy and the selected epoch per fold
-     (§9.1), and the learning curves (`REPORT_PLAN.md` snippet E). Training
+     (§9.1), and the learning curves (the fold histories). Training
      accuracy near 0.7 would point to under-fitting. Training accuracy well
      above test accuracy would point to a generalization gap across tools.
 4. **Label noise caps any classifier that cannot read the label.** Flank
@@ -473,12 +476,12 @@ report:
   - Each fold ran once (F14), on 28-51 test windows in 3a.
   - These tables show fold means without their spread. The standard
     deviations are in `cross-validation-results.json` →
-    `paper_horizons_mean_std`, and `REPORT_PLAN.md` snippet B prints them.
+    `paper_horizons_mean_std`.
   - No significance test has been run yet (F11). Small differences, such as
     3a against 3b, should be called inconclusive until then.
 - **Fold mean, not pooled.** Every tool counts equally whatever its number
   of windows. `--by pooled_by_windows` gives the window-weighted version;
-  report which one a table uses (`REPORT_PLAN.md` §4).
+  report which one a table uses.
 - **Different normalizers.** z-units are relative to each fold's training
   normalizer. 3a and 3b fit theirs on different training data, so their
   z-units differ slightly.
@@ -497,8 +500,8 @@ Run these from the repository root on Ruche, or locally after copying
 `experiment_results/main/` (the `*.pt` model files are needed only for
 item 4).
 
-1. **Fold spread.** Run `REPORT_PLAN.md` snippet B (mean ± std per horizon)
-   and snippet A (fold mean ± std and pooled out-of-fold headline metrics).
+1. **Fold spread.** Report the mean ± std per horizon, and the fold mean ± std
+   with the pooled out-of-fold headline metrics.
    Do this for both runs.
 2. **Per fold: training against test accuracy, image-masked and
    sensor-masked accuracy, persistence, selected epoch.** This tests §7.1
@@ -524,7 +527,7 @@ item 4).
    - training accuracy close to test accuracy: under-fitting (cause 3);
    - selected epochs near 30: training stopped while still improving (F5).
 
-   `REPORT_PLAN.md` snippet G gives the pooled version per mode.
+   `out_of_fold_by_mode` gives the pooled version per mode.
 3. **Per-lead and per-channel force error.** This locates the leads 1-12
    excess (§7.2):
 
@@ -566,8 +569,8 @@ item 4).
    python -c "import json; t = json.load(open('experiment_results/main/full-model/paper-comparison.json'))['mean_over_folds']; [print(h, round(v['zero_prediction_mse'], 3), round(v['last_value_mae'], 3)) for h, v in t.items()]"
    ```
 
-6. **Confusion matrix and per-class scores** (`REPORT_PLAN.md` snippet C),
-   **ROC curves** (snippet D) and **learning curves** (snippet E).
+6. **Confusion matrix and per-class scores**, **ROC curves** and
+   **learning curves**.
 
 ### 9.2 From runs still in the queue
 
@@ -583,7 +586,7 @@ item 4).
 - **Deduplication study.** Isolates the training effect of duplicates on
   the same test windows (§6).
 - **Ablations, sensitivity, missing modality.** Read them against 3a with
-  paired fold-level tests (`REPORT_PLAN.md` snippet H).
+  paired fold-level tests.
 
 ### 9.3 Needing code changes (future work, not implemented)
 

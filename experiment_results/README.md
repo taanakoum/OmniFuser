@@ -4,13 +4,15 @@ All training and evaluation output goes here, separate from the source code
 and the input data. Git ignores everything in this folder except this file.
 Back the folder up (Lightning AI persistent storage, or a download) when a
 study finishes. The commands that write each subfolder are in
-[`../TRAINING_RUNBOOK.md`](../TRAINING_RUNBOOK.md).
+[`../TRAINING_RUNBOOK.md`](../TRAINING_RUNBOOK.md),
+[`../TRAINING_RUNBOOK_RUCHE.md`](../TRAINING_RUNBOOK_RUCHE.md) and
+[`../TRAINING_RUNBOOK_RUCHE_FIXES.md`](../TRAINING_RUNBOOK_RUCHE_FIXES.md).
 
 ```text
 experiment_results/
   logs/                         console logs of each launched command
   eda/                          exploratory data analysis (scripts/eda.py; see ../EDA.md)
-  report/                       report tables and figures (snippets in ../REPORT_PLAN.md)
+  report/                       report tables and figures
   validation/                   smoke tests (capped windows; not results)
   pilot/                        uncapped one-fold timing runs
   main/full-model/              step 3a: main 10-fold run, duplicates merged
@@ -22,7 +24,19 @@ experiment_results/
   missing-modality/<run-id>/    modality-dropout robustness study
   sensitivity/<run-id>/         paper Figs. 7-8 parameter sweeps
   all/<run-id>/                 the three studies in one suite
+  deduplication/<run-id>/       duplicates merged vs kept in training, same test windows
+  paper-literal/<variant>/      literal readings of Eq. 3, Eq. 10 and the repeated head
+  end_to_end/                   numbers of END_TO_END_SIM.md (scripts/end_to_end_trace.py)
+  fixes/s<seed>/                classification-fix study, one suite per seed (fixes/<arm>/)
+  decision/                     decision-rule study (scripts/decision_study.py)
+  ensembles/                    probability averages of runs (scripts/ensemble_runs.py)
+  photo-probe/                  frozen-feature photo probe (scripts/photo_probe.py)
+  diagnostics/                  level offset, run-number baseline, photo-change accuracy (scripts/window_diagnostics.py)
 ```
+
+A run folder can also hold `phase-study/` (re-scored forecasts at other
+strides, `scripts/phase_study.py`) and `decision/` (validation-tool
+predictions for the class offsets).
 
 A suite folder (`<study>/<run-id>/`) contains:
 

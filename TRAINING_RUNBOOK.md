@@ -38,7 +38,7 @@ experiments as SLURM jobs and refers back here for the explanations.
 | (opt) | Duplicate handling: merged versus kept, scored on the same deduplicated test data | 2 | `experiment_results/deduplication/<run-id>/` |
 | (opt) | Printed-paper readings of the three remaining deviations | 3 | `experiment_results/paper-literal/<arm>/` |
 | (opt) | Prediction-head comparison | 3 | `experiment_results/heads/<head>/` |
-| After | Download the results and write the report (§15, [`REPORT_PLAN.md`](REPORT_PLAN.md)) | 0 | `results-*.tar.gz`, `experiment_results/report/` |
+| After | Download the results and write the report (§15) | 0 | `results-*.tar.gz`, `experiment_results/report/` |
 
 A **10-fold CV run** trains 10 models. Each one holds out a different tool for
 testing, uses the next tool for validation, and trains on the other 8
@@ -373,7 +373,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 146 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `146 passed` |
+| `pytest ... tests` | Runs the 168 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `146 passed` |
 | `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |
@@ -496,7 +496,7 @@ python scripts/compare_with_paper.py experiment_results/main/full-model \
 
 Training, validation and test use the 378 distinct passes (1,462 windows
 over all tools). This is the run the report's main results, the studies of
-steps 4-6, and `REPORT_PLAN.md` refer to.
+steps 4-6 refer to.
 
 ### Step 3b: duplicates kept (training and test)
 
@@ -1028,8 +1028,8 @@ Two other variants are available:
     the details.
   - On Windows, unpack with `tar -xzf results-no-checkpoints.tar.gz` in
     PowerShell.
-- **Write up the results.** Follow [`REPORT_PLAN.md`](REPORT_PLAN.md): its §1 lists what to download
-  and record before stopping the Studio, and its snippets build every report table and figure.
+- **Write up the results.** The results report is
+  [`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md).
 - **Stop the Studio** when finished, so GPU time is no longer billed. Files
   in `/teamspace/studios/this_studio` remain.
 

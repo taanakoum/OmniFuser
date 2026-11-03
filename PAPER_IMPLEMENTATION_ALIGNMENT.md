@@ -17,7 +17,7 @@ This document compares the paper with the code. It is organized as follows:
 | **Blocks 12 command-line integration** | The architecture flags |
 | **Verification boundary** | What is and is not checked here |
 
-The full module-level reference is [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md).
+The full function-level reference, with real numbers for every step, is [`END_TO_END_SIM.md`](END_TO_END_SIM.md).
 
 The paper does not specify enough detail for a bit-for-bit reproduction.
 Where an activation, preprocessing step or operator detail is missing from the
@@ -215,8 +215,16 @@ selection points are:
   and horizon 96 at every entry point). Also added: `--exact-split`, the Fig. 13
   ablations, the Figs. 7-8 sensitivity mapping, missing-modality evaluation,
   and the EDA. Lightning AI commands live in
-  [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md); no GPU run has been performed
-  yet.
+  [`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md); no GPU run had been performed
+  at that point.
+- **2026-10-28/29, GPU runs:** 51 complete 10-fold runs on the Ruche cluster
+  (NVIDIA A100) with the protocol and every study above. Results:
+  [`FINAL_REPORT_REPRODUCTION.md`](FINAL_REPORT_REPRODUCTION.md).
+- **2026-10-30, classification-fix options:** `--metadata`, `--revin`,
+  `--class-loss coral`, `--image-crop` and `--image-size` were added as
+  experiments (not paper features), with defaults that keep the paper reading
+  and the main runs unchanged ([`FIXES_AND_VALIDATION.md`](FIXES_AND_VALIDATION.md)
+  §7).
 
 ## Theoretical statements versus executable code
 
@@ -244,7 +252,7 @@ or empirical verification of Theorem 2.
 | Image timing | Same-pass image replication is described; acquisition time for Nonastreda is not confirmed. | The library default and the protocol use `--image-lag 0` (paper reading). `--image-lag 1` is an experimental runbook run (§14). | `EDA.md` §7: with lag 0, copying the shown photo's label scores 0.92-0.99 cumulative accuracy, above the paper's OmniFuser. Lag 1 lowers this to about 0.80, so the model must forecast; the experimental run measures the difference. |
 | Label and period codes | Paper describes class labels and cycle/batch/relative-position context but does not define a direct Nonastreda mapping. | `image_label` by default; run number -> cycle table, block number -> batch table, 16-bin position-within-record -> relative table. | Selected from the provided dataset fields and prior inspection; class names and the physical semantics/cardinalities of paper \(R\)/\(B\) are not fully established. |
 | Window protocol | Paper tables report forecast horizons 12 through 96; input length and split are not stated. | 10-fold leave-one-tool-out: test tool, the next tool cyclically for validation, 8 for training. Protocol: \(T=96\), \(P=96\), training stride 24, evaluation stride 96. That gives 1,127-1,213 training and 28-51 test windows per fold. | Tool grouping keeps every window of a test tool out of training. This is the requested protocol, not a paper-exact split. |
-| Force preprocessing | The paper does not define this Nonastreda-specific cleanup. | Exact duplicate force arrays are consolidated by default (`--dedup-identical-forces True`; `False` keeps all 512 records; `--eval-dedup-identical-forces` sets the validation/test data separately, and `--study deduplication` compares the two settings on the same deduplicated test windows), selecting the maximum-flank-wear annotation; span trimming is on by default and can be disabled. Pooling is per record; incomplete trailing blocks are dropped/reported. | Chosen from supplied guide/data audit. The precise envelope/threshold and dedup policy are documented in [`IMPLEMENTATION_AUDIT.md`](IMPLEMENTATION_AUDIT.md); they are not paper formulas. |
+| Force preprocessing | The paper does not define this Nonastreda-specific cleanup. | Exact duplicate force arrays are consolidated by default (`--dedup-identical-forces True`; `False` keeps all 512 records; `--eval-dedup-identical-forces` sets the validation/test data separately, and `--study deduplication` compares the two settings on the same deduplicated test windows), selecting the maximum-flank-wear annotation; span trimming is on by default and can be disabled. Pooling is per record; incomplete trailing blocks are dropped/reported. | Chosen from supplied guide/data audit. The precise envelope/threshold and dedup policy are documented in [`EDA.md`](EDA.md) §3 and §5; they are not paper formulas. |
 | Loss | No complete scalar objective and weighting for the two tasks is specified. | `multitask_loss` uses force MSE + class cross-entropy with 1:1 weighting. Alignment/orthogonality diagnostics are recorded but not added to total loss. | Simple equal weighting was selected because the paper does not give coefficients. It is not a reproduction of an unstated objective. |
 | Optimizer/training lifecycle | Adam and learning rate \(10^{-4}\) are paper defaults; number of epochs/checkpoint selection are not fully prescribed. | Adam at \(10^{-4}\); best validation-loss checkpoint by default; resumable epoch-boundary checkpoints; gradient clipping and optional accumulation. | Best-checkpoint selection/resume/clipping are reliability choices for finite compute, not claims about the authors' exact training run. |
 | Experiment metrics | Classification and regression tasks are reported; details such as class averaging can be ambiguous. | Accuracy, macro and weighted precision/recall/F1, ROC/AUC; MAE/MSE/RMSE in normalized and physical force units, per channel and horizon; baselines and per-fold/out-of-fold summaries. | Both common averaging conventions are retained instead of guessing which table convention was used. |
@@ -279,6 +287,5 @@ memory, or training quality. Before production training, confirm CUDA in the
 Lightning AI Studio, run one uncapped fold using the intended EfficientNet
 settings and persistent storage, inspect epoch time/peak memory and validation
 metrics, and only then launch the ten-fold run. The executable commands are in
-[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). The complete record of what was
-verified (static checks, 146 tests, real-data runs of every
-entry point and flag) is in `IMPLEMENTATION_AUDIT.md` §10.
+[`TRAINING_RUNBOOK.md`](TRAINING_RUNBOOK.md). Every entry point and flag was
+also run on the real data, and the test suite (`tests/`) checks them.

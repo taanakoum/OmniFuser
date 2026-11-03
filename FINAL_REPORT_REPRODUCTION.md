@@ -544,8 +544,34 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
   - Their transients are larger in z-units, and a level outside the
     training range is pulled back towards training-typical values in the
     first forecast steps.
+- **The data analysis shows why exactly these two.** `EDA.md` §8
+  (`experiment_results/eda/folds.csv`) measures each test tool in its fold's
+  training normalization, where a level of 0 and a spread of 1× mean no
+  shift:
+
+  | Test tool | Fx level | Fx spread | Fy spread | Fz spread |
+  |---|---|---|---|---|
+  | T1 | **+1.15** | **1.51×** | **1.33×** | 0.45× |
+  | T5 | +0.15 | **1.55×** | **1.80×** | **2.13×** |
+  | Other 8 tools | −0.47 to +0.35 | 0.52-0.95× | 0.45-0.96× | 0.54-1.43× |
+
+  - T1 has the largest level shift of any tool.
+  - T1 and T5 are the only tools whose spread exceeds the training spread by
+    more than 1.3× in both Fx and Fy.
+  - A 1.5-1.8× wider signal has 2.3-3.2× the variance, so the same relative
+    miss costs 2-3× the z-scored MSE.
+  - T5's wide spread fits its wear: worn tools cut with higher and more
+    variable force (Spearman ρ = 0.70 between flank wear and mean force,
+    `EDA.md` §4).
 - **Because the table averages folds equally, these two tools dominate
   h = 12.**
+- **They are not the hard tools for classification.**
+  - Without T1 and T5, fold-mean accuracy is 0.669 against 0.673 with them,
+    and macro precision 0.694 against 0.696.
+  - T5 is classified above average (0.757) and T1 slightly below (0.623).
+  - The weakest classification folds are T4 (0.532) and T2 (0.543). There,
+    copying the photo's label would be right 98-99 % of the time, so the
+    problem is reading the photo, not the force level (§4.2-§4.3).
 - **Without T1 and T5**, cumulative MSE is **0.49 at h = 12 and 0.56 at
   h = 96**. It **rises with the horizon, like the paper's**, and starts
   close to the paper's 0.467.
@@ -580,7 +606,8 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
 
 ## 7. Conclusions
 
-1. OmniFuser was implemented faithfully: 35 audited items, 146 tests, and 51
+1. OmniFuser was implemented faithfully: 35 audited items, 146 tests at the
+   time of the runs (168 now), and 51
    cluster runs. It trains stably on Nonastreda.
 2. **Forecasting reaches the paper's level** (MAE 0.595 against 0.597).
    - The falling cumulative MSE is an artefact of two things: evaluation
@@ -610,8 +637,9 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
 ## 8. Limitations
 
 - **Statistics.** One seed per fold, 28-51 test windows per fold, and no
-  significance tests (F11, F14). Differences below about 0.03 in accuracy
-  are not reliable.
+  significance tests in this report (F11, F14). Differences below about 0.03
+  in accuracy are not reliable. Seven finished runs with identical settings
+  later confirmed it: they span 0.659-0.676 (`FIXES_AND_VALIDATION.md` §6).
 - **Images.** Only the tool photos of Nonastreda were used.
 - **Alignment.** At lag 0 the photo is taken after its pass, so it shows
   the target's class for 95 % of target steps. Accuracy should be read next
