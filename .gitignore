@@ -20,6 +20,7 @@ results-*.tar.gz
 *.pptx
 *.ppt
 PRESENTATION_NOTES.md
+presentation/
 
 # Internal working notes, kept locally
 REPORT_PLAN.md
