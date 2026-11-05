@@ -148,7 +148,7 @@ sbatch slurm/checks.sbatch
 
 | Section in the log | Expected |
 |---|---|
-| `=== tests` | `175 passed` |
+| `=== tests` | `180 passed` |
 | `=== data inspection` | as before: `"records": 378`, `"tools": 10` |
 | `=== parameter count` | `4,183,600 ... (match)`; the defaults of the new options do not change the model |
 

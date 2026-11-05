@@ -594,7 +594,7 @@ design follows from §6-§8.
 | [`tests/test_fixes_analysis.py`](tests/test_fixes_analysis.py) | New, 2 tests: seed averaging, paired comparison and the decision rules on synthetic runs |
 | [`tests/test_experiment_suite.py`](tests/test_experiment_suite.py) | +1 test: each `fixes` arm changes exactly its own config fields |
 
-The full test suite passes (175 tests); `ruff` and `pyright` report no issues. The end-to-end
+The full test suite passes (180 tests since v1.1); `ruff` and `pyright` report no issues. The end-to-end
 trace (`scripts/end_to_end_trace.py`) gives the same numbers as before the changes, except for
 two timings, so the protocol's pipeline is unchanged.
 

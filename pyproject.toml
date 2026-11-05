@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "omnifuser-reproduction"
-version = "0.1.0"
+version = "1.1.0"
 description = "A reproducible OmniFuser implementation for the Nonastreda tool-wear dataset."
 requires-python = ">=3.10"
 dependencies = [

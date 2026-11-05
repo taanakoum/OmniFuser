@@ -610,7 +610,7 @@ Per test tool, MSE on leads 1-12 against leads 13-36:
 ## 7. Conclusions
 
 1. OmniFuser was implemented faithfully: 35 audited items, 146 tests at the
-   time of the runs (175 now), and 51
+   time of the runs (180 now), and 51
    cluster runs. It trains stably on Nonastreda.
 2. **Forecasting reaches the paper's level** (MAE 0.595 against 0.597).
    - The falling cumulative MSE is an artefact of two things: evaluation

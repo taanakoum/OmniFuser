@@ -21,7 +21,7 @@ model or the training loop, rerun the trace script and update this document
 
 Last verified: 2026-10-30, against the code after the classification-fix
 options (`--metadata`, `--revin`, `--class-loss`, `--image-size`,
-`--image-crop`) and the run-number and photo-change metrics, and the `--split` experiment (175 tests).
+`--image-crop`) and the run-number and photo-change metrics, and the `--split` experiment; v1.1 adds `encode()` and `image_views` (180 tests).
 Every new option defaults to the main runs' behaviour, so the numbers of the
 protocol below are unchanged.
 
@@ -818,6 +818,11 @@ alignment and orthogonality are the means over rounds.
 
 ### 10.7 Prediction heads (paper Eqs. 21-23)
 
+Since v1.1, `OmniFuser.encode()` returns $F^{(n)}$ and `forward()` applies the
+heads below to it; the outputs are unchanged. `ModelConfig.image_views` (default
+1) lets precomputed features of several photo views per step share the image
+projection, for downstream models.
+
 Only the **last step** of the fused sequence is used: $f=F^{(n)}_{:,T-1}\in\mathbb{R}^{B\times d}$.
 
 | `--prediction-head` | Force forecast $\hat Y\in\mathbb{R}^{B\times P\times 3}$ | Class logits $\in\mathbb{R}^{B\times P\times3}$ | Params |
@@ -1172,7 +1177,7 @@ settings are refused.
 | `models.ImageBranch` | images, indices, codes | encode, gather, GAT, embeddings | $(B,T,d)$ |
 | `models.CrossModalFusionLayer` (`_decompose`, `_landmarks`, `_hybrid_gate`) | $Z^r,Z^i$ | §10.5 | fused, alignment, orthogonality |
 | `models.ConcatenationFusionLayer` | $Z^r,Z^i$ | Linear on concatenation | fused |
-| `models.OmniFuser` (`_mask_modalities`, `forward`) | batch tensors | §10 | force, logits, diagnostics |
+| `models.OmniFuser` (`_mask_modalities`, `encode`, `forward`) | batch tensors | §10; `encode` stops before the heads | fused sequence (`encode`); force, logits, diagnostics (`forward`) |
 | `models.multitask_loss` | outputs, targets | MSE + CE (or CORAL BCE) | total, components |
 | `models.classification_metrics` | logits, targets | confusion-based scores (tensor helper) | dict |
 | `train.model_config` | dims, overrides, spectrogram | build `ModelConfig` (+7 channels) | config |

@@ -373,7 +373,7 @@ python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 
 | Command | What it does | What to check |
 |---|---|---|
-| `pytest ... tests` | Runs the 175 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `146 passed` |
+| `pytest ... tests` | Runs the 180 tests, in about a minute. `-o addopts=` clears the default options and `-q` keeps the output short. The tests use at most 4 threads and no more than the CPUs idle at the start (`OMNIFUSER_TEST_THREADS` sets the number). | `146 passed` |
 | `python -c "from torchvision..."` | Downloads the ImageNet weights of EfficientNet-B0 (about 20 MB) into `~/.cache/torch`, where every run finds them. The protocol needs them, so a network problem shows up here, not in a long run. | `weights cached` |
 | `python -c "import torch ..."` | Prints the torch version, whether CUDA works, and the GPU name | `True` and your GPU |
 | `omnifuser inspect` | Loads and validates the whole dataset with the protocol's pooling and windows, and prints a JSON report | `"records": 378`, `"tools": 10`, class counts 147/118/113, `"exact_duplicate_force_rows_remaining": 0` |

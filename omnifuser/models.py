@@ -224,8 +224,14 @@ class ImageFeatureEncoder(nn.Module):
         freeze_bn: bool = False,
         freeze_weights: bool = False,
         in_channels: int = 3,
+        views: int = 1,
     ) -> None:
         super().__init__()
+        if views < 1:
+            raise ValueError("views must be positive")
+        # Several photo views per step (an extension for downstream models, e.g. an RUL
+        # baseline): their precomputed features arrive side by side and share one projection.
+        self.views = views
         # Feature-map stacks with other than 3 channels pass a lightweight learnable
         # image generator first (VLT Eq. 8). It always trains, even with frozen weights.
         self.generator: nn.Module = (
@@ -272,7 +278,7 @@ class ImageFeatureEncoder(nn.Module):
             self.pool = nn.Identity()
             input_width = 96
         self.feature_width = input_width
-        self.projection = nn.Linear(input_width, d_model)
+        self.projection = nn.Linear(input_width * views, d_model)
         if freeze_weights:
             self.features.requires_grad_(False)
 
@@ -291,15 +297,18 @@ class ImageFeatureEncoder(nn.Module):
         return self.pool(self.features(self.generator(images))).flatten(1)
 
     def forward(self, images: Tensor) -> Tensor:
-        """(B, N, C, H, W) images, or (B, N, feature_width) precomputed features."""
+        """(B, N, C, H, W) images, or (B, N, views x feature_width) precomputed features."""
         if images.shape[1] == 0:
             return images.new_zeros((images.shape[0], 0, self.projection.out_features))
         if images.ndim == 3:
-            if images.shape[-1] != self.feature_width:
+            if images.shape[-1] != self.feature_width * self.views:
                 raise ValueError(
-                    f"precomputed image features must have width {self.feature_width}"
+                    "precomputed image features must have width "
+                    f"{self.feature_width * self.views} ({self.views} view(s) x {self.feature_width})"
                 )
             return self.projection(images)
+        if self.views != 1:
+            raise ValueError("several views are supported with precomputed features only")
         features = self.backbone_features(images.flatten(0, 1))
         return self.projection(features).reshape(images.shape[0], images.shape[1], -1)
 
@@ -316,6 +325,7 @@ class ImageBranch(nn.Module):
             freeze_bn=config.freeze_bn,
             freeze_weights=config.freeze_image_encoder,
             in_channels=config.image_channels,
+            views=config.image_views,
         )
         self.register_buffer(
             "position_encoding",
@@ -618,7 +628,7 @@ class OmniFuser(nn.Module):
             return sensor * keep_sensor[:, None, None], image * keep_image[:, None, None]
         return sensor, image
 
-    def forward(
+    def encode(
         self,
         force: Tensor,
         images: Tensor,
@@ -627,7 +637,25 @@ class OmniFuser(nn.Module):
         batch_code: Tensor | None = None,
         relative: Tensor | None = None,
         drop_modality: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Tensor:
+        """The fused sequence F^(n), (B, T, d): everything before the prediction heads.
+
+        ``forward`` is ``encode`` followed by the heads, which read its last step. A
+        downstream model (e.g. an RUL baseline) can put its own head on the same output.
+        """
+        return self._encode(force, images, image_indices, cycle, batch_code, relative, drop_modality)[0]
+
+    def _encode(
+        self,
+        force: Tensor,
+        images: Tensor,
+        image_indices: Tensor,
+        cycle: Tensor | None,
+        batch_code: Tensor | None,
+        relative: Tensor | None,
+        drop_modality: str | None,
+    ) -> tuple[Tensor, Tensor, Tensor, tuple[Tensor, Tensor] | None]:
+        """(fused sequence, alignment loss, orthogonality loss, RevIN window level)."""
         if force.ndim != 3 or force.shape[1] != self.config.input_len:
             raise ValueError(f"force must have shape (batch, {self.config.input_len}, channels)")
         if images.ndim not in (3, 5) or images.shape[0] != force.shape[0]:
@@ -665,6 +693,21 @@ class OmniFuser(nn.Module):
             orthogonality_loss = orthogonality_loss + orthogonality
         if fused is None:
             raise RuntimeError("OmniFuser requires at least one fusion layer")
+        return fused, alignment_loss, orthogonality_loss, window_level
+
+    def forward(
+        self,
+        force: Tensor,
+        images: Tensor,
+        image_indices: Tensor,
+        cycle: Tensor | None = None,
+        batch_code: Tensor | None = None,
+        relative: Tensor | None = None,
+        drop_modality: str | None = None,
+    ) -> dict[str, Any]:
+        fused, alignment_loss, orthogonality_loss, window_level = self._encode(
+            force, images, image_indices, cycle, batch_code, relative, drop_modality
+        )
         final = fused[:, -1]
         cumulative: Tensor | None = None
         if self.config.prediction_head == "direct":

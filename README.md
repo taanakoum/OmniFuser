@@ -73,7 +73,7 @@ scripts/              train_lightning.py (10-fold CV), run_experiment_suite.py
 docs/end_to_end/      figures of END_TO_END_SIM.md
 slurm/                Ruche job scripts: job.sbatch, checks.sbatch, chain.sh,
                       env.sh, protocol.sh (TRAINING_RUNBOOK_RUCHE.md)
-tests/                175 pytest tests
+tests/                180 pytest tests
 experiment_results/   all generated outputs (git-ignored except its README)
 Nonastreda_Data/      input data (not in git): forces_xyz_raw.mat, labels.csv,
                       labels_reg.csv, tool/*.jpg
@@ -97,7 +97,7 @@ and torchvision.
 ## Quick start (local CPU)
 
 ```bash
-python -m pytest -o addopts= -q tests                    # 175 tests
+python -m pytest -o addopts= -q tests                    # 180 tests
 omnifuser inspect --data-dir Nonastreda_Data --pool 1000 --stride 24
 python scripts/eda.py --data-dir Nonastreda_Data --out experiment_results/eda
 python scripts/train_local.py --data-dir Nonastreda_Data --image-encoder compact \
@@ -208,10 +208,20 @@ main runs' behaviour, so existing results and saved models stay valid.
 The verdicts, the reasoning and the paper's own inconsistencies are in
 `PAPER_IMPLEMENTATION_ALIGNMENT.md`.
 
+## Using OmniFuser as a backbone (v1.1)
+
+`OmniFuser.encode(...)` returns the fused sequence $(B, T, d)$, everything
+before the prediction heads; `forward()` is `encode()` followed by the heads,
+with outputs bit-identical to v1.0. A downstream model can put its own head
+on `encode(...)[:, -1]`. `ModelConfig(image_views=V)` accepts V photo views
+per step as precomputed features side by side, $(B, M, V 	imes 1280)$.
+OmniFuser's own training uses one view. An RUL baseline built this way
+lives in the RUL project (`docs/OMNIFUSER_RUL_PLAN.md` there).
+
 ## Development checks
 
 ```bash
-python -m pytest -o addopts= -q tests    # 175 passed
+python -m pytest -o addopts= -q tests    # 180 passed
 ruff check .                             # all checks passed
 pyright                                  # 0 errors (config in pyproject.toml)
 ```

@@ -35,6 +35,10 @@ class ModelConfig:
     # 3 for photos. More (the spectrogram experiment's 7 feature maps) adds a learnable
     # convolution that maps them to the 3 channels the image encoder takes (VLT Eq. 8).
     image_channels: int = 3
+    # Photo views per step whose precomputed features arrive side by side (an extension for
+    # downstream models; OmniFuser's own pipeline uses 1). The projection then takes
+    # image_views x feature_width inputs.
+    image_views: int = 1
     dropout: float = 0.1
     pre_attn: bool = False
     # Eq. 10 per-token softmax over k, then each landmark normalized to a weighted mean.
@@ -117,6 +121,8 @@ class ModelConfig:
             raise ValueError(f"unsupported ablation: {self.ablation}")
         if self.image_channels < 1:
             raise ValueError("image_channels must be positive")
+        if self.image_views < 1:
+            raise ValueError("image_views must be positive")
         if self.fusion_rank < 1 or self.num_landmarks < 1:
             raise ValueError("fusion_rank and num_landmarks must be positive")
         if self.num_fusion_layers < 1:

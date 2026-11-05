@@ -5,7 +5,7 @@ import platform
 import sys
 import threading
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 
 WMI_TIMEOUT_SECONDS = 5.0
 

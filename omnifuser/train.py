@@ -542,6 +542,8 @@ def train_fold(
         )
     if num_workers < 0:
         raise ValueError("num_workers must be non-negative")
+    if (config_overrides or {}).get("image_views", 1) != 1:
+        raise ValueError("OmniFuser's training pipeline shows one photo per step (image_views 1)")
     if split != "tool" and spectrogram is not None:
         raise ValueError("the block and window splits support photo runs only")
     if split != "tool" and eval_dedup_identical_forces not in (None, dedup_identical_forces):
